@@ -155,3 +155,25 @@ Do not put these cases into a speed table, a comparison, or a claim about Flow:
 - **Single machine, single container.** Results describe this host with `--cpus=2`
   and a 6 GB cap. They are not a general claim about other hardware, cgroup limits
   or Flow-on behavior at larger heaps.
+
+## Larger workloads: `--dir`
+
+`scripts/sublang-measure.sh --dir=REPO_RELATIVE_DIR` measures the `*.sublang-wire`
+files of another repository directory instead of `examples/wire` (the directory is
+mounted read-only like the rest of the repository; `..` and absolute paths are
+rejected). The bundled wire inputs are correctness-sized, so a heavier input can be
+produced with the independent Tiny frontend:
+
+```bash
+mkdir -p build/bench
+python3 examples/frontend/tiny/tiny.py examples/frontend/tiny/bench-numeric.tiny build/bench/bench-numeric.sublang-wire
+bash scripts/sublang-measure.sh --runs=3 --dir=build/bench
+```
+
+`bench-numeric.tiny` is a 200,000,000-iteration checked-arithmetic loop whose result
+is `1799999982`. One run on the development machine (`--runs=3`, LLVM `-O3`, Flow off
+and on) gave about 150 ms of program time for both Flow settings and a peak RSS near
+1.5 MB. Treat this as a smoke-level numeric data point only: one machine, three runs,
+LLVM may restructure the loop, and the program has no heap values, so Flow on and off
+are equivalent by construction. It is not an allocation, string or graph baseline, and
+it supports no cross-implementation speed claim.

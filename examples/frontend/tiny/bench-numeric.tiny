@@ -1,0 +1,11 @@
+// Numeric workload for scripts/sublang-measure.sh: a tight checked-arithmetic loop.
+// No heap values, so Flow on/off are expected to be equivalent here.
+fn main() {
+    let sum = 0;
+    let i = 0;
+    while i < 200000000 {
+        sum = sum + (i % 7) * 3;
+        i = i + 1;
+    }
+    return sum;
+}

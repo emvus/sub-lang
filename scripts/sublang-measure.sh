@@ -3,18 +3,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${SUBLANG_SANDBOX_IMAGE:-emerald-selfhost-sandbox}"
 RUNS=5
+INPUT_DIR=examples/wire
 shopt -s nullglob
 while (($#)); do
   case "$1" in
     --runs=*) RUNS="${1#*=}"; shift ;;
-    -h|--help) echo 'Usage: sublang-measure.sh [--runs=N]   (N=1..25, default 5; writes build/measure/<timestamp>.tsv)'; exit 0 ;;
+    --dir=*) INPUT_DIR="${1#*=}"; shift ;;
+    -h|--help) echo 'Usage: sublang-measure.sh [--runs=N] [--dir=REPO_RELATIVE_DIR]   (N=1..25, default 5; inputs default to examples/wire; writes build/measure/<timestamp>.tsv)'; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
 case "$RUNS" in ''|*[!0-9]*) echo 'Invalid run count' >&2; exit 2 ;; esac
 if ((RUNS < 1 || RUNS > 25)); then echo 'Run count must be 1..25' >&2; exit 2; fi
-INPUTS=("$ROOT"/examples/wire/*.sublang-wire)
-if ((${#INPUTS[@]} == 0)); then echo 'No examples/wire/*.sublang-wire inputs found' >&2; exit 2; fi
+case "$INPUT_DIR" in /*|*..*|'') echo 'Input directory must be a repository-relative path without ..' >&2; exit 2 ;; esac
+INPUTS=("$ROOT/$INPUT_DIR"/*.sublang-wire)
+if ((${#INPUTS[@]} == 0)); then echo "No $INPUT_DIR/*.sublang-wire inputs found" >&2; exit 2; fi
 if [[ ! -x "$ROOT/build/sublang" ]]; then echo 'Build the standalone compiler once: bash scripts/sublang-bootstrap.sh' >&2; exit 2; fi
 mkdir -p "$ROOT/build/measure"
 STAGE="$(mktemp -d "$ROOT/build/.measure.XXXXXXXX")"
@@ -28,7 +31,7 @@ read -r -d '' WORKER <<'WORKER_EOF' || true
 set -u
 RUNS=$1
 BIN=/project/build/sublang
-SRC_DIR=/project/examples/wire
+SRC_DIR=/project/$2
 OUT=/export/measure.tsv
 W=/tmp/measure
 OPT_LEVEL=3
@@ -168,7 +171,7 @@ docker run --rm --init --pull=never --network=none --read-only --cap-drop=ALL \
   --mount "type=bind,src=$STAGE,dst=/export" \
   --tmpfs /tmp:rw,exec,nosuid,size=1073741824 \
   -e HOME=/tmp \
-  "$IMAGE" timeout --signal=TERM --kill-after=5s 7200s sh -c "$WORKER" sh "$RUNS"
+  "$IMAGE" timeout --signal=TERM --kill-after=5s 7200s sh -c "$WORKER" sh "$RUNS" "$INPUT_DIR"
 test -f "$STAGE/measure.tsv" && test ! -L "$STAGE/measure.tsv" || { echo 'Invalid measurement export' >&2; exit 1; }
 TS="$(date +%Y%m%dT%H%M%S)"
 DEST="$ROOT/build/measure/$TS.tsv"
