@@ -1,0 +1,180 @@
+namespace sublang::ir;
+
+use sublang::model::SublangField;
+use sublang::model::SublangType;
+
+// Type and field table of one module revision. The primitive types have fixed ids (1 to 4), which
+// the dump format and the checks rely on. Reference types are interned, so Ref<C> always has one id.
+// After freeze() every mutation is refused and counted instead of applied.
+public class SublangTypeTable {
+    private Bool frozenFlag;
+    private Int refusalCounter;
+    private List<SublangType> typeList;
+    private List<SublangField> fieldList;
+
+    public SublangTypeTable() {
+        this.frozenFlag = false;
+        this.refusalCounter = 0;
+        this.typeList = List();
+        this.fieldList = List();
+        this.addType("Void", "Void", 0, false, 0, 0);
+        this.addType("Bool", "Bool", 1, false, 0, 0);
+        this.addType("Int", "Int", 64, true, 0, 0);
+        this.addType("Float", "Float", 64, false, 0, 0);
+    }
+
+    public Void freeze() {
+        this.frozenFlag = true;
+        Int index = 0;
+        while (index < this.typeList.length()) {
+            this.typeList.get(index).freeze();
+            index = index + 1;
+        }
+    }
+
+    public Int refusalCount() {
+        return this.refusalCounter;
+    }
+
+    public Void refuse() {
+        this.refusalCounter = this.refusalCounter + 1;
+    }
+
+    public Int voidType() {
+        return 1;
+    }
+
+    public Int boolType() {
+        return 2;
+    }
+
+    public Int intType() {
+        return 3;
+    }
+
+    public Int floatType() {
+        return 4;
+    }
+
+    public Int stringType() {
+        Int index = 1;
+        while (index <= this.typeCount()) {
+            if (this.isKind(index, "String")) { return index; }
+            index = index + 1;
+        }
+        return this.addType("String", "String", 0, false, 0, 0);
+    }
+
+    public Int bondTypeOrZero(Int target) {
+        Int index = 1;
+        while (index <= this.typeCount()) {
+            if (this.isKind(index, "Bond") && this.typeAt(index).target() == target) { return index; }
+            index = index + 1;
+        }
+        return 0;
+    }
+    public Int bondTypeFor(Int target) {
+        Int existing = this.bondTypeOrZero(target);
+        if (existing != 0) { return existing; }
+        return this.addType("Bond", "Bond<" + this.typeNameOf(target) + ">", 0, false, target, 0);
+    }
+
+    public Int addType(String kind, String name, Int width, Bool signed, Int target, Int span) {
+        if (this.frozenFlag) {
+            this.refuse();
+            return 0;
+        }
+        Int typeId = this.typeList.length() + 1;
+        SublangType typeEntry = SublangType(typeId, kind, name, width, signed, target, span);
+        this.typeList.add(typeEntry);
+        return typeId;
+    }
+
+    public Bool hasType(Int id) {
+        return id >= 1 && id <= this.typeList.length();
+    }
+
+    public SublangType typeAt(Int id) {
+        return this.typeList.get(id - 1);
+    }
+
+    public Int typeCount() {
+        return this.typeList.length();
+    }
+
+    // Kind of a type; the empty string when the id names no type.
+    public String kindOf(Int typeId) {
+        if (!this.hasType(typeId)) {
+            return "";
+        }
+        return this.typeAt(typeId).kind();
+    }
+
+    public Bool isKind(Int typeId, String kind) {
+        return this.kindOf(typeId) == kind;
+    }
+
+    // Readable name for diagnostics; "?" marks an id that names no type.
+    public String typeNameOf(Int typeId) {
+        if (!this.hasType(typeId)) {
+            return "?";
+        }
+        return this.typeAt(typeId).name();
+    }
+
+    // Non-mutating lookup of Ref<classTypeId>; returns 0 when the reference type does not exist yet.
+    public Int refTypeOrZero(Int classTypeId) {
+        Int index = 1;
+        while (index <= this.typeList.length()) {
+            SublangType candidate = this.typeList.get(index - 1);
+            if (candidate.isRef() && candidate.target() == classTypeId) {
+                return candidate.id();
+            }
+            index = index + 1;
+        }
+        return 0;
+    }
+
+    // Interns Ref<classTypeId>. Equal references share one type id, so type equality is id equality.
+    public Int refTypeFor(Int classTypeId) {
+        Int existing = this.refTypeOrZero(classTypeId);
+        if (existing != 0) {
+            return existing;
+        }
+        String targetName = "?";
+        Int targetSpan = 0;
+        if (this.hasType(classTypeId)) {
+            targetName = this.typeAt(classTypeId).name();
+            targetSpan = this.typeAt(classTypeId).span();
+        }
+        return this.addType("Ref", "Ref<" + targetName + ">", 0, false, classTypeId, targetSpan);
+    }
+
+    // A field is registered with its owner, so the owner's field list is the single source of
+    // truth for which fields a type has.
+    public Int addField(Int owner, String name, Int typeId, Bool mutable, Int span) {
+        if (this.frozenFlag) {
+            this.refuse();
+            return 0;
+        }
+        Int fieldId = this.fieldList.length() + 1;
+        SublangField fieldEntry = SublangField(fieldId, owner, name, typeId, mutable, span);
+        this.fieldList.add(fieldEntry);
+        if (this.hasType(owner)) {
+            this.typeAt(owner).addField(fieldId);
+        }
+        return fieldId;
+    }
+
+    public Bool hasField(Int id) {
+        return id >= 1 && id <= this.fieldList.length();
+    }
+
+    public SublangField fieldAt(Int id) {
+        return this.fieldList.get(id - 1);
+    }
+
+    public Int fieldCount() {
+        return this.fieldList.length();
+    }
+}

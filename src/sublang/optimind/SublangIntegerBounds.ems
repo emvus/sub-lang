@@ -1,0 +1,26 @@
+namespace sublang::optimind;
+
+// Check bounds before evaluating in the checked Emerald implementation language.
+public class SublangIntegerBounds {
+    public static Bool safe(Int first, Int second, String opcode) {
+        Int maximum = 9223372036854775807;
+        Int minimum = -9223372036854775807 - 1;
+        if (opcode == "int.add") {
+            if (second > 0 && first > maximum - second) { return false; }
+            if (second < 0 && first < minimum - second) { return false; }
+            return true;
+        }
+        if (opcode == "int.sub") {
+            if (second < 0 && first > maximum + second) { return false; }
+            if (second > 0 && first < minimum + second) { return false; }
+            return true;
+        }
+        if (first == 0 || second == 0) { return true; }
+        if (first == -1) { return second != minimum; }
+        if (second == -1) { return first != minimum; }
+        if (first > 0 && second > 0) { return first <= maximum / second; }
+        if (first > 0) { return second >= minimum / first; }
+        if (second > 0) { return first >= minimum / second; }
+        return first >= maximum / second;
+    }
+}

@@ -1,0 +1,157 @@
+namespace sublang::ir;
+
+use sublang::semantics::SublangEffectSummary;
+use sublang::semantics::SublangFailureAction;
+use sublang::semantics::SublangSemanticProfile;
+use sublang::vocabulary::SublangVocabulary;
+
+// Semantic profiles, FailureAction records and effect summaries of one module revision.
+// Two entries are interned on first use, so equal requests share one id: the default abort
+// failure record and the conservative effect summary. Freezing the table freezes its summaries.
+public class SublangSemanticTable {
+    private Bool frozenFlag;
+    private Int refusalCounter;
+    private List<SublangSemanticProfile> profileList;
+    private List<SublangFailureAction> failureList;
+    private List<SublangEffectSummary> effectList;
+
+    public SublangSemanticTable() {
+        this.frozenFlag = false;
+        this.refusalCounter = 0;
+        this.profileList = List();
+        this.failureList = List();
+        this.effectList = List();
+    }
+
+    public Void freeze() {
+        this.frozenFlag = true;
+        Int index = 1;
+        while (index <= this.effectList.length()) {
+            this.effectList.get(index - 1).freeze();
+            index = index + 1;
+        }
+    }
+
+    public Int refusalCount() {
+        return this.refusalCounter;
+    }
+
+    public Void refuse() {
+        this.refusalCounter = this.refusalCounter + 1;
+    }
+
+    public Int addProfile(String name, Int version, String integerRules, String floatRules, String failureModel, String unwindingModel) {
+        if (this.frozenFlag) {
+            this.refuse();
+            return 0;
+        }
+        Int profileId = this.profileList.length() + 1;
+        SublangSemanticProfile profileEntry = SublangSemanticProfile(profileId, name, version, integerRules, floatRules, failureModel, unwindingModel);
+        this.profileList.add(profileEntry);
+        return profileId;
+    }
+
+    public Bool hasProfile(Int id) {
+        return id >= 1 && id <= this.profileList.length();
+    }
+
+    public SublangSemanticProfile profileAt(Int id) {
+        return this.profileList.get(id - 1);
+    }
+
+    public Int profileCount() {
+        return this.profileList.length();
+    }
+
+    // Explicit FailureAction record. Records are never edited after creation.
+    public Int addFailureAction(String name, String behavior, String binding, String signature, Bool continues, String unwinding, Int span) {
+        if (this.frozenFlag) {
+            this.refuse();
+            return 0;
+        }
+        Int failureId = this.failureList.length() + 1;
+        SublangFailureAction actionEntry = SublangFailureAction(failureId, name, behavior, binding, signature, continues, unwinding, span);
+        this.failureList.add(actionEntry);
+        return failureId;
+    }
+
+    // Interns a default abort record by name, e.g. "emerald.int_overflow". The default is
+    // behavior abort with binding "unbound": no runtime provider is attached yet.
+    public Int failureId(String name) {
+        Int index = 1;
+        while (index <= this.failureList.length()) {
+            if (this.failureList.get(index - 1).name() == name) {
+                return index;
+            }
+            index = index + 1;
+        }
+        return this.addFailureAction(name, "abort", "unbound", "noreturn void()", false, "none", 0);
+    }
+
+    public Bool hasFailure(Int id) {
+        return id >= 1 && id <= this.failureList.length();
+    }
+
+    public SublangFailureAction failureActionAt(Int id) {
+        return this.failureList.get(id - 1);
+    }
+
+    public String failureNameAt(Int id) {
+        return this.failureList.get(id - 1).name();
+    }
+
+    public Int failureCount() {
+        return this.failureList.length();
+    }
+
+    public Int addEffectSummary(String name, Int span) {
+        if (this.frozenFlag) {
+            this.refuse();
+            return 0;
+        }
+        Int effectId = this.effectList.length() + 1;
+        SublangEffectSummary summaryEntry = SublangEffectSummary(effectId, name, span);
+        this.effectList.add(summaryEntry);
+        return effectId;
+    }
+
+    public Bool hasEffectSummary(Int id) {
+        return id >= 1 && id <= this.effectList.length();
+    }
+
+    public SublangEffectSummary effectSummaryAt(Int id) {
+        return this.effectList.get(id - 1);
+    }
+
+    public Int effectSummaryCount() {
+        return this.effectList.length();
+    }
+
+    // Every area is unknown with provenance assumed-conservative. Returns 0 only when the table is
+    // frozen and the summary does not exist yet.
+    public Int conservativeEffectSummary() {
+        Int index = 1;
+        while (index <= this.effectList.length()) {
+            if (this.effectList.get(index - 1).name() == "conservative") {
+                return index;
+            }
+            index = index + 1;
+        }
+        Int effectId = this.addEffectSummary("conservative", 0);
+        if (effectId == 0) {
+            return 0;
+        }
+        this.fillConservativeAreas(effectId);
+        return effectId;
+    }
+
+    private Void fillConservativeAreas(Int effectId) {
+        SublangEffectSummary summaryEntry = this.effectList.get(effectId - 1);
+        List<String> areas = SublangVocabulary.effectAreas();
+        Int areaIndex = 0;
+        while (areaIndex < areas.length()) {
+            summaryEntry.addFact(areas.get(areaIndex), "unknown", "assumed-conservative", "", "");
+            areaIndex = areaIndex + 1;
+        }
+    }
+}

@@ -1,0 +1,180 @@
+namespace sublang::checks;
+
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+use sublang::model::SublangField;
+use sublang::model::SublangType;
+use sublang::vocabulary::SublangVocabulary;
+
+// Checks the type and field tables. Every later check trusts these tables, so an
+// inconsistent record field list is reported here, before an operation relies on it.
+public class SublangTypeChecks {
+    private SublangReport findings;
+    private SublangModule module;
+
+    public SublangTypeChecks(SublangReport report, SublangModule source) {
+        this.findings = report;
+        this.module = source;
+    }
+
+    public Void checkTypes() {
+        Int typeId = 1;
+        while (typeId <= this.module.types().typeCount()) {
+            this.checkType(typeId);
+            typeId = typeId + 1;
+        }
+    }
+
+    public Void checkFields() {
+        Int fieldId = 1;
+        while (fieldId <= this.module.types().fieldCount()) {
+            this.checkField(fieldId);
+            fieldId = fieldId + 1;
+        }
+    }
+
+    private Void checkType(Int typeId) {
+        SublangType typeEntry = this.module.types().typeAt(typeId);
+        if (!SublangVocabulary.isKnownTypeKind(typeEntry.kind())) {
+            this.findings.report("SUBLANG-S001", "unknown type kind " + typeEntry.kind(), typeEntry.span());
+            return;
+        }
+        if (typeEntry.isNominal() && !this.module.hasSpan(typeEntry.span())) {
+            this.findings.report("SUBLANG-S002", "nominal type " + typeEntry.name() + " has no valid source span", 0);
+        }
+        if (typeEntry.isNominal()) {
+            this.checkFieldList(typeEntry);
+        }
+        this.checkPrimitiveWidth(typeEntry);
+        this.checkReference(typeEntry);
+        if (typeEntry.kind() == "Bond" && (!this.module.types().isKind(typeEntry.target(), "Class") || typeEntry.nullable() || typeEntry.width() != 0 || typeEntry.fieldCount() != 0 || typeEntry.isSigned())) { this.findings.report("SUBLANG-T003", "Bond requires a non-null class handle descriptor", typeEntry.span()); }
+        if (typeEntry.kind() == "List") {
+            String element = this.module.types().kindOf(typeEntry.target());
+            if (!SublangVocabulary.isPrimitiveKind(element) && element != "Record" && element != "Class" && element != "String") { this.findings.report("SUBLANG-T003", "List requires a concrete value or class element layout", typeEntry.span()); }
+            if (typeEntry.fieldCount() != 0 || typeEntry.width() != 0 || typeEntry.isSigned() || typeEntry.nullable()) { this.findings.report("SUBLANG-T003", "invalid List descriptor", typeEntry.span()); }
+        }
+    }
+
+    // A reference must point at a class and cannot be nullable in Sublang v0.1.
+    private Void checkReference(SublangType typeEntry) {
+        if (!typeEntry.isRef()) {
+            return;
+        }
+        if (!this.module.types().isKind(typeEntry.target(), "Class") && !this.module.types().isKind(typeEntry.target(), "List")) {
+            this.findings.report("SUBLANG-T003", "Ref target must be a class type: " + typeEntry.name(), typeEntry.span());
+        }
+        if (typeEntry.nullable()) {
+            this.findings.report("SUBLANG-U001", "nullable references are not part of Sublang v0.1: " + typeEntry.name(), typeEntry.span());
+        }
+    }
+
+    // Every listed field must exist, belong to this type, and appear only once. A field that
+    // is listed twice would be laid out twice, so the duplicate is rejected rather than ignored.
+    private Void checkFieldList(SublangType owner) {
+        Int index = 0;
+        while (index < owner.fieldCount()) {
+            this.checkFieldListEntry(owner, index);
+            index = index + 1;
+        }
+    }
+
+    private Void checkFieldListEntry(SublangType owner, Int index) {
+        Int fieldId = owner.fieldAt(index);
+        if (!this.module.types().hasField(fieldId)) {
+            this.findings.report("SUBLANG-S002", owner.name() + " lists unknown field id " + fieldId.toString(), owner.span());
+            return;
+        }
+        if (this.module.types().fieldAt(fieldId).owner() != owner.id()) {
+            this.findings.report("SUBLANG-S002", owner.name() + " lists field " + fieldId.toString() + " that belongs to another type", owner.span());
+        }
+        if (this.occurrencesBefore(owner, index, fieldId) > 0) {
+            this.findings.report("SUBLANG-S002", owner.name() + " lists field " + fieldId.toString() + " more than once", owner.span());
+        }
+    }
+
+    private Int occurrencesBefore(SublangType owner, Int index, Int fieldId) {
+        Int count = 0;
+        Int other = 0;
+        while (other < index) {
+            if (owner.fieldAt(other) == fieldId) {
+                count = count + 1;
+            }
+            other = other + 1;
+        }
+        return count;
+    }
+
+    // Primitive descriptors may only carry the widths and sign flags the v0.1 slice implements.
+    private Void checkPrimitiveWidth(SublangType typeEntry) {
+        if (this.hasSupportedWidth(typeEntry)) {
+            return;
+        }
+        this.findings.report("SUBLANG-T006", "primitive type " + typeEntry.name() + " has unsupported width " + typeEntry.width().toString() + " or sign flag", typeEntry.span());
+    }
+
+    private Bool hasSupportedWidth(SublangType typeEntry) {
+        String kind = typeEntry.kind();
+        if (kind == "Int") {
+            return typeEntry.width() == 64 && typeEntry.isSigned();
+        }
+        if (kind == "Float") {
+            return typeEntry.width() == 64;
+        }
+        if (kind == "Bool") {
+            return typeEntry.width() == 1;
+        }
+        if (kind == "Void") {
+            return typeEntry.width() == 0;
+        }
+        return true;
+    }
+
+    private Void checkField(Int fieldId) {
+        SublangField fieldEntry = this.module.types().fieldAt(fieldId);
+        if (!this.module.types().hasType(fieldEntry.owner())) {
+            this.findings.report("SUBLANG-S002", "field " + fieldEntry.name() + " has no defined owner", fieldEntry.span());
+            return;
+        }
+        this.checkFieldOwner(fieldEntry, fieldId);
+        if (!this.module.types().hasType(fieldEntry.typeId())) {
+            this.findings.report("SUBLANG-S002", "field " + fieldEntry.name() + " has an undefined type", fieldEntry.span());
+            return;
+        }
+        this.checkFieldType(fieldEntry);
+    }
+
+    private Void checkFieldOwner(SublangField fieldEntry, Int fieldId) {
+        SublangType owner = this.module.types().typeAt(fieldEntry.owner());
+        if (!owner.isNominal()) {
+            this.findings.report("SUBLANG-T003", "field " + fieldEntry.name() + " belongs to a non-nominal type", fieldEntry.span());
+            return;
+        }
+        if (!this.containsId(owner.fields(), fieldId)) {
+            this.findings.report("SUBLANG-S002", "field " + fieldEntry.name() + " is not registered at its owner", fieldEntry.span());
+        }
+    }
+
+    private Void checkFieldType(SublangField fieldEntry) {
+        String kind = this.module.types().kindOf(fieldEntry.typeId());
+        if (kind == "String") { return; }
+        if (kind == "Void") {
+            this.findings.report("SUBLANG-T001", "field " + fieldEntry.name() + " cannot have type Void", fieldEntry.span());
+            return;
+        }
+        if ((kind == "Ref" || kind == "Bond") && this.module.types().isKind(fieldEntry.owner(), "Class")) { return; }
+        if (!SublangVocabulary.isPrimitiveKind(kind)) {
+            this.findings.report("SUBLANG-U001", "field " + fieldEntry.name() + " has a non-primitive type; Sublang v0.1 supports primitive fields only", fieldEntry.span());
+        }
+    }
+
+    private Bool containsId(List<Int> ids, Int target) {
+        Int index = 0;
+        while (index < ids.length()) {
+            if (ids.get(index) == target) {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+}

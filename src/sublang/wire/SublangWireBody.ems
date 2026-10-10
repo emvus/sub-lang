@@ -1,0 +1,145 @@
+namespace sublang::wire;
+
+use sublang::ir::SublangModule;
+use sublang::body::SublangFunction;
+use sublang::body::SublangBlock;
+use sublang::body::SublangParam;
+use sublang::body::SublangOperation;
+use sublang::wire::SublangWireStream;
+use sublang::wire::SublangWireEffects;
+use sublang::wire::SublangWireSelection;
+
+public class SublangWireBody {
+    public static Void functions(SublangWireStream stream, SublangModule module) {
+        stream.expect("functions");
+        Int count = stream.count(module.functionCount(), 32);
+        Int index = 1;
+        while (index <= count && stream.valid()) {
+            SublangFunction function = SublangWireSelection.function(stream, module, index);
+            String name = stream.text(function.name());
+            Int result = stream.number(function.returnType());
+            Int method = stream.number(function.methodOf());
+            Int span = stream.number(function.span());
+            if (stream.isReading()) {
+                Int id = module.addFunction(name, result, method, span);
+                SublangWireBody.functionBody(stream, module.functionAt(id));
+            }
+            if (!stream.isReading()) { SublangWireBody.functionBody(stream, function); }
+            index = index + 1;
+        }
+    }
+
+    private static Void functionBody(SublangWireStream stream, SublangFunction function) {
+        SublangWireBody.signature(stream, function); SublangWireBody.values(stream, function);
+        SublangWireBody.params(stream, function); SublangWireBody.blocks(stream, function);
+    }
+
+    private static Void signature(SublangWireStream stream, SublangFunction function) {
+        Int profile = stream.number(function.profile());
+        Int effect = stream.number(function.effectSummary());
+        String linkage = stream.text(function.linkage());
+        String convention = stream.text(function.callingConvention());
+        String definition = stream.text(function.definition());
+        if (convention != "sublang") { stream.reject("unsupported calling convention"); }
+        if (stream.isReading()) {
+            function.setProfile(profile); function.setEffectSummary(effect);
+            function.setLinkage(linkage); function.setDefinition(definition);
+        }
+    }
+
+    private static Void values(SublangWireStream stream, SublangFunction function) {
+        Int count = stream.count(function.valueCount(), 4096);
+        Int index = 1;
+        while (index <= count && stream.valid()) {
+            Int type = 0;
+            if (!stream.isReading()) { type = function.valueTypeAt(index); }
+            type = stream.number(type);
+            if (stream.isReading()) { function.newValue(type); }
+            index = index + 1;
+        }
+    }
+
+    private static Void params(SublangWireStream stream, SublangFunction function) {
+        Int count = stream.count(function.paramCount(), 4096);
+        Int index = 0;
+        while (index < count && stream.valid()) {
+            SublangParam param = SublangWireSelection.param(stream, function, index);
+            Int value = stream.number(param.value()); String name = stream.text(param.name());
+            Int type = stream.number(param.typeId()); String passing = stream.text(param.passing());
+            Bool noEscape = stream.flag(param.noEscape());
+            if (stream.isReading()) { function.addParamValue(value, name, type, passing, noEscape); }
+            index = index + 1;
+        }
+    }
+
+    private static Void blocks(SublangWireStream stream, SublangFunction function) {
+        Int count = stream.count(function.blockCount(), 64);
+        Int index = 1;
+        while (index <= count && stream.valid()) {
+            if (stream.isReading()) { function.addBlock(); }
+            SublangBlock block = function.blockAt(index);
+            List<Int> params = SublangWireEffects.ids(stream, block.paramValues(), 4096);
+            if (stream.isReading()) {
+                Int param = 0;
+                while (param < params.length()) { block.addParam(params.get(param)); param = param + 1; }
+            }
+            SublangWireBody.operations(stream, block);
+            index = index + 1;
+        }
+    }
+
+    private static Void operations(SublangWireStream stream, SublangBlock block) {
+        Int count = stream.count(block.operationCount(), 4096);
+        Int index = 0;
+        while (index < count && stream.valid()) {
+            SublangOperation operation = SublangWireSelection.operation(stream, block, index);
+            Int id = stream.number(operation.id()); String opcode = stream.text(operation.opcode());
+            Int span = stream.number(operation.span());
+            if (stream.isReading()) {
+                SublangOperation imported = SublangOperation(id, opcode, span);
+                SublangWireBody.attributes(stream, imported); SublangWireBody.arguments(stream, imported);
+                block.addOperation(imported);
+            }
+            if (!stream.isReading()) {
+                SublangWireBody.attributes(stream, operation); SublangWireBody.arguments(stream, operation);
+            }
+            index = index + 1;
+        }
+    }
+
+    private static Void attributes(SublangWireStream stream, SublangOperation operation) {
+        Int value = stream.number(operation.resultValue()); Int type = stream.number(operation.resultType());
+        String ownership = stream.text(operation.resultOwnership());
+        Int ref = stream.number(operation.ref()); Int scope = stream.number(operation.scope());
+        String overflow = stream.text(operation.overflow()); String predicate = stream.text(operation.predicate());
+        String floating = stream.text(operation.fpMode()); Int effect = stream.number(operation.effectSummary());
+        Int integer = stream.number(operation.constInt()); Bool boolean = stream.flag(operation.constBool());
+        Int bits = stream.number(operation.constFloatBits());
+        String literal = "";
+        if (stream.version() >= 2) { literal = stream.text(operation.constText()); }
+        if (stream.version() == 1 && operation.opcode() == "const.string") { stream.reject("const.string requires transport v2"); }
+        if (stream.isReading()) {
+            operation.setResult(value, type); operation.setResultOwnership(ownership);
+            operation.setRef(ref); operation.setScope(scope); operation.setOverflow(overflow);
+            operation.setPredicate(predicate); operation.setFpMode(floating); operation.setEffectSummary(effect);
+            operation.setConstInt(integer); operation.setConstBool(boolean); operation.setConstFloatBits(bits);
+            operation.setConstText(literal);
+        }
+    }
+
+    private static Void arguments(SublangWireStream stream, SublangOperation operation) {
+        List<Int> operands = SublangWireEffects.ids(stream, operation.operands(), 4096);
+        Int count = stream.count(operation.modeCount(), 4096);
+        List<String> modes = List(); Int index = 0;
+        while (index < count && stream.valid()) {
+            String mode = "";
+            if (!stream.isReading()) { mode = operation.modeAt(index); }
+            modes.add(stream.text(mode)); index = index + 1;
+        }
+        List<Int> targets = SublangWireEffects.ids(stream, operation.targets(), 2);
+        Int trueArgs = stream.number(operation.trueArgs());
+        if (stream.isReading()) {
+            operation.setOperands(operands, modes); operation.setTargets(targets, trueArgs);
+        }
+    }
+}

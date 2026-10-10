@@ -1,0 +1,34 @@
+namespace sublang::semantics;
+
+// Logical memory location for alias and effect facts: a global, an allocation site, a
+// field path, container storage, an argument region, a runtime area or the unknown
+// location. Locations are logical; physical offsets belong to the later memory plan.
+public class SublangLocation {
+    private Int locationIdValue;
+    private String kindText;
+    private String nameText;
+    private Int spanIdValue;
+
+    public SublangLocation(Int id, String kind, String name, Int span) {
+        this.locationIdValue = id;
+        this.kindText = kind + "";
+        this.nameText = name + "";
+        this.spanIdValue = span;
+    }
+
+    public Int id() {
+        return this.locationIdValue;
+    }
+
+    public String kind() {
+        return this.kindText;
+    }
+
+    public String name() {
+        return this.nameText;
+    }
+
+    public Int span() {
+        return this.spanIdValue;
+    }
+}

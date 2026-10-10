@@ -1,0 +1,185 @@
+namespace sublang::checks::operation;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+use sublang::vocabulary::SublangVocabulary;
+
+// Integer, float, constant and comparison operations. Overflow and rounding are declared on
+// every operation: a missing mode would let the compiler pick a behaviour silently.
+public class SublangArithmeticChecks {
+    private SublangReport findings;
+    private SublangModule module;
+
+    public SublangArithmeticChecks(SublangReport report, SublangModule source) {
+        this.findings = report;
+        this.module = source;
+    }
+
+    public Bool handles(String opcode) {
+        return SublangVocabulary.isIntOpcode(opcode) || SublangVocabulary.isFloatOpcode(opcode) || opcode == "const.bool" || opcode == "const.int" || opcode == "const.float" || opcode == "compare";
+    }
+
+    public Void check(SublangFunction fnEntry, SublangOperation op) {
+        String opcode = op.opcode();
+        if (SublangVocabulary.isIntOpcode(opcode)) {
+            this.checkInteger(fnEntry, op);
+            return;
+        }
+        if (SublangVocabulary.isFloatOpcode(opcode)) {
+            this.checkFloat(fnEntry, op);
+            return;
+        }
+        if (opcode == "compare") {
+            this.checkCompare(fnEntry, op);
+            return;
+        }
+        this.checkConstant(op);
+    }
+
+    private Void checkInteger(SublangFunction fnEntry, SublangOperation op) {
+        String opcode = op.opcode();
+        Int expected = 2;
+        if (opcode == "int.neg") {
+            expected = 1;
+        }
+        if (op.operandCount() != expected) {
+            this.findings.report("SUBLANG-T001", opcode + " expects " + expected.toString() + " operand(s)", op.span());
+        }
+        this.checkOperandTypes(fnEntry, op, this.module.types().intType(), "Int");
+        if (!op.hasResult() || op.resultType() != this.module.types().intType()) {
+            this.findings.report("SUBLANG-T001", opcode + " must produce an Int value", op.span());
+        }
+        this.checkOverflow(op);
+    }
+
+    // Every operand must have the expected type; the position is reported so the caller can
+    // find the offending argument without reading the dump.
+    private Void checkOperandTypes(SublangFunction fnEntry, SublangOperation op, Int expectedType, String typeName) {
+        Int index = 0;
+        while (index < op.operandCount()) {
+            if (fnEntry.valueTypeOrZero(op.operandAt(index)) != expectedType) {
+                this.findings.report("SUBLANG-T001", op.opcode() + " operand " + index.toString() + " must be " + typeName, op.span());
+            }
+            index = index + 1;
+        }
+    }
+
+    // Overflow is never implicit. Division by zero and trapping overflow both abort through a
+    // failure action, so they must name one.
+    private Void checkOverflow(SublangOperation op) {
+        String opcode = op.opcode();
+        String overflow = op.overflow();
+        if (overflow == "") {
+            this.findings.report("SUBLANG-A001", "missing overflow mode for " + opcode, op.span());
+        }
+        if (overflow != "" && !SublangVocabulary.allowsOverflow(opcode, overflow)) {
+            this.findings.report("SUBLANG-A003", "overflow mode " + overflow + " is not allowed for " + opcode, op.span());
+        }
+        Bool needsFailure = overflow == "trap" || opcode == "int.div" || opcode == "int.rem";
+        if (needsFailure && !this.module.semantics().hasFailure(op.ref())) {
+            this.findings.report("SUBLANG-A002", "missing failure action for " + opcode + "; trapping overflow and division by zero must name one", op.span());
+        }
+    }
+
+    private Void checkFloat(SublangFunction fnEntry, SublangOperation op) {
+        String opcode = op.opcode();
+        if (op.operandCount() != 2) {
+            this.findings.report("SUBLANG-T001", opcode + " expects 2 operands", op.span());
+        }
+        this.checkOperandTypes(fnEntry, op, this.module.types().floatType(), "Float");
+        if (!op.hasResult() || op.resultType() != this.module.types().floatType()) {
+            this.findings.report("SUBLANG-T001", opcode + " must produce a Float value", op.span());
+        }
+        this.checkFloatMode(fnEntry, op);
+    }
+
+    // Only round-to-nearest-even exists in v0.1, and it must be what the profile of the function provides.
+    private Void checkFloatMode(SublangFunction fnEntry, SublangOperation op) {
+        if (op.fpMode() == "") {
+            this.findings.report("SUBLANG-A001", "missing floating-point mode for " + op.opcode(), op.span());
+            return;
+        }
+        if (op.fpMode() != "rne") {
+            this.findings.report("SUBLANG-A003", "floating-point mode " + op.fpMode() + " is not supported in Sublang v0.1", op.span());
+            return;
+        }
+        this.checkRoundingAgainstProfile(fnEntry, op);
+    }
+
+    private Void checkRoundingAgainstProfile(SublangFunction fnEntry, SublangOperation op) {
+        if (!this.module.semantics().hasProfile(fnEntry.profile())) {
+            return;
+        }
+        if (this.module.semantics().profileAt(fnEntry.profile()).floatRounding() != op.fpMode()) {
+            this.findings.report("SUBLANG-P003", op.opcode() + " names rounding " + op.fpMode() + " that the function's profile does not provide", op.span());
+        }
+    }
+
+    private Void checkConstant(SublangOperation op) {
+        String opcode = op.opcode();
+        Int expected = this.module.types().intType();
+        if (opcode == "const.bool") {
+            expected = this.module.types().boolType();
+        }
+        if (opcode == "const.float") {
+            expected = this.module.types().floatType();
+        }
+        if (op.operandCount() != 0) {
+            this.findings.report("SUBLANG-T001", opcode + " takes no operands", op.span());
+        }
+        if (!op.hasResult() || op.resultType() != expected) {
+            this.findings.report("SUBLANG-T001", opcode + " must produce a value of type " + this.module.types().typeNameOf(expected), op.span());
+        }
+    }
+
+    // Float comparisons must name an ordered or unordered predicate, because NaN makes the
+    // answer depend on that choice. Other comparisons use only predicates that have a meaning for their type.
+    private Void checkCompare(SublangFunction fnEntry, SublangOperation op) {
+        if (op.operandCount() != 2) {
+            this.findings.report("SUBLANG-T001", "compare expects 2 operands", op.span());
+            return;
+        }
+        Int leftType = fnEntry.valueTypeOrZero(op.operandAt(0));
+        Int rightType = fnEntry.valueTypeOrZero(op.operandAt(1));
+        if (leftType != rightType) {
+            this.findings.report("SUBLANG-T001", "compare operands have different types", op.span());
+        }
+        this.checkPredicate(op, leftType);
+        if (!op.hasResult() || op.resultType() != this.module.types().boolType()) {
+            this.findings.report("SUBLANG-T001", "compare must produce Bool", op.span());
+        }
+    }
+
+    private Void checkPredicate(SublangOperation op, Int operandType) {
+        if (operandType == this.module.types().floatType()) {
+            this.checkFloatPredicate(op);
+            return;
+        }
+        this.checkNonFloatPredicate(op, operandType);
+    }
+
+    private Void checkFloatPredicate(SublangOperation op) {
+        if (!SublangVocabulary.isFloatPredicate(op.predicate())) {
+            this.findings.report("SUBLANG-A003", "float compare needs an explicit ordered or unordered predicate, got " + op.predicate(), op.span());
+        }
+    }
+
+    private Void checkNonFloatPredicate(SublangOperation op, Int operandType) {
+        Bool isInt = operandType == this.module.types().intType();
+        Bool isBool = operandType == this.module.types().boolType();
+        Bool isRef = this.module.types().isKind(operandType, "Ref");
+        if (!isInt && !isBool && !isRef) {
+            this.findings.report("SUBLANG-T001", "compare is not defined for type " + this.module.types().typeNameOf(operandType), op.span());
+            return;
+        }
+        if (!SublangVocabulary.isKnownPredicate(op.predicate())) {
+            this.findings.report("SUBLANG-A003", "missing or unknown compare predicate", op.span());
+            return;
+        }
+        if ((isBool || isRef) && op.predicate() != "eq" && op.predicate() != "ne") {
+            this.findings.report("SUBLANG-A003", "only eq and ne are defined for Bool and references", op.span());
+        }
+    }
+}

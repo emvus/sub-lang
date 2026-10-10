@@ -1,0 +1,224 @@
+namespace sublang::checks;
+
+use sublang::body::SublangBlock;
+use sublang::body::SublangDominance;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::checks::operation::SublangOperationChecks;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+
+// Checks the control flow of one function body: SSA definitions, block shape, terminators,
+// reachability and operand availability. Operation rules are delegated to SublangOperationChecks.
+// Availability uses dominance, so a value is only used where its definition is guaranteed to run first.
+public class SublangFlowChecks {
+    private SublangReport findings;
+    private SublangOperationChecks operations;
+    private List<Int> defCounts;
+    private List<Int> defBlocks;
+    private List<Int> defPositions;
+
+    public SublangFlowChecks(SublangReport report, SublangModule source) {
+        this.findings = report;
+        this.operations = SublangOperationChecks(report, source);
+        this.defCounts = List();
+        this.defBlocks = List();
+        this.defPositions = List();
+    }
+
+    public Void checkBody(SublangFunction fnEntry) {
+        if (fnEntry.blockCount() == 0) {
+            this.findings.report("SUBLANG-S004", "function " + fnEntry.name() + " has no blocks", fnEntry.span());
+            return;
+        }
+        if (fnEntry.blockAt(1).paramCount() != 0) {
+            this.findings.report("SUBLANG-S005", "entry block of " + fnEntry.name() + " must not declare block parameters; function parameters are its arguments", fnEntry.span());
+        }
+        this.checkDefinitions(fnEntry);
+        SublangDominance dominance = SublangDominance(fnEntry);
+        Int blockId = 1;
+        while (blockId <= fnEntry.blockCount()) {
+            this.checkBlock(fnEntry, dominance, blockId);
+            blockId = blockId + 1;
+        }
+    }
+
+    // SSA requires every value to be defined exactly once. The counts are collected first so
+    // that uses can be checked against definitions regardless of block order.
+    private Void checkDefinitions(SublangFunction fnEntry) {
+        this.resetDefinitions(fnEntry.valueCount());
+        this.noteParameterDefinitions(fnEntry);
+        this.noteBlockDefinitions(fnEntry);
+        this.reportDefinitionCounts(fnEntry);
+    }
+
+    private Void resetDefinitions(Int valueCount) {
+        this.defCounts = List();
+        this.defBlocks = List();
+        this.defPositions = List();
+        Int slot = 0;
+        while (slot < valueCount) {
+            this.defCounts.add(0);
+            this.defBlocks.add(0);
+            this.defPositions.add(-1);
+            slot = slot + 1;
+        }
+    }
+
+    // Parameters are defined in block zero, before any block, so they dominate every use.
+    private Void noteParameterDefinitions(SublangFunction fnEntry) {
+        Int index = 0;
+        while (index < fnEntry.paramCount()) {
+            this.noteDefinition(fnEntry, fnEntry.paramAt(index).value(), 0, -1, fnEntry.span());
+            index = index + 1;
+        }
+    }
+
+    private Void noteBlockDefinitions(SublangFunction fnEntry) {
+        Int blockId = 1;
+        while (blockId <= fnEntry.blockCount()) {
+            this.noteOneBlock(fnEntry, blockId);
+            blockId = blockId + 1;
+        }
+    }
+
+    private Void noteOneBlock(SublangFunction fnEntry, Int blockId) {
+        SublangBlock blockEntry = fnEntry.blockAt(blockId);
+        Int paramIndex = 0;
+        while (paramIndex < blockEntry.paramCount()) {
+            this.noteDefinition(fnEntry, blockEntry.paramAt(paramIndex), blockId, -1, fnEntry.span());
+            paramIndex = paramIndex + 1;
+        }
+        Int opIndex = 0;
+        while (opIndex < blockEntry.operationCount()) {
+            SublangOperation op = blockEntry.operationAt(opIndex);
+            if (op.hasResult()) {
+                this.noteDefinition(fnEntry, op.resultValue(), blockId, opIndex, op.span());
+            }
+            opIndex = opIndex + 1;
+        }
+    }
+
+    private Void noteDefinition(SublangFunction fnEntry, Int valueId, Int blockId, Int position, Int span) {
+        if (!fnEntry.hasValue(valueId)) {
+            this.findings.report("SUBLANG-S002", "definition refers to undefined value v" + valueId.toString(), span);
+            return;
+        }
+        Int count = this.defCounts.get(valueId - 1);
+        this.defCounts.set(valueId - 1, count + 1);
+        this.defBlocks.set(valueId - 1, blockId);
+        this.defPositions.set(valueId - 1, position);
+    }
+
+    private Void reportDefinitionCounts(SublangFunction fnEntry) {
+        Int valueId = 1;
+        while (valueId <= fnEntry.valueCount()) {
+            Int count = this.defCounts.get(valueId - 1);
+            if (count == 0) {
+                this.findings.report("SUBLANG-S003", "value v" + valueId.toString() + " of " + fnEntry.name() + " is never defined", fnEntry.span());
+            }
+            if (count > 1) {
+                this.findings.report("SUBLANG-S003", "value v" + valueId.toString() + " of " + fnEntry.name() + " is defined more than once", fnEntry.span());
+            }
+            valueId = valueId + 1;
+        }
+    }
+
+    private Void checkBlock(SublangFunction fnEntry, SublangDominance dominance, Int blockId) {
+        SublangBlock blockEntry = fnEntry.blockAt(blockId);
+        this.findings.enterBlock(blockId);
+        if (blockEntry.operationCount() == 0) {
+            this.findings.report("SUBLANG-S004", "block " + blockId.toString() + " of " + fnEntry.name() + " has no terminator", fnEntry.span());
+            this.findings.leaveBlock();
+            return;
+        }
+        this.checkReachability(fnEntry, dominance, blockId, blockEntry);
+        this.checkOperations(fnEntry, dominance, blockId, blockEntry);
+        this.findings.leaveBlock();
+    }
+
+    private Void checkReachability(SublangFunction fnEntry, SublangDominance dominance, Int blockId, SublangBlock blockEntry) {
+        if (dominance.isReachable(blockId)) {
+            return;
+        }
+        this.findings.report("SUBLANG-S008", "block " + blockId.toString() + " of " + fnEntry.name() + " is unreachable from the entry block", blockEntry.operationAt(0).span());
+    }
+
+    private Void checkOperations(SublangFunction fnEntry, SublangDominance dominance, Int blockId, SublangBlock blockEntry) {
+        Int count = blockEntry.operationCount();
+        Int position = 0;
+        while (position < count) {
+            SublangOperation op = blockEntry.operationAt(position);
+            this.findings.enterOperation(op.id());
+            this.checkTerminatorPlacement(blockId, op, position == count - 1);
+            this.checkOperation(fnEntry, dominance, blockId, position, op);
+            this.findings.leaveOperation();
+            position = position + 1;
+        }
+    }
+
+    // A block ends with exactly one terminator; a terminator in the middle would hide the rest.
+    private Void checkTerminatorPlacement(Int blockId, SublangOperation op, Bool isLast) {
+        if (op.isTerminator() && !isLast) {
+            this.findings.report("SUBLANG-S004", "terminator " + op.opcode() + " is not the last operation of its block", op.span());
+        }
+        if (!op.isTerminator() && isLast) {
+            this.findings.report("SUBLANG-S004", "block " + blockId.toString() + " does not end with a terminator", op.span());
+        }
+    }
+
+    // The order matters: a malformed shape stops all further checks of the operation, while
+    // operand availability is checked before the operation rules that depend on operand types.
+    private Void checkOperation(SublangFunction fnEntry, SublangDominance dominance, Int blockId, Int position, SublangOperation op) {
+        if (!this.operations.checkShape(op)) {
+            return;
+        }
+        this.checkOperands(fnEntry, dominance, blockId, position, op);
+        this.operations.checkModes(fnEntry, op);
+        this.operations.checkResult(fnEntry, op);
+        this.operations.checkByOpcode(fnEntry, op);
+    }
+
+    private Void checkOperands(SublangFunction fnEntry, SublangDominance dominance, Int blockId, Int position, SublangOperation op) {
+        Int index = 0;
+        while (index < op.operandCount()) {
+            this.checkOperand(fnEntry, dominance, blockId, position, op, index);
+            index = index + 1;
+        }
+    }
+
+    private Void checkOperand(SublangFunction fnEntry, SublangDominance dominance, Int blockId, Int position, SublangOperation op, Int index) {
+        Int operandId = op.operandAt(index);
+        if (!fnEntry.hasValue(operandId)) {
+            this.findings.report("SUBLANG-S002", op.opcode() + " uses undefined value v" + operandId.toString(), op.span());
+            return;
+        }
+        if (!dominance.isReachable(blockId)) {
+            return;
+        }
+        this.checkAvailability(dominance, blockId, position, operandId, op.span());
+    }
+
+    // A value is usable at a position if its definition comes earlier in the same block, or its
+    // defining block dominates the use. Parameters live in block zero and are always usable.
+    private Void checkAvailability(SublangDominance dominance, Int blockId, Int position, Int valueId, Int span) {
+        Int defBlock = this.defBlocks.get(valueId - 1);
+        Int defPosition = this.defPositions.get(valueId - 1);
+        if (defBlock == 0) {
+            return;
+        }
+        if (!dominance.isReachable(defBlock)) {
+            this.findings.report("SUBLANG-S007", "v" + valueId.toString() + " is defined in an unreachable block", span);
+            return;
+        }
+        if (defBlock == blockId) {
+            if (defPosition >= position) {
+                this.findings.report("SUBLANG-S006", "v" + valueId.toString() + " is used before its definition in block " + blockId.toString(), span);
+            }
+            return;
+        }
+        if (!dominance.dominates(defBlock, blockId)) {
+            this.findings.report("SUBLANG-S007", "definition of v" + valueId.toString() + " in block " + defBlock.toString() + " does not dominate its use in block " + blockId.toString(), span);
+        }
+    }
+}

@@ -1,0 +1,57 @@
+namespace sublang::proof;
+
+// Immutable analysis provenance, scoped to its containing module. Dependencies use the
+// shared logical LocationId domain. This record is evidence metadata, not a proof checker:
+// neither an analysis name nor well-formed metadata establishes the claimed property.
+public class SublangProofReference {
+    private String analysisName;
+    private Int snapshotRevision;
+    private List<Int> locationDependencies;
+
+    public SublangProofReference(String analysis, Int revision, List<Int> dependencies) {
+        this.analysisName = analysis + "";
+        this.snapshotRevision = revision;
+        this.locationDependencies = List();
+        Int index = 0;
+        while (index < dependencies.length()) {
+            this.locationDependencies.add(dependencies.get(index));
+            index = index + 1;
+        }
+    }
+
+    public String analysis() {
+        return this.analysisName;
+    }
+
+    public Int revision() {
+        return this.snapshotRevision;
+    }
+
+    public Int dependencyCount() {
+        return this.locationDependencies.length();
+    }
+
+    public Int dependencyAt(Int index) {
+        return this.locationDependencies.get(index);
+    }
+
+    public Bool dependsOn(Int location) {
+        Int index = 0;
+        while (index < this.locationDependencies.length()) {
+            if (this.locationDependencies.get(index) == location) {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    public Bool matchesRevision(Int revision) {
+        return this.analysisName != "" && this.snapshotRevision == revision && revision > 0;
+    }
+
+    public static SublangProofReference missing() {
+        List<Int> dependencies = List();
+        return SublangProofReference("", 0, dependencies);
+    }
+}

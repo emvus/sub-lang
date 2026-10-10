@@ -1,0 +1,75 @@
+namespace sublang::semantics;
+
+use sublang::proof::SublangProofReference;
+
+// One effect fact: an area, its value, where the fact comes from and, for proven
+// facts, the analysis that proved it. "unknown" is always a legal value; a missing
+// area never means "no effect".
+public class SublangEffectFact {
+    private String areaText;
+    private String valueText;
+    private String provenanceText;
+    private String detailText;
+    private String proofText;
+    private SublangProofReference evidence;
+    private List<Int> locationIds;
+
+    public SublangEffectFact(String area, String value, String provenance, String detail, String proof) {
+        this.areaText = area + "";
+        this.valueText = value + "";
+        this.provenanceText = provenance + "";
+        this.detailText = detail + "";
+        this.proofText = proof + "";
+        this.evidence = SublangProofReference.missing();
+        this.locationIds = List();
+    }
+
+    public static SublangEffectFact located(String area, String value, String provenance, String detail, SublangProofReference proof, List<Int> locations) {
+        SublangEffectFact fact = SublangEffectFact(area, value, provenance, detail, proof.analysis());
+        fact.evidence = proof;
+        Int index = 0;
+        while (index < locations.length()) {
+            fact.locationIds.add(locations.get(index));
+            index = index + 1;
+        }
+        return fact;
+    }
+
+    public Int locationCount() {
+        return this.locationIds.length();
+    }
+
+    public static SublangEffectFact imported(String area, String value, String provenance, String detail, String label, SublangProofReference proof, List<Int> locations) {
+        SublangEffectFact fact = SublangEffectFact.located(area, value, provenance, detail, proof, locations);
+        fact.proofText = label + "";
+        return fact;
+    }
+
+    public Int locationAt(Int index) {
+        return this.locationIds.get(index);
+    }
+
+    public String area() {
+        return this.areaText;
+    }
+
+    public String value() {
+        return this.valueText;
+    }
+
+    public String provenance() {
+        return this.provenanceText;
+    }
+
+    public String detail() {
+        return this.detailText;
+    }
+
+    public SublangProofReference proofReference() {
+        return this.evidence;
+    }
+
+    public String proof() {
+        return this.proofText;
+    }
+}

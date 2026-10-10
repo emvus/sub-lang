@@ -1,0 +1,70 @@
+namespace sublang::checks::data;
+
+use sublang::ir::SublangModule;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::diagnostics::SublangReport;
+
+public class SublangBondChecks {
+    public static Void check(SublangReport report, SublangModule module, SublangFunction function, SublangOperation op) {
+        String error = SublangBondChecks.validate(module, function, op);
+        if (error != "") { report.report("SUBLANG-T003", error, op.span()); }
+    }
+
+    private static String validate(SublangModule module, SublangFunction function, SublangOperation op) {
+        String opcode = op.opcode();
+        Int target = op.ref();
+        if (opcode == "bond.new") {
+            if (!module.types().isKind(target, "Class") || op.operandCount() != 0) { return "bond.new requires a class layout"; }
+            Int index = 0;
+            while (index < module.types().typeAt(target).fieldCount()) {
+                Int field = module.types().typeAt(target).fieldAt(index);
+                String kind = module.types().kindOf(module.types().fieldAt(field).typeId());
+                if (kind == "Record" || kind == "Class" || kind == "List") { return "Bond graph fields require value data, owned Ref children or Bond edges"; }
+                index = index + 1;
+            }
+            return SublangBondChecks.result(module, op, module.types().bondTypeOrZero(target), true);
+        }
+        Int count = 1;
+        if (opcode == "bond.link" || opcode == "bond.write" || opcode == "bond.own") { count = 2; }
+        if (op.operandCount() != count) { return "invalid Bond operand count"; }
+        Int type = function.valueTypeOrZero(op.operandAt(0));
+        if (!module.types().isKind(type, "Bond")) { return "Bond operation requires a shared handle"; }
+        target = module.types().typeAt(type).target();
+        String mode = "borrow_read";
+        if (opcode == "bond.link" || opcode == "bond.clear" || opcode == "bond.write" || opcode == "bond.own") { mode = "borrow_write"; }
+        if (op.modeAt(0) != mode) { return "invalid Bond receiver mode"; }
+        if (opcode == "bond.retain") { return SublangBondChecks.result(module, op, type, true); }
+        if (opcode == "bond.borrow") { return SublangBondChecks.result(module, op, module.types().refTypeOrZero(target), false); }
+        if (!module.types().hasField(op.ref()) || module.types().fieldAt(op.ref()).owner() != target) { return "Bond field belongs to a different class"; }
+        Int fieldType = module.types().fieldAt(op.ref()).typeId();
+        if (opcode == "bond.get") {
+            if (!module.types().isKind(fieldType, "Bond")) { return "bond.get requires a Bond edge"; }
+            return SublangBondChecks.result(module, op, fieldType, true);
+        }
+        if (op.hasResult() || op.scope() != 0 || op.resultOwnership() != "") { return "Bond mutation cannot produce a result"; }
+        if (!module.types().fieldAt(op.ref()).isMutable()) { return "Bond mutation requires a mutable field"; }
+        if (opcode == "bond.own") {
+            if (!module.types().isKind(fieldType, "Ref") || function.valueTypeOrZero(op.operandAt(1)) != fieldType || op.modeAt(1) != "owned") { return "bond.own requires an exclusive owned child of matching type"; }
+            return "";
+        }
+        if (opcode == "bond.clear" && module.types().isKind(fieldType, "Ref")) { return ""; }
+        if (opcode == "bond.clear" || opcode == "bond.link") {
+            if (!module.types().isKind(fieldType, "Bond")) { return "Bond edge operation requires a Bond field"; }
+            if (opcode == "bond.clear") { return ""; }
+            if (function.valueTypeOrZero(op.operandAt(1)) != fieldType || op.modeAt(1) != "borrow_read") { return "Bond edge has incompatible target or access mode"; }
+            return "";
+        }
+        if (module.types().isKind(fieldType, "Bond") || module.types().isKind(fieldType, "Ref") || function.valueTypeOrZero(op.operandAt(1)) != fieldType || op.modeAt(1) != "value") { return "bond.write requires matching value data"; }
+        return "";
+    }
+
+    private static String result(SublangModule module, SublangOperation op, Int type, Bool owned) {
+        String mode = "borrow_read";
+        if (owned) { mode = "owned"; }
+        if (!op.hasResult() || type == 0 || op.resultType() != type || op.resultOwnership() != mode) { return "invalid Bond result type or ownership"; }
+        if (owned && op.scope() <= 0) { return "Bond root requires an explicit scope"; }
+        if (!owned && op.scope() != 0) { return "Bond view has no independent owner scope"; }
+        return "";
+    }
+}

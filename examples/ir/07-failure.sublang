@@ -4,8 +4,19 @@ type 1 Void Void
 type 2 Bool Bool width=1 signed=false
 type 3 Int Int width=64 signed=true
 type 4 Float Float width=64 signed=false
-failure 1 example.invalid_input
-func 1 requireNonNegative(v1 x:Int@value) -> Int methodOf=0 span=1
+profile 1 sublang.startup version=1 integer=i64-signed float=f64-ieee-rne failure=abort unwinding=none startup=true
+effect 1 conservative facts=9 span=0
+  fact allocation unknown provenance=assumed-conservative detail= proof=
+  fact escape unknown provenance=assumed-conservative detail= proof=
+  fact failure unknown provenance=assumed-conservative detail= proof=
+  fact exceptions unknown provenance=assumed-conservative detail= proof=
+  fact memory-read unknown provenance=assumed-conservative detail= proof=
+  fact memory-write unknown provenance=assumed-conservative detail= proof=
+  fact synchronization unknown provenance=assumed-conservative detail= proof=
+  fact observable unknown provenance=assumed-conservative detail= proof=
+  fact control unknown provenance=assumed-conservative detail= proof=
+failure 1 example.invalid_input behavior=abort binding=unbound signature=noreturn_void() continues=false unwinding=none span=0
+func 1 requireNonNegative(v1 x:Int@value) -> Int methodOf=0 profile=1 effects=1 linkage=internal definition=body span=1
   block 1 params=[]
     v2:Int = const.int value=0 span=1
     v3:Bool = compare v1@value, v2@value predicate=lt span=1

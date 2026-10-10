@@ -1,0 +1,29 @@
+namespace sublang::backend;
+
+// An immutable lowering result. This readiness applies only to the closed LLVM slice;
+// it does not upgrade the generic verifier's unproved lifetime/effect status.
+public class SublangCompilation {
+    private String llvmText;
+    private String failureText;
+    private String memoryExplanation;
+
+    public SublangCompilation(String llvm, String failure, String explanation) {
+        this.llvmText = llvm + "";
+        this.failureText = failure + "";
+        this.memoryExplanation = explanation + "";
+    }
+
+    public Bool codegenReady() {
+        return this.failureText == "" && this.llvmText != "";
+    }
+
+    public String llvm() {
+        return this.llvmText;
+    }
+
+    public String explainMemory() { return this.memoryExplanation; }
+
+    public String error() {
+        return this.failureText;
+    }
+}

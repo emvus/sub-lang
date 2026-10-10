@@ -1,0 +1,64 @@
+namespace sublang::semantics;
+
+// FailureAction record: what a failure id means. Behavior, binding, signature and
+// unwinding are part of the record, not only a name. Only "abort" is supported in
+// A.1; the binding "unbound" states that no runtime provider is attached yet. The span
+// names the declaration that introduced the record.
+public class SublangFailureAction {
+    private Int failureIdValue;
+    private String nameText;
+    private String behaviorText;
+    private String bindingText;
+    private String signatureText;
+    private Bool continuesFlag;
+    private String unwindingText;
+    private Int spanIdValue;
+
+    public SublangFailureAction(Int id, String name, String behavior, String binding, String signature, Bool continues, String unwinding, Int span) {
+        this.failureIdValue = id;
+        this.nameText = name + "";
+        this.behaviorText = behavior + "";
+        this.bindingText = binding + "";
+        this.signatureText = signature + "";
+        this.continuesFlag = continues;
+        this.unwindingText = unwinding + "";
+        this.spanIdValue = span;
+    }
+
+    public Int id() {
+        return this.failureIdValue;
+    }
+
+    public String name() {
+        return this.nameText;
+    }
+
+    public String behavior() {
+        return this.behaviorText;
+    }
+
+    public String binding() {
+        return this.bindingText;
+    }
+
+    public String signature() {
+        return this.signatureText;
+    }
+
+    public Bool continues() {
+        return this.continuesFlag;
+    }
+
+    public String unwinding() {
+        return this.unwindingText;
+    }
+
+    public Int span() {
+        return this.spanIdValue;
+    }
+
+    // A record is complete only when it names a binding and a signature.
+    public Bool isComplete() {
+        return this.bindingText != "" && this.signatureText != "";
+    }
+}

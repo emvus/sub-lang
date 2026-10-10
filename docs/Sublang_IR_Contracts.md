@@ -1,136 +1,145 @@
-# Sublang IR Contracts — Zielvertrag v0.4
+# Sublang IR contracts — architecture v0.4
 
-Status: verbindliche Architekturvorgabe, noch kein implementiertes öffentliches Schema oder ABI. Ergänzt `Sublang_Technical_Overview.md` und die bisherigen Verträge. Die derzeitige schema=1-IR ist ein begrenztes Builder-Modell; `.sublang` bleibt ein Dump. Implementierung und tatsächliche Abnahme werden getrennt gemeldet.
+This is the required architecture, **not a claim that every contract below is implemented**. The executable development boundary is documented in the [IR guide](Sublang_IR_Guide.md), [Wire contract](Sublang_Wire.md) and [HyperAlloc IR](HyperAlloc_IR.md). Architecture v0.4, IR schema 1 and Wire transport v2 are independent versions.
 
-Dynamisch typisierte Sprachen sind jetzt ein verpflichtender Integrationsfall. Sie erhalten dieselben Core-, Effekt-, Alias-, Speicher- und Verifikationsverträge wie statische Sprachen, ergänzt durch explizite Dynamic-Operationen. LLVM bleibt das finale Backend. Ein JIT ist dafür nicht erforderlich.
+Dynamically typed languages are an active integration requirement. They use the same Core, effect, alias, memory and verification contracts, supplemented by explicit Dynamic operations. LLVM remains the final backend; AOT does not require a JIT.
 
-## 1. Effekte als erstklassige Eigenschaften
+## 1. First-class effects
 
-Funktionen, Call-Sites und effektbehaftete Operationen referenzieren typisierte, versionierte EffectSummary-Datensätze. Der Operand-Modus `borrow_read` beschreibt Zugriff auf einen Wert und ersetzt keinen Effektvertrag.
+Functions, calls and effectful operations reference typed, versioned EffectSummary records. A borrow_read operand mode specifies access to a value; it does not replace a complete effect contract.
 
-Ein Summary modelliert mindestens:
-
-| Bereich | Bedeutung |
+| Area | Required meaning |
 | --- | --- |
-| allocation | mayAllocate, einschließlich potentieller GC-Safepoints |
-| escape | mayEscape pro Argument, Resultat, Capture und global erreichbarem Ziel |
-| failure | mayFail und konkrete FailureActions; abort bleibt beobachtbar |
-| exceptions | mayThrow, zulässige Exception-Mengen oder unknown, Unwind-Vertrag |
-| memory | Reads/Writes als Location-/Region-Mengen, einschließlich globals, runtime und unknown |
-| synchronization | Atomics, Locks, Fences, Thread-/Task-Effekte und MemoryOrder oder unknown |
-| observable | I/O, volatile Zugriffe, Finalizer-/Runtime-Effekte oder unknown |
-| control | mayDiverge, returnsNormally, noreturn nur mit gültigem Nachweis |
+| allocation | Allocation/deallocation effects |
+| escape | Argument/result/capture escapes and globally reachable destinations |
+| failure | Observable failures and concrete FailureActions |
+| exceptions | MayThrow, supported exception sets/unknown and unwind behavior |
+| memory | Read/write location/region sets, including globals/runtime/unknown |
+| synchronization | Atomics, locks, fences, tasks/threads and memory orders |
+| observable | I/O, volatile access, finalizer/runtime effects or unknown |
+| control | Divergence, normal return and proved nonreturning behavior |
 
-Jedes Feld kann unknown ausdrücken. Ein fehlendes Feld bedeutet niemals „nein“. read/write=unknown aliasiert potentiell jede kompatible erreichbare Location. Allocation ist kein Synonym für Escape; Synchronisation ist kein gewöhnlicher Field-Write. Eine reine Signatur belegt weder Terminierung noch freie Verschiebbarkeit eines Calls.
+Every area can be unknown. Missing information never means no effect. Unknown reads/writes may alias compatible reachable memory. Allocation is not escape; synchronization is not an ordinary field write. A signature does not establish termination or call reorderability.
 
-### Herkunft und Vertrauen
+### Provenance and trust
 
-- **Declared:** Frontend-/Provider-Vertrag, mit Herkunft und Vertrauensstatus. Ein ungeprüfter Hinweis ist keine Optimierungsgarantie. Ein explizit vertrauter externer ABI-Vertrag kann eine Garantie sein; dessen Lieferant trägt die semantische Verantwortung.
-- **AssumedConservative:** Sounde Obergrenze bei fehlenden Fakten, typischerweise unknown/top. Keine spekulative Annahme „wird schon nicht allokieren“. Optimistische Annahmen benötigen einen unterstützten Guard/Fallback; dieser gehört nicht zum ersten AOT-Umfang.
-- **Proven:** Analyseergebnis mit Pass-/Analyse-ID, EntityKey, Modulrevision, Voraussetzungen und Abhängigkeiten.
+- **Declared:** frontend/provider contract with origin and trust status. An unchecked hint is not a proof. An explicitly trusted external ABI contract transfers semantic responsibility to its provider.
+- **AssumedConservative:** a sound upper bound, usually unknown/top. Optimistic assumptions need supported guards/fallbacks, outside the initial AOT boundary.
+- **Proven:** analysis result with analysis/pass identity, entity, revision, prerequisites and dependencies.
 
-Die Herkunft wird pro Fakt gespeichert, weil ein Summary beispielsweise bewiesene Reads und unbekanntes Escape kombinieren kann. Deklaration und Beweis dürfen voneinander abweichen; dann wird eine widersprüchliche Definition diagnostiziert, nicht die günstigere Angabe ausgewählt. Das wirksame Summary referenziert seine Fakten und ist eine sichere Obergrenze aller möglichen Ziele und Effekte.
+Provenance is per fact: proved reads can coexist with unknown escape. Contradictions require diagnosis rather than selecting the more profitable fact. The effective summary safely bounds all possible targets/effects.
 
-Interprozedurale Analyse vereinigt die Effekte aller möglichen Dispatch-Ziele. Rekursive Callgraph-Komponenten benötigen einen Fixpunkt. Bei offenen Zielmengen bleiben konservative Rest-Effekte. noescape allein erlaubt weder noalias, readonly, nounwind, nosync noch memory(none). LLVM-Attribute entstehen erst aus dafür hinreichenden wirksamen Verträgen.
+Interprocedural analysis joins all dispatch targets, computes recursive SCC fixpoints and keeps conservative residual effects for open targets. noescape does not imply noalias, readonly, nounwind, nosync or memory(none). LLVM attributes require sufficient effective guarantees.
 
-## 2. Gemeinsame Alias-Abstraktion
+## 2. Shared alias abstraction
 
-LocationId beschreibt logischen Speicher: globale Variable, Allokationsstelle/Objekt, Feldpfad, Container-Speicher, Argumentregion, Runtime oder UnknownLocation. Logische Locations sind unabhängig von physischen Offsets des späteren MemoryPlan. Physische Pointer-Provenienz kommt beim Lowering hinzu.
+LocationId denotes logical storage: globals, allocation sites/objects, field paths, container storage, argument regions, runtime or unknown. It is independent of later physical offsets. Lowering adds pointer provenance.
 
-AliasQuery liefert NoAlias, MayAlias oder MustAlias, jeweils mit Herkunft, Revision und Voraussetzungen. Fehlende Information liefert MayAlias. Ein Argumentpaar ist nicht allein aufgrund verschiedener SSA-IDs oder borrow_read disjunkt. Field-Sensitivity benötigt einen passenden Layout-/Objektvertrag; unsichere Pointer, FFI und Reflection können Fakten vergröbern.
+Alias queries return NoAlias, MayAlias or MustAlias with origin/revision/prerequisites. Missing facts mean MayAlias. Distinct SSA IDs and borrow_read do not establish disjointness. Field sensitivity needs matching layout/object contracts; unsafe pointers, FFI and reflection may weaken facts.
 
-Reads/Writes, Escape-Kanten, Borrow-Ursprung, invalidierende Container-Operationen und GC-Bewegung verwenden dieselben Location-Bezüge. Eine sichere Borrow-Ansicht braucht Owner-, Bereichs- und Invalidierungsabhängigkeiten, nicht nur einen Scope-Namen. Effekte bilden Abhängigkeiten für Call-/Load-/Store-Verschiebungen; mutierende Pässe müssen diese Beziehungen erhalten oder die zuständige Analyse neu ausführen. Ein MemorySSA- oder Token-Modell kann die Umsetzung liefern; seine genaue Repräsentation ist kein bereits verfügbares API-Versprechen.
+Reads/writes, escapes, borrow origins, invalidating container operations and frees share location references. Views need owner/range/invalidation dependencies, not just a scope name. Transformations preserve those dependencies or invalidate/recompute their analyses. MemorySSA/tokens are possible implementation choices, not an existing API promise.
 
-## 3. Lexikalische Scopes, Lifetime und Ownership
+## 3. Scopes, lifetime and ownership
 
-`scope.begin/end` beschreibt eine lexikalische Grenze oder einen Kandidaten für Cleanup. Daraus folgen weder automatisch Objektfreigabe noch Nicht-Escape oder vollständige Initialisierung.
+scope.begin/end describes lexical boundaries or cleanup candidates. It does not by itself prove nonescape, initialization or object death.
 
-Gesonderte Analysen prüfen Initialisierung, Ownership-Zustände, Transfers, Borrows und Invalidierung, tatsächliche Referenz-Liveness, Escapes und Cleanup-Pfade. Objekt-, Borrow-, Stack- und Region-Lebensdauern werden getrennt modelliert. SSA-Liveness allein ist kein Beweis für unerreichbare Objektgraphen.
+Separate analyses track initialization, ownership state, transfers, borrows/invalidation, actual reference liveness, escapes and cleanup paths. Object, borrow, stack and region lifetimes are distinct. SSA liveness alone does not prove graph unreachability.
 
-Ein MemoryPlan darf erst nach diesen Prüfungen Stack-Lifetime, Drop, Pool-Reuse, Regionsfreigabe oder GC-Roots konkretisieren. Ein Borrow auf ein Container-Element kann durch Reallocation/Mutation invalidiert werden, obwohl der lexikalische Scope weiterbesteht. Umgekehrt kann ein entkommenes owned Objekt seinen Ursprungsscope überleben, wenn ein gültiger Transfer/Provider-Vertrag besteht.
+Only validated facts authorize stack placement, drop, reuse or region release. Reallocation can invalidate a view while its lexical scope remains active. Conversely, a correctly transferred owned object can outlive its origin scope.
 
-## 4. Fehler, Exceptions und vollständiger CFG
+## 4. Failures, exceptions and complete control flow
 
-FailureAction beschreibt Verhalten, Payload, Runtime-Bindung, ABI und Kontrollfluss. Anfangs unterstütztes abort und späteres throw sind verschiedene Verhaltensweisen; throw darf niemals still als abort abgesenkt werden.
+FailureAction describes behavior, payload, runtime binding, ABI and control flow. Abort and throw are distinct; requested throw must never silently lower to abort.
 
-- Abort/Trap: expliziter nicht zurückkehrender Fehlerpfad. Ob Cleanup vor Prozessende beobachtbar erforderlich ist, legt das Profil fest.
-- Throw: Exception-Payload plus explizite Unwind-Kante. Throwing Calls werden als `invoke` mit normalem und exceptional Nachfolger modelliert; der normale Ergebniswert ist nur auf der normalen Kante definiert.
-- Throwing checked-Arithmetik: explizite Fehlerkante oder checked-invoke-Form. Kein unsichtbares Unwinding hinter einem gewöhnlichen `int.add` ohne CFG-Vertrag.
-- Catch: typisierte Exception-Filter, Bindung und ggf. Wiederwurf. Ein blockübergreifender Exception-Token trägt Herkunft/Runtime-Vertrag und nötige GC-Sichtbarkeit.
-- Cleanup/finally: auf allen vorgeschriebenen normalen und exceptional Ausgängen genau die erforderlichen Aktionen. Reihenfolge, erneute Exceptions und Suppression bestimmt das Sprachprofil.
-- Resume: unwinding fortsetzen; kein gewöhnlicher Return. Relevante borrowed/owned Werte bleiben bis zu ihrem korrekten Cleanup gültig.
+- **Abort/trap:** explicit nonreturning path. The profile determines whether observable cleanup is required before termination.
+- **Throw:** owned exception payload and explicit unwind edge. Invoke has normal/exceptional successors; its normal result exists only on the normal edge.
+- **Throwing checked arithmetic:** explicit failure edge or checked-invoke contract, not hidden unwinding behind ordinary arithmetic.
+- **Catch:** typed filters/binding/rethrow, with a token preserving exception provenance/runtime/ownership.
+- **Cleanup/finally:** exactly the required actions on every relevant exit, in language-defined order, including secondary exceptions/suppression.
+- **Resume:** continue unwinding rather than return; values survive until their required cleanup.
 
-Unwind-ABI, Personality und LLVM-EH-Modell sind Target-/Runtime-Verträge. Die Low IR konkretisiert landingpad/resume oder funclet-basierte Umsetzung. Profile mit Exceptions bleiben bis zur tatsächlichen Unterstützung explizit unsupported; der erste abort-only Pfad bleibt zulässig und begrenzt.
+Unwind ABI, personality and LLVM EH model belong to target/runtime contracts. Low IR chooses landingpad/resume or funclets. Exception profiles remain unsupported until actually implemented; the bounded abort-only path remains valid.
 
-## 5. Pass-Verträge und Validierung
+## 5. Pass contracts and validation
 
-Jeder Pass deklariert benötigte Extensions/Versionen, Eingangsstufe, Vorbedingungen, Analysen, semantische Veränderungen (normalerweise keine), Ausgangsstufe und invalidierte/erhaltene Ergebnisse.
+Each pass declares required extensions/versions, input/output stages, preconditions, analyses, semantic changes and preserved/invalidated results.
 
-Getrennte Prüfdimensionen:
+Verification dimensions:
 
-1. **Struktur:** IDs, Typreferenzen, SSA/Dominanz, Terminatoren, normaler und exceptional CFG, Kantenargumente.
-2. **Semantik:** Profil-/Operation-Kompatibilität, Integer-/FP-Regeln, Effektverträge, Failure-/Exception-Verhalten, Extension-/ABI-Verträge.
-3. **Memory/Lifetime:** Initialisierung, Ownership, Aliasing/Borrows, Cleanup, Roots/Barriers/Safepoints, Layout-/Provider-Gültigkeit.
+1. **Structural:** IDs/references, SSA/dominance, terminators, normal/exceptional CFG and edge arguments.
+2. **Semantic:** profile/operation compatibility, arithmetic/FP, effects, failure/EH and extension/ABI contracts.
+3. **Memory/lifetime:** initialization, ownership, borrows/aliases, cleanup and provider/layout invariants.
 
-Status pro Dimension: valid, invalid, not_checked oder not_applicable mit begründeter Feature-Abdeckung. Kein implizites „valid“ bei ausgelassenem Prüfer. codegenReady ist nur wahr, wenn alle für akzeptierte Features und Ziel/Provider notwendigen Prüfungen gültig sind.
+Statuses are valid, invalid, not_checked or not_applicable with feature coverage. Skipped validation never implicitly means valid. codegenReady requires all necessary checks for the accepted features/target/provider.
 
-Jeder Pass erzeugt einen neuen Snapshot beziehungsweise eine kontrolliert versionierte Mutation; Analysen beziehen sich auf genau diesen Stand. Nach jedem Transformationspass muss der Passmanager gültige Ausgangs-IR sicherstellen: strukturelle Prüfung, Überprüfung passrelevanter semantischer/Memory-Invarianten und nachvollziehbare Erhaltung unveränderter gültiger Ergebnisse. Wo kein sounder Erhaltungs-/Inkrementalvertrag besteht, wird neu geprüft. Vor sicherheitskritischem Lowering und Codegen erfolgt die vollständige für den gewählten Umfang notwendige Prüfung. Keine vollständige Testsuite pro Passlauf nötig.
+Transforming passes produce new snapshots or controlled versioned mutations. Analyses bind to that exact state. After transformation the manager validates structure and relevant semantic/memory invariants, retaining prior results only through a sound preservation/incremental contract. Safety-critical lowering/codegen requires full validation for the selected subset.
 
-Pass-Validierung beweist nicht automatisch Äquivalenz beliebiger Programme. Transformationskorrektheit braucht einen passenden Passvertrag und Implementierungsevidenz; ein Verifier allein erkennt nicht jede falsche Konstantenfaltung. Erforderliche zusätzliche Regressionen bleiben klein und zielgerichtet.
+Validation does not prove arbitrary program equivalence or detect every incorrect fold. Pass correctness needs implementation evidence and small focused regressions; no full test suite is required per pass invocation.
 
-## 6. Explain und Debug als gemeinsame Schnittstelle
+## 6. Explain and debugging
 
-Diagnosen und Optimierungsentscheidungen sind strukturierte Datensätze, keine ausschließlich frei formulierten Logs. DecisionId/DiagnosticCode, Severity, EntityKey, SourceSpan, Pass/Analyse, Revision, angeforderte/effektive Strategie, Provider sowie Beweis-/Blocker-Bezüge sind maschinenlesbar.
+Diagnostics/decisions should be structured records containing codes, severity, entity/source span, pass/analysis, revision, requested/effective strategy, provider and proof/blocker links.
 
-Beispiel: `FLOW-LOCAL-ESCAPE-UNKNOWN` für `%point`, blockiert durch Call `@plugin.apply`, dessen effektives Escape-Summary argument0=unknown aus konservativer Herkunft trägt. Ein Alias-Blocker nennt beide Locations, die MayAlias-Kante und deren Ursprung. Die Erklärung nennt die gewählte korrekte Alternative; sie suggeriert keine automatische Kopie oder sichere noescape-Annotation.
+For example FLOW-LOCAL-ESCAPE-UNKNOWN should identify the blocked object and the call whose effective escape is conservatively unknown. Alias blockers name both locations and their origin. Explain reports the safe alternative; it does not imply that adding an unchecked noescape hint makes the optimization safe.
 
-Explain unterscheidet „Optimierung ausgelassen“ von „benötigte Sprachsemantik nicht unterstützt“. Textansicht und binäre Antwort verwenden dieselben Datensätze. Normalbetrieb sammelt nur kompakte Entscheidungen; ausführliche Beweisgraphen und IR-vorher/nachher-Snapshots sind optional, damit Explain nicht selbst zu einer großen RAM-Quelle wird. Ein Explain-Eintrag ist kein Ersatz für den tatsächlichen Beweis.
+Distinguish skipped optimization from unsupported required semantics. Text/protocol views should share records. Compact normal reporting and optional bounded proof graphs/snapshots avoid turning Explain into a memory problem. An explanation is not the proof itself.
 
-## 7. Binäres Produkt, Wire-IR und öffentliche API
+## 7. Binary product, Wire and public API
 
-Sublang als ausführbare Binary, binär serialisierte IR und eine native Bibliotheks-ABI sind verschiedene Schnittstellen. Für die erste sprachübergreifende öffentliche Integration wird ein versioniertes Prozessprotokoll festgelegt; interne Emerald-Klassen/Objektlayouts werden nicht als öffentliche ABI exportiert. Eine spätere native C-ABI wird separat versioniert, mit opaken Handles und eindeutigem Ownership für Ergebnisse/Fehler, ohne öffentliche interne Struct-Layouts.
+**Implemented:** the standalone executable reads bounded Wire v2, including v1 core compatibility, and emits LLVM plus a memory plan. The sandbox launcher verifies/optimizes/links without an Emerald toolchain mount after bootstrap. See [Wire](Sublang_Wire.md).
 
-### Prozessprotokoll, erster Entwurf
+**Planned broader protocol:**
 
-1. Hello/Capabilities: Protokoll-Major/Minor, lesbare/schreibbare Schema-Versionen, unterstützte High-/Low-Stufen, Extensions mit Versionen, Passes, Targets und Provider-Fähigkeiten.
-2. Submit: RequestId, immutable Module-Snapshot, Target-/Provider-Auswahl, SemanticProfiles und Pipeline-Optionen.
-3. Result: akzeptierter/effektiver Vertrag, neue Snapshot-/Revisions-IDs, Prüfergebnisse, Diagnosen, Explain-Entscheidungen und angeforderte Ausgabeartefakte.
+1. Hello/Capabilities: protocol/schema versions, High/Low stages, versioned extensions, passes, targets and providers.
+2. Submit: request ID, immutable snapshot, target/provider, semantic profiles and options.
+3. Result: accepted/effective contract, snapshot/revision IDs, verdicts, diagnostics, decisions and requested artifacts.
 
-Unbekannte erforderliche Features oder inkompatibles Major-Schema werden vor Optimierung abgelehnt. Optionale nichtsemantische Metadaten dürfen nur entsprechend ausgehandelter Regeln übersprungen werden. Pflichtoperationen nie ignorieren; Extension-Pässe brauchen Verständnis oder einen gültigen Erhaltungsvertrag. Kein stilles Downgrade auf andere Sprachregeln oder Speichermodi.
+Reject unknown required features/incompatible versions before optimization. Skip optional nonsemantic metadata only under defined negotiation rules. Never ignore required operations or silently downgrade semantics/memory modes.
 
-### Anforderungen an die Wire-Repräsentation
+An executable process, serialized IR and native library ABI are separate interfaces. Do not expose internal Emerald layouts. A later C ABI needs separate versions, opaque handles and explicit result/error ownership.
 
-- Eigenständige Wire-Version und IR-Schema-Version; keine Gleichsetzung mit Architektur v0.4.
-- Magic, feste Byteordnung und integer-/length-kodierte Frames/Sections; genaue Feldnummern und Encoding folgen mit A.2, vor Veröffentlichung. Keine native Struct-Serialisierung.
-- IDs und Referenzen mit eindeutigem Modul-/Funktionsbereich, Snapshot und Revision; stabil im Snapshot, Remapping bei Transformation explizit. Keine Prozessadressen.
-- Bitgenaue Integer-/FP-Konstanten, String-/Byte-Längen, Typen, Source-Spans, Extensions und Profile.
-- Grenzen für Frame-/Tabellengrößen, definierte Fehler bei unvollständigem Input, Request-Lebenszyklus und klarer Besitz der Resultatdaten; keine unbegrenzte Materialisierung des Moduls.
-- Semantisch deterministischer Export bei gleichem Snapshot. Dump-Ausgabe ist eine getrennte menschenlesbare Darstellung und kein Wire-Vertrag.
+Wire requirements include separate transport/schema versions, magic/framing, scoped stable IDs, explicit transformation remapping, raw numeric/FP constants, byte lengths, source metadata, bounded counts and deterministic export. No process pointers or native struct serialization.
 
-Noch kein öffentliches Versionskompatibilitätsversprechen: Erst ein implementierter Reader/Writer mit Negotiation und festem Encoding bildet eine veröffentlichbare Schnittstelle. Die vorhandenen Builder-Beispiele bleiben unverändert schema=1-Dumps.
+The current netstring encoding is experimental, not a permanent compatibility commitment or a complete RPC service. Human-readable .sublang files remain dumps; actual serialized input uses .sublang-wire.
 
-## 8. Dynamisch typisierte Sprachen: verbindlicher Integrationsfall
+## 8. Dynamic AOT integration
 
-Ein statisch typisierter IR-Kern schließt dynamische Sprachen nicht aus: `DynamicValue` ist ein IR-Typ mit Tags/Repräsentationsvertrag, dessen Laufzeitinhalt erst zur Ausführung bekannt ist. AOT nach LLVM ist der erste Zielpfad; JIT/Deoptimierung ist separat.
+A statically typed IR can model DynamicValue with tags and representation contracts whose payload is determined at runtime. Initial integration is AOT/LLVM; JIT/deoptimization is separate.
 
-Die Dynamic-Erweiterung modelliert mindestens Tags, Tests, geprüfte Unbox/Box, dynamischen Dispatch, Property-/Index-Zugriffe, Closures/Captures und Runtime-Fallbacks. Numeric-Promotion, Overflow, Equality, Truthiness, String-/Property-Regeln und Fehlerverhalten kommen aus einem versionierten Sprachprofil. Es gibt keine universelle „Python/JS-Semantik“ im Core.
+The Dynamic extension needs tags/tests, checked box/unbox, dynamic calls, properties/indices, captures/closures and runtime fallbacks. Promotion, overflow, equality, truthiness, strings/properties and failure semantics come from a versioned language profile. There is no universal Python/JavaScript contract.
 
-Heap-/Immediate-Repräsentation, bewegliche Referenzen, Roots und mögliche Safepoints sind explizit. Ein dyn-Wert ist nicht automatisch pointerfrei oder NoAlias. Dynamische Property-Zugriffe können Getter/Proxies/Usercode ausführen; ihre Effekte bleiben ohne Nachweis unknown. Shape-Spezialisierungen benötigen Guards, Mutation-/Invalidierungsverträge und den korrekten langsamen Pfad. Reflection/eval/FFI werden als konkrete Fähigkeiten angegeben; fehlende Pflichtfähigkeiten führen zur Diagnose.
+Immediate/heap representation and ownership must be explicit. The initial dynamic runtime uses nonmoving storage and defined releases. Dynamic values are not automatically pointer-free/NoAlias. Property access may execute user code; absent proof, effects remain unknown. Shape specialization needs guards/invalidation and a correct slow path.
 
-### Erster realer Dynamic-Slice nach der kleinen statischen LLVM-Strecke
+### First actual slice
 
-Ein kleines AOT-Frontend mit dokumentierter Teilmenge liefert dynamische Werte und denselben Sublang-Core: i64 und f64 sowie einen heapfähigen String-Wert, Type Tests, dynamische Addition mit definierten Promotions-/Fehlerregeln und Runtime-Fallback, einen dynamischen Property-/Index-Zugriff und einen Closure-Call. Das konkrete Minisprachprofil wird vor Implementierung festgelegt; es gibt keine Behauptung vollständiger JS-/Python-Kompatibilität.
+Specify a small language subset supporting i64/f64, a genuinely heap-backed string value, type tests, dynamic addition with defined promotion/failure/fallback, a property/index operation and a closure call.
 
-Der Slice muss auch einen tatsächlich heapfähigen dyn-Wert über einen möglicherweise allokierenden Call hinweg korrekt erhalten. Ein reiner Tagged-Int-Demo beweist keine GC-/Lifetime-Integration. Zusätzlich wird mindestens ein Effekt-/Alias-Blocker sichtbar erklärt. Mit einem zunächst nicht bewegenden Provider wird keine bewegende-GC-Unterstützung behauptet; deren Root-Relocation ist ein eigener Provider-Abnahmepunkt.
+Preserve a heap value across an allocating call and release it correctly. Tagged-integer-only demonstrations do not establish heap/lifetime safety. Expose at least one effect/alias blocker in Explain. No complete Python/JS compatibility is claimed.
 
-Ein vorhandener GC kann über Integration bleiben. Flow Managed wird nur angeboten, wenn der konkrete Provider die benötigte Sharing-/Cycle-/Finalizer-/Weak-/Thread-Semantik vollständig abdeckt. Dynamische Typisierung allein verlangt keinen universellen Collector, erlaubt aber auch kein Weglassen dieser Semantik.
+Foreign GC integration and the earlier hyperalloc-integration mode are [archived](../archive/gc-integration/readme.md). Dynamic typing stays active. Sharing, weak refs, finalizers and threads require actual runtime coverage before admission.
 
-## 9. Umsetzungsetappen und Abnahme
+## 9. Implementation stages
 
-- **A.1 ergänzen:** erstklassige EffectSummary-/Provenance- und Alias-/Location-Datensätze mit konservativen Defaults, getrennte Prüfdimensionen und gemeinsame Diagnose-/Explain-Referenzen. Noch keine umfassende interprozedurale Beweisanalyse behaupten.
-- **A.2:** versionierter Passmanager-/Snapshot-Vertrag und feste Wire-Spezifikation, minimaler Reader/Writer mit Capability-Negotiation und begrenzten Roundtrips. Keine LLVM- oder GC-ABI aus zufälligen Emerald-Layouts ableiten.
-- **B:** kleine statische LLVM-Strecke zunächst ohne Unwinding und ohne nicht unterstützte Dynamic-Features; korrekte Basispipeline auch ohne Flow.
-- **B.1 Dynamic:** den beschriebenen tatsächlichen AOT-Dynamic-Slice einbinden, anschließend passweise erweitern. Jetzt verbindliches Ziel, nicht als unbegrenzte zukünftige Option verschieben.
-- **EH/Provider-Ausbau:** explizite Exception-CFGs und Cleanup-Modell implementieren, dann passenden LLVM-EH-Adapter und Runtime-Abdeckung abnehmen. Sprachen, die Exceptions verlangen, bleiben bis dahin unsupported.
+- **A.1:** effect provenance, locations/aliases, conservative defaults, distinct verification dimensions and diagnostic references.
+- **A.2:** versioned snapshots/pass manager, fixed transport specification, capabilities and bounded roundtrips.
+- **B:** bounded static LLVM path with a correct Flow-off baseline.
+- **B.1:** real Dynamic AOT integration as described above.
+- **EH/providers:** exception CFG/cleanup, LLVM EH and runtime coverage before admitting exception-dependent languages.
 
-Pro neuer Grenze nur aussagekräftige gebündelte Prüfungen. Keine neue große Benchmark-Serie. Jeder Compiler-/Selfhost-Lauf bleibt in einer Sandbox mit maximal 8 GB RAM, bevorzugt 6 GB ohne Swap. Diese Vertragsaktualisierung führt selbst keinen Compiler aus und meldet keine neue implementierte Funktion.
+The [roadmap](Roadmap.md) tracks the current remaining work. Compiler/program execution stays sandboxed at at most 8 GB, preferably the existing 6 GB/no-swap setup. Keep checks meaningful and bundled.
+
+## Existing safety boundaries
+
+Freeze seals types/functions/blocks/operations/summaries. Collection inputs are copied; getters return defensive copies; hot paths use Count/At access. Abort actions require noreturn void().
+
+SublangProofReference is immutable metadata with analysis identity, module revision and location dependencies. Location IDs cannot be transferred between modules. Fact reference validation does not prove the claimed effect/alias property. Imported NoAlias/MustAlias facts do not authorize optimization without an actual analysis checker; identical valid locations intrinsically MustAlias. General entity dependencies/revision invalidation remain open.
+
+## Executable native extension
+
+All eight Flow families have native paths including cycles, Inline lists, Static strings and nested dependent regions. The compilation-local memory plan controls placement. Native lifetime checking proves the documented closed subset through CFG fixpoints and body-checked borrows; generic universal effect/lifetime validation remains incomplete.
+
+Owned return encodes return with an owned operand. Owned calls encode resultOwnership and destination scope. The native gate checks liveness/initialization, rejects moving borrowed references, invalidates consumed arguments and diagnoses aliases. Returning an owner transfers it and cleans up remaining owners. Owned parameters are released on normal return unless transferred onward.
+
+Exclusive Ref fields consume children on init/write; replacement drops the prior subtree. Clear stores initialized-empty, has checks occupancy, take moves ownership and leaves the parent field logically uninitialized. Clear/refill is required before complete-parent calls/returns. Empty take aborts; ordinary field.read does not create reference aliases. See [HyperAlloc IR](HyperAlloc_IR.md) and [Native Slice](Sublang_Native_Slice.md).
+
+C remains a separate Clang/LLVM entry retaining C ABI/memory semantics; no High-IR ownership import is implemented. See [C support](Sublang_C_Support.md).

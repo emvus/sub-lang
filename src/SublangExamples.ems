@@ -1,193 +1,199 @@
 use sublang::analysis::SublangVerification;
 use sublang::analysis::SublangVerifier;
 use sublang::ir::SublangBuilder;
-use sublang::ir::SublangDump;
+use sublang::dump::SublangDump;
 use sublang::ir::SublangModule;
 use Std::Process::Process;
 
 // Standalone examples of the CURRENT API. Not imported by production Main.
 // Build/run only through scripts/sublang-examples-sandbox.sh (6 GB, no swap).
 public class SublangExamples {
-    public static List<Int> one(Int a) {
+    public static List<Int> one(Int value) {
         List<Int> values = List();
-        values.add(a);
+        values.add(value);
         return values;
     }
 
-    public static List<Int> two(Int a, Int b) {
+    public static List<Int> two(Int left, Int right) {
         List<Int> values = List();
-        values.add(a);
-        values.add(b);
+        values.add(left);
+        values.add(right);
         return values;
     }
 
-    // A direct call and checked signed i64 addition. Semantic result: 42.
+    // Semantic result: 42.
     public static SublangModule arithmetic() {
-        SublangBuilder b = SublangBuilder("01-arithmetic");
-        Int s = b.syntheticSpan("example:arithmetic");
-        Int failure = b.failure("example.integer_failure");
-        Int add = b.beginFunction("add", b.intType(), 0, s);
-        Int x = b.addParam("x", b.intType(), "value", false);
-        Int y = b.addParam("y", b.intType(), "value", false);
-        b.beginBlock();
-        Int sum = b.intBinary("int.add", x, y, "trap", failure, s);
-        b.returnValue(sum, s);
-        Int mainFn = b.beginFunction("main", b.intType(), 0, s);
-        b.beginBlock();
-        Int a = b.constInt(20, s);
-        Int c = b.constInt(22, s);
+        SublangBuilder builder = SublangBuilder("01-arithmetic");
+        Int span = builder.syntheticSpan("example:arithmetic");
+        Int failure = builder.failure("example.integer_failure");
+        Int add = builder.beginFunction("add", builder.intType(), 0, span);
+        Int left = builder.addParam("x", builder.intType(), "value", false);
+        Int right = builder.addParam("y", builder.intType(), "value", false);
+        builder.beginBlock();
+        Int sum = builder.ops().intBinary("int.add", left, right, "trap", failure, span);
+        builder.ops().returnValue(sum, span);
+        Int mainFn = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.beginBlock();
+        Int leftArgument = builder.ops().constInt(20, span);
+        Int rightArgument = builder.ops().constInt(22, span);
         List<String> modes = List();
         modes.add("value");
         modes.add("value");
-        Int result = b.callDirect(add, SublangExamples.two(a, c), modes, s);
-        b.returnValue(result, s);
-        b.module().setEntry(mainFn);
-        return b.module();
+        Int result = builder.ops().callDirect(add, SublangExamples.two(leftArgument, rightArgument), modes, span);
+        builder.ops().returnValue(result, span);
+        builder.module().setEntry(mainFn);
+        return builder.module();
     }
 
     // max(a,b), merged through a block parameter instead of mutable locals.
     public static SublangModule branch() {
-        SublangBuilder b = SublangBuilder("02-branch");
-        Int s = b.syntheticSpan("example:branch");
-        Int fn = b.beginFunction("max", b.intType(), 0, s);
-        Int a = b.addParam("a", b.intType(), "value", false);
-        Int c = b.addParam("b", b.intType(), "value", false);
-        b.beginBlock();
-        Int yes = b.newBlock();
-        Int no = b.newBlock();
-        Int merge = b.newBlock();
-        Int condition = b.compare("gt", a, c, s);
+        SublangBuilder builder = SublangBuilder("02-branch");
+        Int span = builder.syntheticSpan("example:branch");
+        Int fn = builder.beginFunction("max", builder.intType(), 0, span);
+        Int left = builder.addParam("a", builder.intType(), "value", false);
+        Int right = builder.addParam("b", builder.intType(), "value", false);
+        builder.beginBlock();
+        Int yes = builder.newBlock();
+        Int no = builder.newBlock();
+        Int merge = builder.newBlock();
+        Int condition = builder.ops().compare("gt", left, right, span);
         List<Int> empty = List();
-        b.condBranch(condition, yes, empty, no, empty, s);
-        b.enterBlock(yes);
-        b.branchTo(merge, SublangExamples.one(a), s);
-        b.enterBlock(no);
-        b.branchTo(merge, SublangExamples.one(c), s);
-        b.enterBlock(merge);
-        Int selected = b.addBlockParam(b.intType());
-        b.returnValue(selected, s);
+        builder.ops().condBranch(condition, yes, empty, no, empty, span);
+        builder.enterBlock(yes);
+        builder.ops().branchTo(merge, SublangExamples.one(left), span);
+        builder.enterBlock(no);
+        builder.ops().branchTo(merge, SublangExamples.one(right), span);
+        builder.enterBlock(merge);
+        Int selected = builder.addBlockParam(builder.intType());
+        builder.ops().returnValue(selected, span);
         // Library module: entry=0 is intentional.
-        return b.module();
+        return builder.module();
     }
 
     // sum(0 .. n-1), loop-carried i and total are SSA block parameters.
     public static SublangModule loop() {
-        SublangBuilder b = SublangBuilder("03-loop");
-        Int s = b.syntheticSpan("example:loop");
-        Int failure = b.failure("example.integer_failure");
-        b.beginFunction("sumBelow", b.intType(), 0, s);
-        Int n = b.addParam("n", b.intType(), "value", false);
-        b.beginBlock();
-        Int header = b.newBlock();
-        Int body = b.newBlock();
-        Int exit = b.newBlock();
-        Int zero = b.constInt(0, s);
-        Int one = b.constInt(1, s);
-        b.branchTo(header, SublangExamples.two(zero, zero), s);
-        b.enterBlock(header);
-        Int i = b.addBlockParam(b.intType());
-        Int total = b.addBlockParam(b.intType());
-        Int more = b.compare("lt", i, n, s);
+        SublangBuilder builder = SublangBuilder("03-loop");
+        Int span = builder.syntheticSpan("example:loop");
+        Int failure = builder.failure("example.integer_failure");
+        builder.beginFunction("sumBelow", builder.intType(), 0, span);
+        Int limit = builder.addParam("n", builder.intType(), "value", false);
+        builder.beginBlock();
+        Int header = builder.newBlock();
+        Int body = builder.newBlock();
+        Int exit = builder.newBlock();
+        Int zero = builder.ops().constInt(0, span);
+        Int step = builder.ops().constInt(1, span);
+        builder.ops().branchTo(header, SublangExamples.two(zero, zero), span);
+        builder.enterBlock(header);
+        Int counter = builder.addBlockParam(builder.intType());
+        Int total = builder.addBlockParam(builder.intType());
+        Int more = builder.ops().compare("lt", counter, limit, span);
         List<Int> empty = List();
-        b.condBranch(more, body, empty, exit, SublangExamples.one(total), s);
-        b.enterBlock(body);
-        Int nextTotal = b.intBinary("int.add", total, i, "trap", failure, s);
-        Int nextI = b.intBinary("int.add", i, one, "trap", failure, s);
-        b.branchTo(header, SublangExamples.two(nextI, nextTotal), s);
-        b.enterBlock(exit);
-        Int result = b.addBlockParam(b.intType());
-        b.returnValue(result, s);
-        return b.module();
+        builder.ops().condBranch(more, body, empty, exit, SublangExamples.one(total), span);
+        builder.enterBlock(body);
+        Int nextTotal = builder.ops().intBinary("int.add", total, counter, "trap", failure, span);
+        Int nextCounter = builder.ops().intBinary("int.add", counter, step, "trap", failure, span);
+        builder.ops().branchTo(header, SublangExamples.two(nextCounter, nextTotal), span);
+        builder.enterBlock(exit);
+        Int result = builder.addBlockParam(builder.intType());
+        builder.ops().returnValue(result, span);
+        return builder.module();
     }
 
     // Value semantics: record.with returns a NEW Pair; original.x remains 20.
     public static SublangModule record() {
-        SublangBuilder b = SublangBuilder("04-record");
-        Int s = b.syntheticSpan("example:record");
-        Int failure = b.failure("example.integer_failure");
-        Int pair = b.recordType("Pair", s);
-        Int fx = b.recordField(pair, "x", b.intType(), s);
-        Int fy = b.recordField(pair, "y", b.intType(), s);
-        Int fn = b.beginFunction("main", b.intType(), 0, s);
-        b.beginBlock();
-        Int x = b.constInt(20, s);
-        Int y = b.constInt(22, s);
-        Int original = b.recordMake(pair, SublangExamples.two(x, y), s);
-        Int replacement = b.constInt(21, s);
-        Int updated = b.recordWith(original, fx, replacement, s);
-        Int left = b.recordGet(updated, fx, s);
-        Int right = b.recordGet(original, fy, s);
-        Int result = b.intBinary("int.add", left, right, "trap", failure, s);
-        b.returnValue(result, s);
-        b.module().setEntry(fn);
-        return b.module();
+        SublangBuilder builder = SublangBuilder("04-record");
+        Int span = builder.syntheticSpan("example:record");
+        Int failure = builder.failure("example.integer_failure");
+        Int pair = builder.recordType("Pair", span);
+        Int fieldX = builder.recordField(pair, "x", builder.intType(), span);
+        Int fieldY = builder.recordField(pair, "y", builder.intType(), span);
+        Int fn = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.beginBlock();
+        Int initialX = builder.ops().constInt(20, span);
+        Int initialY = builder.ops().constInt(22, span);
+        Int original = builder.ops().recordMake(pair, SublangExamples.two(initialX, initialY), span);
+        Int replacement = builder.ops().constInt(21, span);
+        Int updated = builder.ops().recordWith(original, fieldX, replacement, span);
+        Int updatedX = builder.ops().recordGet(updated, fieldX, span);
+        Int originalY = builder.ops().recordGet(original, fieldY, span);
+        Int result = builder.ops().intBinary("int.add", updatedX, originalY, "trap", failure, span);
+        builder.ops().returnValue(result, span);
+        builder.module().setEntry(fn);
+        return builder.module();
     }
 
-    // Reference identity, initialization, mutation and a borrowed receiver.
     public static SublangModule object() {
-        SublangBuilder b = SublangBuilder("05-object");
-        Int s = b.syntheticSpan("example:object");
-        Int counter = b.classType("Counter", s);
-        Int field = b.classField(counter, "value", b.intType(), true, s);
-        Int ref = b.refType(counter);
-        Int read = b.beginFunction("Counter.read", b.intType(), counter, s);
-        Int self = b.addParam("self", ref, "borrow_read", true);
-        b.beginBlock();
-        Int observed = b.fieldRead(self, field, s);
-        b.returnValue(observed, s);
-        Int fn = b.beginFunction("main", b.intType(), 0, s);
-        b.beginBlock();
-        Int scope = b.scopeBegin(s);
-        Int instance = b.classNew(counter, scope, s);
-        Int before = b.constInt(1, s);
-        b.fieldInit(instance, field, before, s);
-        Int after = b.constInt(42, s);
-        b.fieldWrite(instance, field, after, s);
+        SublangBuilder builder = SublangBuilder("05-object");
+        Int span = builder.syntheticSpan("example:object");
+        Int counter = builder.classType("Counter", span);
+        Int field = builder.classField(counter, "value", builder.intType(), true, span);
+        Int ref = builder.refType(counter);
+        Int read = builder.beginFunction("Counter.read", builder.intType(), counter, span);
+        Int self = builder.addParam("self", ref, "borrow_read", true);
+        builder.beginBlock();
+        Int observed = builder.ops().fieldRead(self, field, span);
+        builder.ops().returnValue(observed, span);
+        Int fn = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int instance = builder.ops().classNew(counter, scope, span);
+        Int before = builder.ops().constInt(1, span);
+        builder.ops().fieldInit(instance, field, before, span);
+        Int after = builder.ops().constInt(42, span);
+        builder.ops().fieldWrite(instance, field, after, span);
         List<String> modes = List();
         modes.add("borrow_read");
-        Int result = b.callDirect(read, SublangExamples.one(instance), modes, s);
-        b.scopeEnd(scope, s);
-        b.returnValue(result, s);
-        b.module().setEntry(fn);
-        return b.module();
+        Int result = builder.ops().callDirect(read, SublangExamples.one(instance), modes, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(result, span);
+        builder.module().setEntry(fn);
+        return builder.module();
     }
 
     // Float parameters avoid the current lossy constant-dump representation.
     // For (6.0,2.0), ((a*b+a)-a)/b = 6.0 with explicit rne on every op.
     public static SublangModule floating() {
-        SublangBuilder b = SublangBuilder("06-float");
-        Int s = b.syntheticSpan("example:float");
-        b.beginFunction("calculate", b.floatType(), 0, s);
-        Int a = b.addParam("a", b.floatType(), "value", false);
-        Int c = b.addParam("b", b.floatType(), "value", false);
-        b.beginBlock();
-        Int product = b.floatBinary("float.mul", a, c, "rne", s);
-        Int sum = b.floatBinary("float.add", product, a, "rne", s);
-        Int difference = b.floatBinary("float.sub", sum, a, "rne", s);
-        Int result = b.floatBinary("float.div", difference, c, "rne", s);
-        b.returnValue(result, s);
-        return b.module();
+        SublangBuilder builder = SublangBuilder("06-float");
+        Int span = builder.syntheticSpan("example:float");
+        builder.beginFunction("calculate", builder.floatType(), 0, span);
+        Int left = builder.addParam("a", builder.floatType(), "value", false);
+        Int right = builder.addParam("b", builder.floatType(), "value", false);
+        builder.beginBlock();
+        Int product = builder.ops().floatBinary("float.mul", left, right, "rne", span);
+        Int sum = builder.ops().floatBinary("float.add", product, left, "rne", span);
+        Int difference = builder.ops().floatBinary("float.sub", sum, left, "rne", span);
+        Int result = builder.ops().floatBinary("float.div", difference, right, "rne", span);
+        builder.ops().returnValue(result, span);
+        return builder.module();
     }
 
     // Failure is a terminator; a failure block does not need a return.
     public static SublangModule failure() {
-        SublangBuilder b = SublangBuilder("07-failure");
-        Int s = b.syntheticSpan("example:failure");
-        Int action = b.failure("example.invalid_input");
-        b.beginFunction("requireNonNegative", b.intType(), 0, s);
-        Int x = b.addParam("x", b.intType(), "value", false);
-        b.beginBlock();
-        Int bad = b.newBlock();
-        Int good = b.newBlock();
-        Int zero = b.constInt(0, s);
-        Int negative = b.compare("lt", x, zero, s);
+        SublangBuilder builder = SublangBuilder("07-failure");
+        Int span = builder.syntheticSpan("example:failure");
+        Int invalidInput = builder.failure("example.invalid_input");
+        builder.beginFunction("requireNonNegative", builder.intType(), 0, span);
+        Int input = builder.addParam("x", builder.intType(), "value", false);
+        builder.beginBlock();
+        Int bad = builder.newBlock();
+        Int good = builder.newBlock();
+        Int zero = builder.ops().constInt(0, span);
+        Int negative = builder.ops().compare("lt", input, zero, span);
         List<Int> empty = List();
-        b.condBranch(negative, bad, empty, good, empty, s);
-        b.enterBlock(bad);
-        b.failWith(action, s);
-        b.enterBlock(good);
-        b.returnValue(x, s);
-        return b.module();
+        builder.ops().condBranch(negative, bad, empty, good, empty, span);
+        builder.enterBlock(bad);
+        builder.ops().failWith(invalidInput, span);
+        builder.enterBlock(good);
+        builder.ops().returnValue(input, span);
+        return builder.module();
+    }
+
+    public static String yesNo(Bool value) {
+        if (value) {
+            return "yes";
+        }
+        return "no";
     }
 
     public static Void show(SublangModule module) {
@@ -205,7 +211,7 @@ public class SublangExamples {
         println("=== Sublang " + module.name() + " ===");
         println(SublangDump.render(module));
         println("=== END Sublang ===");
-        println("structure=valid lifetime=not_checked codegenReady=false");
+        println("structure=" + verdict.structureStatus() + " semantics=" + verdict.semanticsStatus() + " effects=" + verdict.effectStatus() + " memory=" + verdict.memoryStatus() + " codegenReady=" + SublangExamples.yesNo(verdict.codegenReady()));
     }
 }
 

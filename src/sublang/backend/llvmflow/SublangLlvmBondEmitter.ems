@@ -1,0 +1,46 @@
+namespace sublang::backend::llvmflow;
+
+use sublang::body::SublangOperation;
+use sublang::backend::llvm::SublangLlvmContext;
+use sublang::backend::llvm::SublangLlvmTypes;
+
+public class SublangLlvmBondEmitter {
+    public static String emit(SublangLlvmContext context, SublangOperation op) {
+        String opcode = op.opcode();
+        String text = context.loadInputs(op);
+        if (opcode == "bond.new") {
+            String type = "%t" + op.ref().toString(); String tag = op.id().toString();
+            text = "  %bond.end" + tag + " = getelementptr " + type + ", ptr null, i32 1\n  %bond.size" + tag + " = ptrtoint ptr %bond.end" + tag + " to i64\n";
+            text = text + "  " + context.result(op) + " = call ptr @sublang.bond.allocate(i64 %bond.size" + tag + ", ptr @sublang.bond.trace.t" + op.ref().toString() + ")\n";
+            text = text + "  store " + type + " zeroinitializer, ptr " + context.result(op) + "\n";
+            return text + context.bonds().adopt(op.resultValue(), op.scope(), context.result(op)) + context.store(op, context.result(op));
+        }
+        if (opcode == "bond.borrow") { return text + context.store(op, context.input(op, 0)); }
+        if (opcode == "bond.retain") {
+            text = text + "  call void @sublang.bond.retain(ptr " + context.input(op, 0) + ")\n";
+            return text + context.bonds().adopt(op.resultValue(), op.scope(), context.input(op, 0)) + context.store(op, context.input(op, 0));
+        }
+        Int owner = context.module.types().fieldAt(op.ref()).owner();
+        String address = "%bond.field" + op.id().toString();
+        text = text + "  " + address + " = getelementptr %t" + owner.toString() + ", ptr " + context.input(op, 0) + ", i32 0, i32 " + SublangLlvmTypes.fieldIndex(context.module, op.ref()).toString() + "\n";
+        if (opcode == "bond.get") {
+            text = text + "  " + context.result(op) + " = load ptr, ptr " + address + "\n  call void @sublang.bond.retain(ptr " + context.result(op) + ")\n";
+            return text + context.bonds().adopt(op.resultValue(), op.scope(), context.result(op)) + context.store(op, context.result(op));
+        }
+        Int fieldTypeId = context.module.types().fieldAt(op.ref()).typeId();
+        if (opcode == "bond.own" || (opcode == "bond.clear" && context.module.types().isKind(fieldTypeId, "Ref"))) {
+            Int target = context.module.types().typeAt(fieldTypeId).target();
+            String old = "%bond.old" + op.id().toString();
+            text = text + "  " + old + " = load ptr, ptr " + address + "\n";
+            String value = "null";
+            if (opcode == "bond.own") { value = context.input(op, 1); text = text + "  call void @sublang.flow.detach(ptr " + value + ")\n"; }
+            text = text + "  store ptr " + value + ", ptr " + address + "\n";
+            return text + "  call void @sublang.flow.drop(ptr " + old + ", ptr @sublang.drop.t" + target.toString() + ")\n";
+        }
+        if (opcode == "bond.clear") { return text + "  call void @sublang.bond.edge.set(ptr " + address + ", ptr null)\n"; }
+        if (opcode == "bond.link") { return text + "  call void @sublang.bond.edge.set(ptr " + address + ", ptr " + context.input(op, 1) + ")\n"; }
+        String fieldType = context.type(context.module.types().fieldAt(op.ref()).typeId());
+        text = text + "  store " + fieldType + " " + context.input(op, 1) + ", ptr " + address + "\n";
+        return text;
+    }
+}

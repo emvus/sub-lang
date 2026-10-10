@@ -1,0 +1,23 @@
+namespace sublang::backend;
+
+use sublang::ir::SublangModule;
+use sublang::semantics::SublangOptions;
+use sublang::backend::SublangBackendGate;
+use sublang::backend::SublangCompilation;
+use sublang::backend::llvm::SublangLlvmEmitter;
+use sublang::hyperalloc::SublangMemoryPlan;
+use sublang::optimind::SublangOptimindReport;
+
+// Explicit host-libc binding and verified scoped ownership form this initial target.
+// Flow on/auto choose proven Local or scope-owned runtime storage; off uses heap.
+public class SublangCompiler {
+    public static SublangCompilation compile(SublangModule module, Bool optimind, String flowMode) {
+        if (!SublangOptions(flowMode).isValid()) {
+            return SublangCompilation("", "SUBLANG-B007: invalid Flow mode", "");
+        }
+        String error = SublangBackendGate.check(module);
+        if (error != "") { return SublangCompilation("", error, ""); }
+        SublangMemoryPlan plan = SublangMemoryPlan(module, flowMode != "off");
+        return SublangCompilation(SublangLlvmEmitter.emit(module, optimind, plan), "", plan.explain() + SublangOptimindReport.render(module, optimind));
+    }
+}

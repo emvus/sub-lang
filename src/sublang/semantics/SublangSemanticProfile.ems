@@ -1,0 +1,69 @@
+namespace sublang::semantics;
+
+use sublang::vocabulary::SublangVocabulary;
+
+// Named semantic profile. A function refers to exactly one profile by id; the
+// profile states the integer, floating-point, failure and unwinding rules that
+// the operations of that function are checked against. Only the startup profile
+// is supported in A.1; any other rule string is reported by the verifier and is
+// never silently ignored.
+public class SublangSemanticProfile {
+    private Int profileIdValue;
+    private String nameText;
+    private Int versionNumber;
+    private String integerRulesText;
+    private String floatRulesText;
+    private String failureModelText;
+    private String unwindingModelText;
+
+    public SublangSemanticProfile(Int id, String name, Int version, String integerRules, String floatRules, String failureModel, String unwindingModel) {
+        this.profileIdValue = id;
+        this.nameText = name + "";
+        this.versionNumber = version;
+        this.integerRulesText = integerRules + "";
+        this.floatRulesText = floatRules + "";
+        this.failureModelText = failureModel + "";
+        this.unwindingModelText = unwindingModel + "";
+    }
+
+    public Int id() {
+        return this.profileIdValue;
+    }
+
+    public String name() {
+        return this.nameText;
+    }
+
+    public Int version() {
+        return this.versionNumber;
+    }
+
+    public String integerRules() {
+        return this.integerRulesText;
+    }
+
+    public String floatRules() {
+        return this.floatRulesText;
+    }
+
+    public String failureModel() {
+        return this.failureModelText;
+    }
+
+    public String unwindingModel() {
+        return this.unwindingModelText;
+    }
+
+    // True only for the exact rule set of the startup profile.
+    public Bool isStartupSupported() {
+        return this.integerRulesText == SublangVocabulary.startupIntegerRules() && this.floatRulesText == SublangVocabulary.startupFloatRules() && this.failureModelText == SublangVocabulary.startupFailureModel() && this.unwindingModelText == SublangVocabulary.startupUnwindingModel();
+    }
+
+    // Rounding mode that the float rules provide; empty when the rules name none the vocabulary knows.
+    public String floatRounding() {
+        if (this.floatRulesText == SublangVocabulary.startupFloatRules()) {
+            return SublangVocabulary.startupFloatRounding();
+        }
+        return "";
+    }
+}

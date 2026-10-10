@@ -1,0 +1,53 @@
+namespace sublang::harness::flow;
+
+use sublang::wire::SublangWire;
+use sublang::wire::SublangWireStream;
+use sublang::wire::SublangWireResult;
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+use sublang::proof::SublangProofReference;
+use sublang::backend::SublangCompiler;
+use sublang::harness::flow::SublangViewFixture;
+
+public class SublangWireChecks {
+    public static Bool check() {
+        if (SublangWire.read("").valid() || SublangWire.read("12:SUBLANG-WIRE,1:2,").valid()) { return false; }
+        SublangWireStream huge = SublangWireStream(true, "1:9,");
+        huge.count(0, 8);
+        if (huge.valid()) { return false; }
+        SublangWireStream overflow = SublangWireStream(true, "19:9223372036854775808,");
+        overflow.number(0);
+        if (overflow.valid()) { return false; }
+        SublangWireStream minimum = SublangWireStream(true, "20:-9223372036854775808,");
+        if (minimum.number(0) != -9223372036854775807 - 1 || !minimum.valid()) { return false; }
+        if (!SublangWireChecks.metadata()) { return false; }
+        Int invalid = 1;
+        while (invalid <= 4) {
+            SublangModule module = SublangViewFixture.graph(invalid); module.freeze();
+            if (SublangCompiler.compile(module, true, "on").codegenReady()) { return false; }
+            invalid = invalid + 1;
+        }
+        return true;
+    }
+
+    private static Bool metadata() {
+        SublangBuilder builder = SublangBuilder("wire UTF-8: ä\n,: metadata");
+        Int span = builder.syntheticSpan("source\n,: proof");
+        Int left = builder.addLocation("global", "left", span);
+        Int right = builder.addLocation("global", "right", span);
+        List<Int> dependencies = List(); dependencies.add(left); dependencies.add(right);
+        SublangProofReference proof = SublangProofReference("closed.analysis", 1, dependencies);
+        builder.module().aliases().addProvenAliasFact(left, right, "NoAlias", proof, span);
+        Int summary = builder.module().semantics().addEffectSummary("precise", span);
+        builder.module().semantics().effectSummaryAt(summary).addLocatedFact("mayAllocate", "unknown", "assumed-conservative", "metadata only", proof, dependencies);
+        builder.freeze();
+        SublangWireResult written = SublangWire.write(builder.module());
+        SublangWireResult read = SublangWire.read(written.text());
+        if (!written.valid() || !read.valid()) { return false; }
+        if (SublangWire.write(read.module()).text() != written.text()) { return false; }
+        if (read.module().aliases().aliasAnswer(left, right) != "MayAlias") { return false; }
+        if (SublangWire.read(written.text() + "x").valid()) { return false; }
+        if (SublangWire.read(written.text().substring(0, written.text().length() - 1)).valid()) { return false; }
+        return true;
+    }
+}

@@ -1,0 +1,45 @@
+namespace sublang::optimind;
+
+// A function-local, read-only-after-analysis overlay on a frozen snapshot. It never
+// rewrites IR, so no stale revision or changed effect declaration is smuggled in.
+public class SublangValueFacts {
+    private List<Bool> knownFlags;
+    private List<Int> integerValues;
+    private List<Int> aliasValues;
+    private Int changedCount;
+
+    public SublangValueFacts(Int count) {
+        this.knownFlags = List();
+        this.integerValues = List();
+        this.aliasValues = List();
+        this.changedCount = 0;
+        Int index = 0;
+        while (index <= count) {
+            this.knownFlags.add(false);
+            this.integerValues.add(0);
+            this.aliasValues.add(0);
+            index = index + 1;
+        }
+    }
+
+    public Bool known(Int value) { return this.knownFlags.get(value); }
+    public Int integer(Int value) { return this.integerValues.get(value); }
+    public Int alias(Int value) { return this.aliasValues.get(value); }
+    public Int changes() { return this.changedCount; }
+
+    public Void constant(Int value, Int number, Bool changed) {
+        this.knownFlags.set(value, true);
+        this.integerValues.set(value, number);
+        if (changed) {
+            this.changedCount = this.changedCount + 1;
+        }
+    }
+
+    public Void replace(Int value, Int source) {
+        this.aliasValues.set(value, source);
+        this.changedCount = this.changedCount + 1;
+        if (this.known(source)) {
+            this.constant(value, this.integer(source), false);
+        }
+    }
+}

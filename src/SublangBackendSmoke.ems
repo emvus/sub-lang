@@ -1,0 +1,614 @@
+use sublang::backend::SublangCompiler;
+use sublang::backend::SublangCompilation;
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+use sublang::body::SublangOperation;
+use sublang::optimind::SublangOptimind;
+use sublang::harness::SublangRootFixtures;
+use sublang::harness::flow::SublangParityFixtures;
+use sublang::harness::flow::SublangIntegerFixtures;
+use sublang::harness::flow::SublangCallFixture;
+use sublang::harness::flow::SublangViewFixture;
+use sublang::harness::flow::SublangWireChecks;
+use sublang::harness::flow::SublangGraphPoolFixture;
+use sublang::harness::flow::SublangFullFlowFixtures;
+use sublang::harness::flow::SublangBondComponentFixture;
+use sublang::wire::SublangWire;
+use sublang::wire::SublangWireResult;
+use Std::Native::NativeFile;
+use Std::Process::Processes;
+
+// One bundled executable test generator, built only inside the capped sandbox.
+public class SublangBackendSmoke {
+    public static List<Int> one(Int value) {
+        List<Int> values = List();
+        values.add(value);
+        return values;
+    }
+
+    public static List<Int> four(Int first, Int second, Int third, Int fourth) {
+        List<Int> values = List();
+        values.add(first);
+        values.add(second);
+        values.add(third);
+        values.add(fourth);
+        return values;
+    }
+
+    public static Void entry(SublangBuilder builder, Int span) {
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+    }
+
+    public static SublangModule arithmetic(Bool overflow) {
+        SublangBuilder builder = SublangBuilder("arithmetic");
+        Int span = builder.syntheticSpan("backend:arithmetic");
+        Int failure = builder.failure("test.abort");
+        SublangBackendSmoke.entry(builder, span);
+        Int number = 2000000000;
+        if (overflow) { number = 9223372036854775807; }
+        Int left = builder.ops().constInt(number, span);
+        Int right = builder.ops().constInt(number, span);
+        Int result = builder.ops().intBinary("int.add", left, right, "trap", failure, span);
+        builder.ops().returnValue(result, span);
+        return builder.module();
+    }
+
+    public static SublangModule loop() {
+        SublangBuilder builder = SublangBuilder("parallel-loop");
+        Int span = builder.syntheticSpan("backend:loop");
+        Int failure = builder.failure("test.abort");
+        Int function = builder.beginFunction("sumSwap", builder.intType(), 0, span);
+        Int limit = builder.addParam("limit", builder.intType(), "value", false);
+        builder.beginBlock();
+        Int header = builder.newBlock();
+        Int body = builder.newBlock();
+        Int done = builder.newBlock();
+        Int zero = builder.ops().constInt(0, span);
+        Int first = builder.ops().constInt(11, span);
+        Int second = builder.ops().constInt(22, span);
+        builder.ops().branchTo(header, SublangBackendSmoke.four(zero, zero, first, second), span);
+        builder.enterBlock(header);
+        Int index = builder.addBlockParam(builder.intType());
+        Int sum = builder.addBlockParam(builder.intType());
+        Int left = builder.addBlockParam(builder.intType());
+        Int right = builder.addBlockParam(builder.intType());
+        Int condition = builder.ops().compare("lt", index, limit, span);
+        List<Int> empty = List();
+        builder.ops().condBranch(condition, body, empty, done, empty, span);
+        builder.enterBlock(body);
+        Int one = builder.ops().constInt(1, span);
+        Int next = builder.ops().intBinary("int.add", index, one, "trap", failure, span);
+        Int total = builder.ops().intBinary("int.add", sum, index, "trap", failure, span);
+        builder.ops().branchTo(header, SublangBackendSmoke.four(next, total, right, left), span);
+        builder.enterBlock(done);
+        Int answer = builder.ops().intBinary("int.add", sum, left, "trap", failure, span);
+        builder.ops().returnValue(answer, span);
+        SublangBackendSmoke.callMain(builder, function, span);
+        return builder.module();
+    }
+
+    private static Void callMain(SublangBuilder builder, Int function, Int span) {
+        SublangBackendSmoke.entry(builder, span);
+        Int count = builder.ops().constInt(101, span);
+        List<String> modes = List();
+        modes.add("value");
+        Int answer = builder.ops().callDirect(function, SublangBackendSmoke.one(count), modes, span);
+        builder.ops().returnValue(answer, span);
+    }
+
+    public static SublangModule record() {
+        SublangBuilder builder = SublangBuilder("records");
+        Int span = builder.syntheticSpan("backend:record");
+        Int failure = builder.failure("test.abort");
+        Int pair = builder.recordType("Pair", span);
+        Int field = builder.recordField(pair, "x", builder.intType(), span);
+        SublangBackendSmoke.entry(builder, span);
+        Int original = builder.ops().recordMake(pair, SublangBackendSmoke.one(builder.ops().constInt(20, span)), span);
+        Int changed = builder.ops().recordWith(original, field, builder.ops().constInt(21, span), span);
+        Int first = builder.ops().recordGet(original, field, span);
+        Int second = builder.ops().recordGet(changed, field, span);
+        Int sum = builder.ops().intBinary("int.add", first, second, "trap", failure, span);
+        builder.ops().returnValue(sum, span);
+        return builder.module();
+    }
+
+    public static SublangModule floating() {
+        SublangBuilder builder = SublangBuilder("floats");
+        Int span = builder.syntheticSpan("backend:float");
+        SublangBackendSmoke.entry(builder, span);
+        Int left = builder.ops().constFloatBits(4611686018427387904, span);
+        Int right = builder.ops().constFloatBits(4613937818241073152, span);
+        Int five = builder.ops().constFloatBits(4617315517961601024, span);
+        Int sum = builder.ops().floatBinary("float.add", left, right, "rne", span);
+        Int equal = builder.ops().compare("oeq", sum, five, span);
+        Int nanBlock = builder.newBlock();
+        Int good = builder.newBlock();
+        Int bad = builder.newBlock();
+        List<Int> empty = List();
+        builder.ops().condBranch(equal, nanBlock, empty, bad, empty, span);
+        builder.enterBlock(nanBlock);
+        Int nan = builder.ops().constFloatBits(9221120237041090851, span);
+        Int unordered = builder.ops().compare("uno", nan, five, span);
+        builder.ops().condBranch(unordered, good, empty, bad, empty, span);
+        builder.enterBlock(good);
+        builder.ops().returnValue(builder.ops().constInt(1, span), span);
+        builder.enterBlock(bad);
+        builder.ops().returnValue(builder.ops().constInt(0, span), span);
+        return builder.module();
+    }
+
+    public static SublangModule object(Bool uninitialized, Bool expired) {
+        SublangBuilder builder = SublangBuilder("local-object");
+        Int span = builder.syntheticSpan("backend:object");
+        Int type = builder.classType("Point", span);
+        Int field = builder.classField(type, "x", builder.intType(), true, span);
+        SublangBackendSmoke.entry(builder, span);
+        Int scope = builder.ops().scopeBegin(span);
+        Int point = builder.ops().classNew(type, scope, span);
+        Int value = builder.ops().constInt(43, span);
+        if (!uninitialized) { builder.ops().fieldInit(point, field, value, span); }
+        if (expired) { builder.ops().scopeEnd(scope, span); }
+        Int answer = builder.ops().fieldRead(point, field, span);
+        if (!expired) { builder.ops().scopeEnd(scope, span); }
+        builder.ops().returnValue(answer, span);
+        return builder.module();
+    }
+
+    public static SublangModule objectCfg(Int invalid) {
+        SublangBuilder builder = SublangBuilder("object-cfg");
+        Int span = builder.syntheticSpan("backend:object-cfg");
+        Int type = builder.classType("Counter", span);
+        Int field = builder.classField(type, "x", builder.intType(), true, span);
+        Int function = builder.beginFunction("count", builder.intType(), 0, span);
+        Int limit = builder.addParam("limit", builder.intType(), "value", false);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int point = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(point, field, builder.ops().constInt(43, span), span);
+        Int zero = builder.ops().constInt(0, span);
+        Int early = builder.newBlock();
+        Int header = builder.newBlock();
+        Int body = builder.newBlock();
+        Int done = builder.newBlock();
+        List<Int> empty = List();
+        Int condition = builder.ops().compare("eq", limit, zero, span);
+        builder.ops().condBranch(condition, early, empty, header, SublangBackendSmoke.one(zero), span);
+        builder.enterBlock(early);
+        if (invalid == 2) { builder.ops().scopeEnd(scope, span); }
+        Int first = builder.ops().fieldRead(point, field, span);
+        if (invalid != 1 && invalid != 2) { builder.ops().scopeEnd(scope, span); }
+        builder.ops().returnValue(first, span);
+        builder.enterBlock(header);
+        Int index = builder.addBlockParam(builder.intType());
+        condition = builder.ops().compare("lt", index, limit, span);
+        builder.ops().condBranch(condition, body, empty, done, empty, span);
+        builder.enterBlock(body);
+        Int one = builder.ops().constInt(1, span);
+        if (invalid == 3) { builder.ops().fieldInit(point, field, one, span); }
+        Int current = builder.ops().fieldRead(point, field, span);
+        Int next = builder.ops().intBinary("int.add", current, one, "wrap", 0, span);
+        builder.ops().fieldWrite(point, field, next, span);
+        Int increment = builder.ops().intBinary("int.add", index, one, "wrap", 0, span);
+        builder.ops().branchTo(header, SublangBackendSmoke.one(increment), span);
+        builder.enterBlock(done);
+        Int answer = builder.ops().fieldRead(point, field, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(answer, span);
+        SublangBackendSmoke.objectCfgMain(builder, function, span);
+        return builder.module();
+    }
+
+    private static Void objectCfgMain(SublangBuilder builder, Int function, Int span) {
+        SublangBackendSmoke.entry(builder, span);
+        List<String> modes = List();
+        modes.add("value");
+        Int zero = builder.ops().constInt(0, span);
+        Int three = builder.ops().constInt(3, span);
+        Int first = builder.ops().callDirect(function, SublangBackendSmoke.one(zero), modes, span);
+        Int second = builder.ops().callDirect(function, SublangBackendSmoke.one(three), modes, span);
+        Int sum = builder.ops().intBinary("int.add", first, second, "wrap", 0, span);
+        builder.ops().returnValue(sum, span);
+    }
+
+    private static Void rejectInvalidCfg() {
+        Int invalid = 1;
+        while (invalid <= 3) {
+            SublangModule module = SublangBackendSmoke.objectCfg(invalid);
+            module.freeze();
+            SublangCompilation result = SublangCompiler.compile(module, true, "on");
+            if (result.codegenReady() || !result.error().startsWith("SUBLANG-B005")) {
+                println("FAIL CFG lifetime case " + invalid.toString() + ": " + result.error());
+                Processes.exit(1);
+            }
+            invalid = invalid + 1;
+        }
+        SublangModule module = SublangBackendSmoke.objectCfg(0);
+        module.freeze();
+        SublangCompilation automatic = SublangCompiler.compile(module, true, "auto");
+        SublangCompilation enabled = SublangCompiler.compile(module, true, "on");
+        if (!automatic.codegenReady() || automatic.llvm() != enabled.llvm()) {
+            println("FAIL Flow auto placement");
+            Processes.exit(1);
+        }
+        println("PASS CFG lifetime gates and auto placement");
+    }
+
+    public static SublangModule scopedRuntime(Int invalid) {
+        SublangBuilder builder = SublangBuilder("scoped-runtime");
+        Int span = builder.syntheticSpan("backend:scoped-runtime");
+        Int type = builder.classType("Counter", span);
+        Int field = builder.classField(type, "x", builder.intType(), true, span);
+        Int function = builder.beginFunction("scoped", builder.intType(), 0, span);
+        Int choice = builder.addParam("choice", builder.boolType(), "value", false);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int owner = builder.ops().classNew(type, scope, span);
+        Int left = builder.newBlock();
+        Int right = builder.newBlock();
+        Int header = builder.newBlock();
+        Int body = builder.newBlock();
+        Int done = builder.newBlock();
+        Int zero = builder.ops().constInt(0, span);
+        Int limit = builder.ops().constInt(3, span);
+        List<Int> empty = List();
+        builder.ops().condBranch(choice, left, empty, right, empty, span);
+        builder.enterBlock(left);
+        builder.ops().fieldInit(owner, field, builder.ops().constInt(10, span), span);
+        builder.ops().branchTo(header, SublangBackendSmoke.one(zero), span);
+        builder.enterBlock(right);
+        if (invalid != 1) { builder.ops().fieldInit(owner, field, builder.ops().constInt(20, span), span); }
+        builder.ops().branchTo(header, SublangBackendSmoke.one(zero), span);
+        builder.enterBlock(header);
+        Int index = builder.addBlockParam(builder.intType());
+        Int condition = builder.ops().compare("lt", index, limit, span);
+        builder.ops().condBranch(condition, body, empty, done, empty, span);
+        builder.enterBlock(body);
+        Int inner = builder.ops().scopeBegin(span);
+        Int item = builder.ops().classNew(type, inner, span);
+        builder.ops().fieldInit(item, field, index, span);
+        Int value = builder.ops().fieldRead(item, field, span);
+        Int old = builder.ops().fieldRead(owner, field, span);
+        Int sum = builder.ops().intBinary("int.add", old, value, "wrap", 0, span);
+        builder.ops().fieldWrite(owner, field, sum, span);
+        if (invalid == 2) { builder.ops().scopeEnd(scope, span); }
+        builder.ops().scopeEnd(inner, span);
+        Int increment = builder.ops().intBinary("int.add", index, builder.ops().constInt(1, span), "wrap", 0, span);
+        builder.ops().branchTo(header, SublangBackendSmoke.one(increment), span);
+        builder.enterBlock(done);
+        Int answer = builder.ops().fieldRead(owner, field, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(answer, span);
+        SublangBackendSmoke.scopedMain(builder, function, span);
+        return builder.module();
+    }
+
+    private static Void scopedMain(SublangBuilder builder, Int function, Int span) {
+        SublangBackendSmoke.entry(builder, span);
+        List<String> modes = List();
+        modes.add("value");
+        Int yes = builder.ops().constBool(true, span);
+        Int no = builder.ops().constBool(false, span);
+        Int first = builder.ops().callDirect(function, SublangBackendSmoke.one(yes), modes, span);
+        Int second = builder.ops().callDirect(function, SublangBackendSmoke.one(no), modes, span);
+        Int result = builder.ops().intBinary("int.add", first, second, "wrap", 0, span);
+        builder.ops().returnValue(result, span);
+    }
+
+    private static Void rejectInvalidScopes() {
+        Int invalid = 1;
+        while (invalid <= 2) {
+            SublangModule module = SublangBackendSmoke.scopedRuntime(invalid);
+            module.freeze();
+            SublangCompilation result = SublangCompiler.compile(module, true, "on");
+            if (result.codegenReady() || !result.error().startsWith("SUBLANG-B005")) {
+                println("FAIL scoped lifetime case " + invalid.toString() + ": " + result.error());
+                Processes.exit(1);
+            }
+            invalid = invalid + 1;
+        }
+        println("PASS definite initialization joins and nested scope order");
+    }
+
+    public static SublangModule borrowedCalls(Int invalid) {
+        SublangBuilder builder = SublangBuilder("borrowed-calls");
+        Int span = builder.syntheticSpan("backend:borrowed-calls");
+        Int type = builder.classType("Counter", span);
+        Int field = builder.classField(type, "x", builder.intType(), true, span);
+        Int writer = builder.beginFunction("increment", builder.intType(), 0, span);
+        Int target = builder.addParam("target", builder.refType(type), "borrow_write", false);
+        builder.beginBlock();
+        Int old = builder.ops().fieldRead(target, field, span);
+        Int next = builder.ops().intBinary("int.add", old, builder.ops().constInt(1, span), "wrap", 0, span);
+        builder.ops().fieldWrite(target, field, next, span);
+        builder.ops().returnValue(next, span);
+        Int reader = builder.beginFunction("read", builder.intType(), 0, span);
+        target = builder.addParam("target", builder.refType(type), "borrow_read", false);
+        builder.beginBlock();
+        if (invalid == 1) { builder.ops().fieldWrite(target, field, builder.ops().constInt(5, span), span); }
+        Int answer = builder.ops().fieldRead(target, field, span);
+        builder.ops().returnValue(answer, span);
+        Int forward = builder.beginFunction("forwardRead", builder.intType(), 0, span);
+        target = builder.addParam("target", builder.refType(type), "borrow_read", false);
+        builder.beginBlock();
+        List<String> readModes = List();
+        readModes.add("borrow_read");
+        List<String> writeModes = List();
+        writeModes.add("borrow_write");
+        if (invalid == 3) { builder.ops().callDirect(writer, SublangBackendSmoke.one(target), writeModes, span); }
+        answer = builder.ops().callDirect(reader, SublangBackendSmoke.one(target), readModes, span);
+        builder.ops().returnValue(answer, span);
+        Int aliasProbe = builder.beginFunction("aliasProbe", builder.intType(), 0, span);
+        Int readTarget = builder.addParam("readTarget", builder.refType(type), "borrow_read", false);
+        builder.addParam("writeTarget", builder.refType(type), "borrow_write", false);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.ops().fieldRead(readTarget, field, span), span);
+        SublangBackendSmoke.entry(builder, span);
+        Int scope = builder.ops().scopeBegin(span);
+        Int owner = builder.ops().classNew(type, scope, span);
+        if (invalid != 2) { builder.ops().fieldInit(owner, field, builder.ops().constInt(40, span), span); }
+        if (invalid == 4) {
+            List<Int> arguments = SublangBackendSmoke.one(owner);
+            arguments.add(owner);
+            List<String> modes = List();
+            modes.add("borrow_read");
+            modes.add("borrow_write");
+            builder.ops().callDirect(aliasProbe, arguments, modes, span);
+        }
+        Int first = builder.ops().callDirect(writer, SublangBackendSmoke.one(owner), writeModes, span);
+        Int second = builder.ops().callDirect(forward, SublangBackendSmoke.one(owner), readModes, span);
+        Int sum = builder.ops().intBinary("int.add", first, second, "wrap", 0, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(sum, span);
+        return builder.module();
+    }
+
+    private static Void rejectInvalidBorrows() {
+        Int invalid = 1;
+        while (invalid <= 4) {
+            SublangModule module = SublangBackendSmoke.borrowedCalls(invalid);
+            module.freeze();
+            SublangCompilation result = SublangCompiler.compile(module, true, "on");
+            if (result.codegenReady() || !result.error().startsWith("SUBLANG-B005")) {
+                println("FAIL borrow case " + invalid.toString() + ": " + result.error());
+                Processes.exit(1);
+            }
+            invalid = invalid + 1;
+        }
+        println("PASS derived noescape, borrow permissions and call initialization gates");
+    }
+
+    public static SublangModule ownedTransfers(Int invalid) {
+        SublangBuilder builder = SublangBuilder("owned-transfers");
+        Int span = builder.syntheticSpan("backend:owned-transfers");
+        Int type = builder.classType("Counter", span);
+        Int field = builder.classField(type, "x", builder.intType(), true, span);
+        Int factory = builder.beginFunction("make", builder.refType(type), 0, span);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int item = builder.ops().classNew(type, scope, span);
+        if (invalid != 3) { builder.ops().fieldInit(item, field, builder.ops().constInt(40, span), span); }
+        Int decoy = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(decoy, field, builder.ops().constInt(777, span), span);
+        builder.ops().returnOwned(item, span);
+        Int transform = builder.beginFunction("transform", builder.refType(type), 0, span);
+        String inputMode = "owned";
+        if (invalid == 4) { inputMode = "borrow_write"; }
+        Int input = builder.addParam("input", builder.refType(type), inputMode, false);
+        builder.beginBlock();
+        Int old = builder.ops().fieldRead(input, field, span);
+        Int next = builder.ops().intBinary("int.add", old, builder.ops().constInt(1, span), "wrap", 0, span);
+        builder.ops().fieldWrite(input, field, next, span);
+        scope = builder.ops().scopeBegin(span);
+        decoy = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(decoy, field, builder.ops().constInt(999, span), span);
+        builder.ops().returnOwned(input, span);
+        Int consume = builder.beginFunction("consume", builder.intType(), 0, span);
+        input = builder.addParam("input", builder.refType(type), "owned", false);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.ops().fieldRead(input, field, span), span);
+        Int consumeTwo = builder.beginFunction("consumeTwo", builder.intType(), 0, span);
+        input = builder.addParam("left", builder.refType(type), "owned", false);
+        builder.addParam("right", builder.refType(type), "owned", false);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.ops().fieldRead(input, field, span), span);
+        SublangBackendSmoke.ownedMain(builder, factory, transform, consume, consumeTwo, field, span, invalid, inputMode);
+        return builder.module();
+    }
+
+    private static Void ownedMain(SublangBuilder builder, Int factory, Int transform, Int consume, Int consumeTwo, Int field, Int span, Int invalid, String inputMode) {
+        SublangBackendSmoke.entry(builder, span);
+        Int scope = builder.ops().scopeBegin(span);
+        List<Int> empty = List();
+        List<String> noModes = List();
+        Int item = 0;
+        if (invalid == 5) { item = builder.ops().callDirect(factory, empty, noModes, span); }
+        if (invalid != 5) { item = builder.ops().callDirectOwned(factory, empty, noModes, scope, span); }
+        List<String> transferModes = List();
+        transferModes.add(inputMode);
+        Int updated = builder.ops().callDirectOwned(transform, SublangBackendSmoke.one(item), transferModes, scope, span);
+        Int first = builder.ops().fieldRead(updated, field, span);
+        List<String> owned = List();
+        owned.add("owned");
+        if (invalid == 2) {
+            List<Int> duplicate = SublangBackendSmoke.one(updated);
+            duplicate.add(updated);
+            List<String> twice = List();
+            twice.add("owned");
+            twice.add("owned");
+            builder.ops().callDirect(consumeTwo, duplicate, twice, span);
+        }
+        Int second = builder.ops().callDirect(consume, SublangBackendSmoke.one(updated), owned, span);
+        if (invalid == 1) { builder.ops().fieldRead(updated, field, span); }
+        Int sum = builder.ops().intBinary("int.add", first, second, "wrap", 0, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(sum, span);
+    }
+
+    private static Void rejectInvalidTransfers() {
+        Int invalid = 1;
+        while (invalid <= 5) {
+            SublangModule module = SublangBackendSmoke.ownedTransfers(invalid);
+            module.freeze();
+            SublangCompilation result = SublangCompiler.compile(module, true, "on");
+            if (result.codegenReady() || !result.error().startsWith("SUBLANG-B005")) {
+                if (invalid == 5 && !result.codegenReady() && result.error().startsWith("SUBLANG-B002")) {
+                    invalid = invalid + 1;
+                    continue;
+                }
+                println("FAIL owned transfer case " + invalid.toString() + ": " + result.error());
+                Processes.exit(1);
+            }
+            invalid = invalid + 1;
+        }
+        println("PASS owned transfer, return initialization and use-after-move gates");
+    }
+
+    private static Void rejectInvalidGraphs() {
+        Int invalid = 1;
+        while (invalid <= 4) {
+            SublangModule module = SublangRootFixtures.graph(invalid);
+            module.freeze();
+            SublangCompilation result = SublangCompiler.compile(module, true, "on");
+            if (result.codegenReady() || !result.error().startsWith("SUBLANG-B005")) {
+                println("FAIL Root case " + invalid.toString() + ": " + result.error());
+                Processes.exit(1);
+            }
+            invalid = invalid + 1;
+        }
+        println("PASS Root adoption, initialization, cycle and take gates");
+    }
+
+    public static SublangModule division() {
+        SublangBuilder builder = SublangBuilder("division");
+        Int span = builder.syntheticSpan("backend:division");
+        Int failure = builder.failure("test.abort");
+        SublangBackendSmoke.entry(builder, span);
+        Int minimum = builder.ops().constInt(-9223372036854775807 - 1, span);
+        Int negative = builder.ops().constInt(-1, span);
+        Int remainder = builder.ops().intBinary("int.rem", minimum, negative, "zero", failure, span);
+        builder.ops().returnValue(remainder, span);
+        return builder.module();
+    }
+
+    public static Void emit(String name, SublangModule module) {
+        module.freeze();
+        SublangWireResult wire = SublangWire.write(module);
+        if (!wire.valid()) { println(wire.error()); Processes.exit(1); return; }
+        SublangWireResult decoded = SublangWire.read(wire.text());
+        if (!decoded.valid()) { println(decoded.error()); Processes.exit(1); return; }
+        SublangWireResult repeated = SublangWire.write(decoded.module());
+        if (!repeated.valid() || repeated.text() != wire.text()) {
+            println("FAIL wire roundtrip " + name); Processes.exit(1); return;
+        }
+        module = decoded.module();
+        NativeFile.writeText("/tmp/backend/" + name + ".sublang-wire", wire.text());
+        SublangBackendSmoke.variant(name + "-base", module, false, "off");
+        SublangBackendSmoke.variant(name + "-opt", module, true, "on");
+    }
+
+    private static Void variant(String name, SublangModule module, Bool optimind, String flow) {
+        SublangCompilation compiled = SublangCompiler.compile(module, optimind, flow);
+        if (!compiled.codegenReady()) {
+            println("FAIL " + name + ": " + compiled.error());
+            Processes.exit(1);
+            return;
+        }
+        NativeFile.writeText("/tmp/backend/" + name + ".ll", compiled.llvm());
+        NativeFile.writeText("/tmp/backend/" + name + ".plan", compiled.explainMemory());
+        println("EMIT " + name);
+    }
+
+    private static Bool duplicateIdsRejected() {
+        SublangBuilder builder = SublangBuilder("duplicate-ids");
+        Int span = builder.syntheticSpan("backend:duplicate-ids");
+        SublangBackendSmoke.entry(builder, span);
+        SublangOperation injected = SublangOperation(1, "const.int", span);
+        Int value = builder.module().functionAt(1).newValue(builder.intType());
+        injected.setResult(value, builder.intType());
+        injected.setConstInt(7);
+        builder.module().functionAt(1).blockAt(1).addOperation(injected);
+        Int duplicate = builder.ops().constInt(8, span);
+        builder.ops().returnValue(duplicate, span);
+        builder.freeze();
+        SublangCompilation result = SublangCompiler.compile(builder.module(), true, "on");
+        return !result.codegenReady() && result.error().startsWith("SUBLANG-B008");
+    }
+
+    public static Void rejectInvalidMemory() {
+        SublangModule invalidListView = SublangFullFlowFixtures.invalidView(false); invalidListView.freeze();
+        SublangModule invalidBondView = SublangFullFlowFixtures.invalidView(true); invalidBondView.freeze();
+        SublangModule invalidSharedChild = SublangFullFlowFixtures.invalidSharedChild(); invalidSharedChild.freeze();
+        if (SublangCompiler.compile(invalidSharedChild, true, "on").codegenReady()) { println("FAIL shared alias child invalidation"); Processes.exit(1); }
+        if (SublangCompiler.compile(invalidListView, true, "on").codegenReady() || SublangCompiler.compile(invalidBondView, true, "on").codegenReady()) { println("FAIL collection/Bond view lifetime"); Processes.exit(1); }
+        if (!SublangWireChecks.check()) { println("FAIL wire/borrow-view contracts"); Processes.exit(1); }
+        println("PASS wire limits, metadata/provenance roundtrip and graph-view invalidation");
+        if (!SublangIntegerFixtures.bounds()) { println("FAIL Optimind signed multiplication bounds"); Processes.exit(1); }
+        println("PASS Optimind signed multiplication bounds");
+        SublangModule uninitialized = SublangBackendSmoke.object(true, false);
+        uninitialized.freeze();
+        SublangModule expired = SublangBackendSmoke.object(false, true);
+        expired.freeze();
+        Bool first = !SublangCompiler.compile(uninitialized, true, "on").codegenReady();
+        Bool second = !SublangCompiler.compile(expired, true, "off").codegenReady();
+        SublangModule arithmetic = SublangBackendSmoke.arithmetic(false);
+        Bool draft = !SublangCompiler.compile(arithmetic, true, "on").codegenReady();
+        arithmetic.freeze();
+        Bool folded = SublangOptimind.analyze(arithmetic.functionAt(1), true).changes() > 0;
+        if (!first || !second || !draft || !folded) {
+            println("FAIL backend gate or Optimind overlay");
+            Processes.exit(1);
+        }
+        if (!SublangBackendSmoke.duplicateIdsRejected()) {
+            println("FAIL duplicate operation id gate");
+            Processes.exit(1);
+        }
+        SublangBackendSmoke.rejectInvalidCfg();
+        SublangBackendSmoke.rejectInvalidScopes();
+        SublangBackendSmoke.rejectInvalidBorrows();
+        SublangBackendSmoke.rejectInvalidTransfers();
+        SublangBackendSmoke.rejectInvalidGraphs();
+        println("PASS lifetime/id gates and safe constant folding");
+    }
+}
+
+main() {
+    SublangBackendSmoke.emit("static-string", SublangFullFlowFixtures.strings(false));
+    SublangBackendSmoke.emit("string-bounds", SublangFullFlowFixtures.strings(true));
+    SublangBackendSmoke.emit("inline-list", SublangFullFlowFixtures.collection(false));
+    SublangBackendSmoke.emit("owned-list", SublangFullFlowFixtures.collection(true));
+    SublangBackendSmoke.emit("nested-regions", SublangFullFlowFixtures.nestedRegions());
+    SublangBackendSmoke.emit("bond-cycle", SublangFullFlowFixtures.bondCycle());
+    SublangBackendSmoke.emit("bond-component", SublangBondComponentFixture().build());
+    SublangBackendSmoke.emit("value-list", SublangFullFlowFixtures.valueLists());
+    SublangBackendSmoke.emit("inline-local", SublangFullFlowFixtures.inlineAddress());
+    SublangBackendSmoke.emit("arithmetic", SublangBackendSmoke.arithmetic(false));
+    SublangBackendSmoke.emit("loop", SublangBackendSmoke.loop());
+    SublangBackendSmoke.emit("record", SublangBackendSmoke.record());
+    SublangBackendSmoke.emit("floating", SublangBackendSmoke.floating());
+    SublangBackendSmoke.emit("object", SublangBackendSmoke.object(false, false));
+    SublangBackendSmoke.emit("object-cfg", SublangBackendSmoke.objectCfg(0));
+    SublangBackendSmoke.emit("scoped-runtime", SublangBackendSmoke.scopedRuntime(0));
+    SublangBackendSmoke.emit("borrowed-calls", SublangBackendSmoke.borrowedCalls(0));
+    SublangBackendSmoke.emit("owned-transfers", SublangBackendSmoke.ownedTransfers(0));
+    SublangBackendSmoke.emit("root-graph", SublangRootFixtures.graph(0));
+    SublangBackendSmoke.emit("root-deep", SublangRootFixtures.deep());
+    SublangBackendSmoke.emit("folded-fields", SublangParityFixtures.folded());
+    SublangBackendSmoke.emit("shard-mixed", SublangParityFixtures.shard(false));
+    SublangBackendSmoke.emit("root-churn", SublangParityFixtures.shard(true));
+    SublangBackendSmoke.emit("pool-borrow", SublangParityFixtures.pool());
+    SublangBackendSmoke.emit("integer-parity", SublangIntegerFixtures.arithmetic(0));
+    SublangBackendSmoke.emit("mul-overflow", SublangIntegerFixtures.arithmetic(1));
+    SublangBackendSmoke.emit("div-zero", SublangIntegerFixtures.arithmetic(2));
+    SublangBackendSmoke.emit("div-overflow", SublangIntegerFixtures.arithmetic(3));
+    SublangBackendSmoke.emit("division", SublangBackendSmoke.division());
+    SublangBackendSmoke.emit("constant-calls", SublangCallFixture.arithmetic(false));
+    SublangBackendSmoke.emit("folded-getter", SublangCallFixture.getter());
+    SublangBackendSmoke.emit("call-overflow", SublangCallFixture.arithmetic(true));
+    SublangBackendSmoke.emit("borrowed-graph", SublangViewFixture.graph(0));
+    SublangBackendSmoke.emit("pool-graph-inner", SublangGraphPoolFixture().build(false));
+    SublangBackendSmoke.emit("pool-graph-outer", SublangGraphPoolFixture().build(true));
+    SublangBackendSmoke.emit("overflow", SublangBackendSmoke.arithmetic(true));
+    SublangBackendSmoke.rejectInvalidMemory();
+}

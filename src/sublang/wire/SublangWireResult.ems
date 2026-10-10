@@ -1,0 +1,20 @@
+namespace sublang::wire;
+
+use sublang::ir::SublangModule;
+
+public class SublangWireResult {
+    private SublangModule snapshot;
+    private String encoded;
+    private String failure;
+
+    public SublangWireResult(SublangModule module, String text, String error) {
+        this.snapshot = module;
+        this.encoded = text;
+        this.failure = error;
+    }
+
+    public Bool valid() { return this.failure == ""; }
+    public String error() { return this.failure; }
+    public String text() { return this.encoded; }
+    public SublangModule module() { return this.snapshot; }
+}

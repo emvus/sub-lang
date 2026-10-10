@@ -1,0 +1,120 @@
+namespace sublang::dump;
+
+use sublang::ir::SublangModule;
+use sublang::model::SublangField;
+use sublang::model::SublangType;
+use sublang::semantics::SublangAliasFact;
+use sublang::semantics::SublangEffectFact;
+use sublang::semantics::SublangEffectSummary;
+use sublang::semantics::SublangFailureAction;
+use sublang::semantics::SublangLocation;
+use sublang::semantics::SublangSemanticProfile;
+use sublang::vocabulary::SublangVocabulary;
+use sublang::dump::SublangDumpText;
+use sublang::dump::SublangDumpEvidence;
+
+// Lines of the module-level tables. The table order is part of the dump format: types and
+// fields come first because every later line refers to them by id.
+public class SublangDumpTables {
+    public static String render(SublangModule module) {
+        return SublangDumpTables.typeAndFieldLines(module) + SublangDumpTables.semanticLines(module);
+    }
+
+    public static String typeAndFieldLines(SublangModule module) {
+        String text = "";
+        Int typeId = 1;
+        while (typeId <= module.types().typeCount()) {
+            text = text + SublangDumpTables.typeLine(module, typeId);
+            typeId = typeId + 1;
+        }
+        Int fieldId = 1;
+        while (fieldId <= module.types().fieldCount()) {
+            text = text + SublangDumpTables.fieldLine(module, fieldId);
+            fieldId = fieldId + 1;
+        }
+        return text;
+    }
+
+    public static String semanticLines(SublangModule module) {
+        String text = "";
+        Int profileId = 1;
+        while (profileId <= module.semantics().profileCount()) {
+            text = text + SublangDumpTables.profileLine(module, profileId);
+            profileId = profileId + 1;
+        }
+        Int effectId = 1;
+        while (effectId <= module.semantics().effectSummaryCount()) {
+            text = text + SublangDumpTables.effectText(module, effectId);
+            effectId = effectId + 1;
+        }
+        Int locationId = 1;
+        while (locationId <= module.aliases().locationCount()) {
+            text = text + SublangDumpTables.locationLine(module, locationId);
+            locationId = locationId + 1;
+        }
+        Int factId = 1;
+        while (factId <= module.aliases().aliasFactCount()) {
+            text = text + SublangDumpTables.aliasLine(module, factId);
+            factId = factId + 1;
+        }
+        Int failureId = 1;
+        while (failureId <= module.semantics().failureCount()) {
+            text = text + SublangDumpTables.failureLine(module, failureId);
+            failureId = failureId + 1;
+        }
+        return text;
+    }
+
+    public static String typeLine(SublangModule module, Int typeId) {
+        SublangType typeEntry = module.types().typeAt(typeId);
+        String line = "type " + typeEntry.id().toString() + " " + typeEntry.kind() + " " + typeEntry.name();
+        if (typeEntry.isNominal()) {
+            line = line + " fields=" + SublangDumpText.listText(typeEntry.fields()) + " span=" + typeEntry.span().toString();
+        }
+        if (typeEntry.isRef()) {
+            line = line + " target=" + typeEntry.target().toString();
+        }
+        if (SublangVocabulary.isPrimitiveKind(typeEntry.kind())) {
+            line = line + " width=" + typeEntry.width().toString() + " signed=" + SublangDumpText.boolText(typeEntry.isSigned());
+        }
+        return line + "\n";
+    }
+
+    public static String fieldLine(SublangModule module, Int fieldId) {
+        SublangField fieldEntry = module.types().fieldAt(fieldId);
+        return "field " + fieldEntry.id().toString() + " owner=" + SublangDumpText.typeName(module, fieldEntry.owner()) + " " + fieldEntry.name() + " type=" + SublangDumpText.typeName(module, fieldEntry.typeId()) + " mutable=" + SublangDumpText.boolText(fieldEntry.isMutable()) + " span=" + fieldEntry.span().toString() + "\n";
+    }
+
+    public static String profileLine(SublangModule module, Int profileId) {
+        SublangSemanticProfile profileEntry = module.semantics().profileAt(profileId);
+        return "profile " + profileEntry.id().toString() + " " + profileEntry.name() + " version=" + profileEntry.version().toString() + " integer=" + profileEntry.integerRules() + " float=" + profileEntry.floatRules() + " failure=" + profileEntry.failureModel() + " unwinding=" + profileEntry.unwindingModel() + " startup=" + SublangDumpText.boolText(profileEntry.isStartupSupported()) + "\n";
+    }
+
+    // The effect summary header is followed by one indented line per fact, in insertion order.
+    public static String effectText(SublangModule module, Int effectId) {
+        SublangEffectSummary summary = module.semantics().effectSummaryAt(effectId);
+        String text = "effect " + summary.id().toString() + " " + summary.name() + " facts=" + summary.factCount().toString() + " span=" + summary.span().toString() + "\n";
+        Int index = 0;
+        while (index < summary.factCount()) {
+            SublangEffectFact fact = summary.factAt(index);
+            text = text + "  fact " + fact.area() + " " + fact.value() + " provenance=" + fact.provenance() + " detail=" + fact.detail() + " proof=" + fact.proof() + SublangDumpEvidence.effect(fact) + "\n";
+            index = index + 1;
+        }
+        return text;
+    }
+
+    public static String locationLine(SublangModule module, Int locationId) {
+        SublangLocation locationEntry = module.aliases().locationAt(locationId);
+        return "location " + locationEntry.id().toString() + " " + locationEntry.kind() + " " + locationEntry.name() + " span=" + locationEntry.span().toString() + "\n";
+    }
+
+    public static String aliasLine(SublangModule module, Int factId) {
+        SublangAliasFact factEntry = module.aliases().aliasFactAt(factId);
+        return "alias " + factEntry.id().toString() + " left=" + factEntry.left().toString() + " right=" + factEntry.right().toString() + " answer=" + factEntry.answer() + " origin=" + factEntry.origin() + " proof=" + factEntry.proof() + SublangDumpEvidence.render(factEntry.proofReference()) + " revision=" + factEntry.revision().toString() + " span=" + factEntry.span().toString() + "\n";
+    }
+
+    public static String failureLine(SublangModule module, Int failureId) {
+        SublangFailureAction action = module.semantics().failureActionAt(failureId);
+        return "failure " + action.id().toString() + " " + action.name() + " behavior=" + action.behavior() + " binding=" + action.binding() + " signature=" + action.signature().replace(" ", "_") + " continues=" + SublangDumpText.boolText(action.continues()) + " unwinding=" + action.unwinding() + " span=" + action.span().toString() + "\n";
+    }
+}

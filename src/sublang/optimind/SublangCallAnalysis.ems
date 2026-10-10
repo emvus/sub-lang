@@ -1,0 +1,80 @@
+namespace sublang::optimind;
+
+use sublang::ir::SublangModule;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::optimind::SublangValueFacts;
+use sublang::optimind::SublangConstantFold;
+
+// Closed-body proofs, independent of declared effect/noescape annotations.
+// Refuse recursion, CFGs, floating-point evaluation and any observable operation.
+public class SublangCallAnalysis {
+    public static Int getterField(SublangModule module, SublangOperation call) {
+        if (call.opcode() != "call.direct" || call.operandCount() != 1 || !call.hasResult()) { return 0; }
+        SublangFunction target = module.functionAt(call.ref());
+        if (target.paramCount() != 1 || target.paramAt(0).passing() != "borrow_read" || target.blockCount() != 1) { return 0; }
+        if (target.blockAt(1).operationCount() != 2) { return 0; }
+        SublangOperation read = target.blockAt(1).operationAt(0);
+        SublangOperation returned = target.blockAt(1).operationAt(1);
+        if (read.opcode() != "field.read" || returned.opcode() != "return") { return 0; }
+        if (read.operandAt(0) != target.paramAt(0).value() || returned.operandAt(0) != read.resultValue()) { return 0; }
+        String kind = module.types().kindOf(read.resultType());
+        if (kind != "Int" && kind != "Bool" && kind != "Float") { return 0; }
+        return read.ref();
+    }
+
+    public static Void fold(SublangModule module, SublangOperation call, SublangValueFacts facts) {
+        List<Int> active = List();
+        List<Int> budget = List(); budget.add(4096);
+        SublangValueFacts evaluated = SublangCallAnalysis.evaluate(module, call, facts, active, budget);
+        if (evaluated.known(1)) { facts.constant(call.resultValue(), evaluated.integer(1), true); }
+    }
+
+    private static SublangValueFacts evaluate(SublangModule module, SublangOperation call, SublangValueFacts caller, List<Int> active, List<Int> budget) {
+        SublangValueFacts answer = SublangValueFacts(1);
+        if (!call.hasResult() || active.contains(call.ref()) || active.length() >= 16) { return answer; }
+        String kind = module.types().kindOf(call.resultType());
+        if (kind != "Int" && kind != "Bool") { return answer; }
+        SublangFunction target = module.functionAt(call.ref());
+        if (target.blockCount() != 1 || target.blockAt(1).operationCount() > 64) { return answer; }
+        SublangValueFacts local = SublangValueFacts(target.valueCount());
+        Int index = 0;
+        while (index < call.operandCount()) {
+            if (!caller.known(call.operandAt(index))) { return answer; }
+            local.constant(target.paramAt(index).value(), caller.integer(call.operandAt(index)), false);
+            index = index + 1;
+        }
+        List<Int> nested = List(); index = 0;
+        while (index < active.length()) { nested.add(active.get(index)); index = index + 1; }
+        nested.add(call.ref());
+        return SublangCallAnalysis.body(module, target, local, nested, budget);
+    }
+
+    private static SublangValueFacts body(SublangModule module, SublangFunction target, SublangValueFacts local, List<Int> active, List<Int> budget) {
+        SublangValueFacts answer = SublangValueFacts(1);
+        Int index = 0;
+        while (index < target.blockAt(1).operationCount()) {
+            if (budget.get(0) <= 0) { return answer; }
+            budget.set(0, budget.get(0) - 1);
+            SublangOperation operation = target.blockAt(1).operationAt(index);
+            if (operation.opcode() == "return") {
+                Int value = operation.operandAt(0);
+                if (local.known(value)) { answer.constant(1, local.integer(value), false); }
+                return answer;
+            }
+            if (operation.opcode() == "call.direct") {
+                SublangValueFacts result = SublangCallAnalysis.evaluate(module, operation, local, active, budget);
+                if (!result.known(1)) { return answer; }
+                local.constant(operation.resultValue(), result.integer(1), false);
+            }
+            if (operation.opcode() != "call.direct") {
+                if (!operation.opcode().startsWith("const.") && !operation.opcode().startsWith("int.") && operation.opcode() != "compare") { return answer; }
+                SublangConstantFold.visit(operation, local);
+                // An unknown fold includes all trap/zero-divisor/overflow cases.
+                if (!operation.hasResult() || !local.known(operation.resultValue())) { return answer; }
+            }
+            index = index + 1;
+        }
+        return answer;
+    }
+}

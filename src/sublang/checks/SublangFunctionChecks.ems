@@ -1,0 +1,140 @@
+namespace sublang::checks;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangParam;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+use sublang::model::SublangType;
+use sublang::vocabulary::SublangVocabulary;
+
+// Checks the signature of one function: return type, declaration, parameters, receiver and
+// the types of its values. Bodies are checked by SublangFlowChecks, external contracts here.
+public class SublangFunctionChecks {
+    private SublangReport findings;
+    private SublangModule module;
+
+    public SublangFunctionChecks(SublangReport report, SublangModule source) {
+        this.findings = report;
+        this.module = source;
+    }
+
+    // Reference returns use explicit owned transfers at each return/call site. Bare
+    // classes remain layout types; lifetime correctness is a separate verification stage.
+    public Void checkReturnType(SublangFunction fnEntry) {
+        if (!this.module.types().hasType(fnEntry.returnType())) {
+            this.findings.report("SUBLANG-S002", "return type of " + fnEntry.name() + " is not defined", fnEntry.span());
+            return;
+        }
+        if (this.module.types().kindOf(fnEntry.returnType()) == "Class" || this.module.types().kindOf(fnEntry.returnType()) == "List") {
+            this.findings.report("SUBLANG-T005", "function " + fnEntry.name() + " returns a bare class; values must use Ref<class>", fnEntry.span());
+        }
+    }
+
+    public Void checkDeclaration(SublangFunction fnEntry) {
+        if (!SublangVocabulary.isKnownLinkage(fnEntry.linkage())) {
+            this.findings.report("SUBLANG-S001", "function " + fnEntry.name() + " has unknown linkage " + fnEntry.linkage(), fnEntry.span());
+        }
+        if (fnEntry.callingConvention() != "sublang") {
+            this.findings.report("SUBLANG-U003", "function " + fnEntry.name() + " uses calling convention " + fnEntry.callingConvention() + "; only sublang is supported in v0.1", fnEntry.span());
+        }
+        if (!SublangVocabulary.isKnownDefinition(fnEntry.definition())) {
+            this.findings.report("SUBLANG-S001", "function " + fnEntry.name() + " has unknown definition kind " + fnEntry.definition(), fnEntry.span());
+        }
+    }
+
+    public Void checkParams(SublangFunction fnEntry) {
+        Int index = 0;
+        while (index < fnEntry.paramCount()) {
+            this.checkParam(fnEntry, fnEntry.paramAt(index));
+            index = index + 1;
+        }
+        this.checkReceiver(fnEntry);
+    }
+
+    private Void checkParam(SublangFunction fnEntry, SublangParam paramEntry) {
+        if (!SublangVocabulary.isKnownPassing(paramEntry.passing())) {
+            this.findings.report("SUBLANG-S001", "unknown passing mode " + paramEntry.passing() + " on parameter " + paramEntry.name(), fnEntry.span());
+        }
+        if (!this.module.types().hasType(paramEntry.typeId())) {
+            this.findings.report("SUBLANG-S002", "parameter " + paramEntry.name() + " has an undefined type", fnEntry.span());
+            return;
+        }
+        this.checkParamMode(fnEntry, paramEntry);
+    }
+
+    // References need an explicit borrow or init mode; other types are passed by value.
+    private Void checkParamMode(SublangFunction fnEntry, SublangParam paramEntry) {
+        Bool isRefParam = this.module.types().typeAt(paramEntry.typeId()).isRef() || this.module.types().isKind(paramEntry.typeId(), "Bond");
+        if (isRefParam && paramEntry.passing() == "value") {
+            this.findings.report("SUBLANG-T002", "reference parameter " + paramEntry.name() + " needs an explicit passing mode", fnEntry.span());
+        }
+        if (!isRefParam && paramEntry.passing() != "value") {
+            this.findings.report("SUBLANG-T002", "parameter " + paramEntry.name() + " of non-reference type cannot use passing mode " + paramEntry.passing(), fnEntry.span());
+        }
+    }
+
+    // A method must take its class as a Ref receiver with an explicit access mode.
+    private Void checkReceiver(SublangFunction fnEntry) {
+        if (fnEntry.methodOf() == 0) {
+            return;
+        }
+        if (!this.module.types().isKind(fnEntry.methodOf(), "Class")) {
+            this.findings.report("SUBLANG-T003", "methodOf of " + fnEntry.name() + " must be a class type", fnEntry.span());
+            return;
+        }
+        if (fnEntry.paramCount() == 0) {
+            this.findings.report("SUBLANG-T002", "instance method " + fnEntry.name() + " has no receiver parameter", fnEntry.span());
+            return;
+        }
+        if (!this.isValidReceiver(fnEntry)) {
+            this.findings.report("SUBLANG-T002", "receiver of " + fnEntry.name() + " must be Ref<class> with passing mode borrow_read, borrow_write or init", fnEntry.span());
+        }
+    }
+
+    private Bool isValidReceiver(SublangFunction fnEntry) {
+        SublangParam receiver = fnEntry.paramAt(0);
+        Bool receiverMode = receiver.passing() == "borrow_read" || receiver.passing() == "borrow_write" || receiver.passing() == "init";
+        if (!receiverMode || !this.module.types().hasType(receiver.typeId())) {
+            return false;
+        }
+        SublangType receiverType = this.module.types().typeAt(receiver.typeId());
+        return receiverType.isRef() && receiverType.target() == fnEntry.methodOf();
+    }
+
+    // Every value of a function (parameters, block parameters and operation results) needs a
+    // defined value type. Void and bare classes are layout or no-value types, never values.
+    public Void checkValues(SublangFunction fnEntry) {
+        Int valueId = 1;
+        while (valueId <= fnEntry.valueCount()) {
+            this.checkValue(fnEntry, valueId);
+            valueId = valueId + 1;
+        }
+    }
+
+    private Void checkValue(SublangFunction fnEntry, Int valueId) {
+        Int typeId = fnEntry.valueTypeAt(valueId);
+        if (!this.module.types().hasType(typeId)) {
+            this.findings.report("SUBLANG-S002", "value v" + valueId.toString() + " of " + fnEntry.name() + " has undefined type id " + typeId.toString(), fnEntry.span());
+            return;
+        }
+        String kind = this.module.types().kindOf(typeId);
+        if (kind == "Void") {
+            this.findings.report("SUBLANG-T005", "value v" + valueId.toString() + " of " + fnEntry.name() + " cannot have type Void", fnEntry.span());
+            return;
+        }
+        if (kind == "Class" || kind == "List") {
+            this.findings.report("SUBLANG-T005", "value v" + valueId.toString() + " of " + fnEntry.name() + " is a bare class; values must use Ref<class>", fnEntry.span());
+        }
+    }
+
+    // An external contract declares a callable without a body. The declaration itself is valid;
+    // calls to it are rejected by the operation checks until a provider contract exists.
+    public Void checkContract(SublangFunction fnEntry) {
+        if (fnEntry.blockCount() != 0) {
+            this.findings.report("SUBLANG-S004", "external contract " + fnEntry.name() + " must not have a body", fnEntry.span());
+        }
+        if (fnEntry.linkage() != "external") {
+            this.findings.report("SUBLANG-S001", "external contract " + fnEntry.name() + " must have external linkage", fnEntry.span());
+        }
+    }
+}

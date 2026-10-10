@@ -1,0 +1,90 @@
+namespace sublang::backend;
+
+use sublang::analysis::SublangVerifier;
+use sublang::analysis::SublangVerification;
+use sublang::body::SublangFunction;
+use sublang::ir::SublangModule;
+use sublang::hyperalloc::SublangLocalLifetime;
+use sublang::backend::SublangBackendBudget;
+
+// Resource limits are checked before the generic dominance verifier allocates tables.
+// This target accepts only a subset; unsupported semantics are errors, never ignored.
+public class SublangBackendGate {
+    public static String check(SublangModule module) {
+        if (!module.isFrozen()) {
+            return "SUBLANG-B001: freeze the input snapshot before compilation";
+        }
+        String error = SublangBackendBudget().check(module);
+        if (error != "") {
+            return error;
+        }
+        SublangVerification verdict = SublangVerifier(module).verify();
+        if (!verdict.structurallyValid() || verdict.semanticsStatus() != "valid") {
+            return "SUBLANG-B002: " + verdict.diagnostics().get(0).message();
+        }
+        error = SublangBackendGate.types(module);
+        if (error != "") {
+            return error;
+        }
+        Int failureId = 1;
+        while (failureId <= module.semantics().failureCount()) {
+            String binding = module.semantics().failureActionAt(failureId).binding();
+            if (binding != "unbound" && binding != "libc.abort") {
+                return "SUBLANG-B004: failure binding is not supported by the host-libc target";
+            }
+            failureId = failureId + 1;
+        }
+        return SublangBackendGate.functions(module);
+    }
+
+    private static String types(SublangModule module) {
+        Int fieldId = 1;
+        while (fieldId <= module.types().fieldCount()) {
+            String kind = module.types().kindOf(module.types().fieldAt(fieldId).typeId());
+            if (kind == "String") { fieldId = fieldId + 1; continue; }
+            Bool ownedField = (kind == "Ref" || kind == "Bond") && module.types().isKind(module.types().fieldAt(fieldId).owner(), "Class");
+            if (!ownedField && kind != "Int" && kind != "Bool" && kind != "Float") {
+                return "SUBLANG-B004: records require primitive fields; class fields may also own Ref values";
+            }
+            fieldId = fieldId + 1;
+        }
+        return "";
+    }
+
+    private static String functions(SublangModule module) {
+        Int functionId = 1;
+        while (functionId <= module.functionCount()) {
+            SublangFunction function = module.functionAt(functionId);
+            if (function.definition() != "body") {
+                return "SUBLANG-B004: external contracts need a supported runtime binding";
+            }
+            Int index = 0;
+            while (index < function.paramCount()) {
+                if (module.types().kindOf(function.paramAt(index).typeId()) == "Ref" || module.types().kindOf(function.paramAt(index).typeId()) == "Bond") {
+                    String mode = function.paramAt(index).passing();
+                    if (mode != "borrow_read" && mode != "borrow_write" && mode != "owned") {
+                        return "SUBLANG-B004: reference parameters require a supported borrow or owned contract";
+                    }
+                }
+                index = index + 1;
+            }
+            String error = SublangLocalLifetime(module, function).check();
+            if (error != "") {
+                return "SUBLANG-B005: fn" + functionId.toString() + ": " + error;
+            }
+            functionId = functionId + 1;
+        }
+        return SublangBackendGate.entry(module);
+    }
+
+    private static String entry(SublangModule module) {
+        if (module.entryFunction() == 0) {
+            return "";
+        }
+        SublangFunction entry = module.functionAt(module.entryFunction());
+        if (entry.paramCount() != 0 || entry.returnType() != module.types().intType()) {
+            return "SUBLANG-B006: executable entry must be () -> i64";
+        }
+        return "";
+    }
+}

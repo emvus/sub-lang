@@ -1,0 +1,6 @@
+use sublang::cli::SublangCommand;
+use Std::Process::Processes;
+
+main() {
+    Processes.exit(SublangCommand.run(Processes.args()));
+}

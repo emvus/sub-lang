@@ -1,0 +1,52 @@
+namespace sublang::hyperalloc;
+
+use sublang::body::SublangFunction;
+
+// Bounded CFG transitive closure for profitability, not an escape/lifetime proof.
+// The backend checks the 64-block budget before constructing this analysis.
+public class SublangControlCycles {
+    private List<Bool> paths;
+    private Int count;
+
+    public SublangControlCycles(SublangFunction function) {
+        this.paths = List();
+        this.count = function.blockCount();
+        Int index = 0;
+        while (index < this.count * this.count) { this.paths.add(false); index = index + 1; }
+        Int block = 1;
+        while (block <= this.count) {
+            Int last = function.blockAt(block).operationCount() - 1;
+            Int edge = 0;
+            while (edge < function.blockAt(block).operationAt(last).targetCount()) {
+                Int target = function.blockAt(block).operationAt(last).targetAt(edge);
+                this.paths.set(this.key(block, target), true);
+                edge = edge + 1;
+            }
+            block = block + 1;
+        }
+        this.close();
+    }
+
+    private Void close() {
+        Int middle = 1;
+        while (middle <= this.count) {
+            Int from = 1;
+            while (from <= this.count) {
+                if (this.paths.get(this.key(from, middle))) { this.connect(from, middle); }
+                from = from + 1;
+            }
+            middle = middle + 1;
+        }
+    }
+
+    private Void connect(Int from, Int middle) {
+        Int to = 1;
+        while (to <= this.count) {
+            if (this.paths.get(this.key(middle, to))) { this.paths.set(this.key(from, to), true); }
+            to = to + 1;
+        }
+    }
+
+    private Int key(Int from, Int to) { return (from - 1) * this.count + to - 1; }
+    public Bool contains(Int block) { return this.paths.get(this.key(block, block)); }
+}

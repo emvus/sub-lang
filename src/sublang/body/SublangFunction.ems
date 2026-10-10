@@ -1,0 +1,272 @@
+namespace sublang::body;
+
+use sublang::body::SublangBlock;
+use sublang::body::SublangOperation;
+use sublang::body::SublangParam;
+
+// Function signature plus body. Value ids are function-local and 1-based; the
+// value table stores only the type of each value. Blocks are 1-based and block 1
+// is the entry block. A function is either a body (definition "body") or an
+// external contract (definition "contract", no blocks, linkage "external").
+// Every function names one semantic profile and one effect summary by id; 0 means
+// the reference is missing and the verifier reports it.
+public class SublangFunction {
+    private Int functionIdValue;
+    private String nameText;
+    private Int returnTypeId;
+    private Int methodOfId;
+    private Int spanIdValue;
+    private Int profileIdValue;
+    private Int effectSummaryIdValue;
+    private String linkageText;
+    private String callingConventionText;
+    private String definitionText;
+    private Bool frozenFlag;
+    private Int refusalCounter;
+    private List<SublangParam> paramList;
+    private List<SublangBlock> blockList;
+    private List<Int> valueTypeIds;
+    private Int scopeCounter;
+
+    public SublangFunction(Int id, String name, Int returnType, Int methodOf, Int span) {
+        this.functionIdValue = id;
+        this.nameText = name + "";
+        this.returnTypeId = returnType;
+        this.methodOfId = methodOf;
+        this.spanIdValue = span;
+        this.profileIdValue = 0;
+        this.effectSummaryIdValue = 0;
+        this.linkageText = "internal";
+        this.callingConventionText = "sublang";
+        this.definitionText = "body";
+        this.frozenFlag = false;
+        this.refusalCounter = 0;
+        this.paramList = List();
+        this.blockList = List();
+        this.valueTypeIds = List();
+        this.scopeCounter = 0;
+    }
+
+    public Int id() {
+        return this.functionIdValue;
+    }
+
+    public String name() {
+        return this.nameText;
+    }
+
+    public Int returnType() {
+        return this.returnTypeId;
+    }
+
+    public Int methodOf() {
+        return this.methodOfId;
+    }
+
+    public Int span() {
+        return this.spanIdValue;
+    }
+
+    public Int profile() {
+        return this.profileIdValue;
+    }
+
+    public Int effectSummary() {
+        return this.effectSummaryIdValue;
+    }
+
+    public String linkage() {
+        return this.linkageText;
+    }
+
+    public String callingConvention() {
+        return this.callingConventionText;
+    }
+
+    public String definition() {
+        return this.definitionText;
+    }
+
+    public Int refusalCount() {
+        return this.refusalCounter;
+    }
+
+    public List<SublangParam> params() {
+        List<SublangParam> copy = List();
+        Int index = 0;
+        while (index < this.paramList.length()) {
+            copy.add(this.paramList.get(index));
+            index = index + 1;
+        }
+        return copy;
+    }
+
+    public Int paramCount() {
+        return this.paramList.length();
+    }
+
+    public SublangParam paramAt(Int index) {
+        return this.paramList.get(index);
+    }
+
+    public List<SublangBlock> blocks() {
+        List<SublangBlock> copy = List();
+        Int index = 0;
+        while (index < this.blockList.length()) {
+            copy.add(this.blockList.get(index));
+            index = index + 1;
+        }
+        return copy;
+    }
+
+    public Int blockCount() {
+        return this.blockList.length();
+    }
+
+    public Bool hasBlock(Int blockId) {
+        return blockId >= 1 && blockId <= this.blockList.length();
+    }
+
+    public SublangBlock blockAt(Int blockId) {
+        return this.blockList.get(blockId - 1);
+    }
+
+    public Int valueCount() {
+        return this.valueTypeIds.length();
+    }
+
+    public Bool hasValue(Int valueId) {
+        return valueId >= 1 && valueId <= this.valueTypeIds.length();
+    }
+
+    public Int valueTypeAt(Int valueId) {
+        return this.valueTypeIds.get(valueId - 1);
+    }
+
+    // Zero for an unknown value; the checks treat a zero type as "no type" and report it there.
+    public Int valueTypeOrZero(Int valueId) {
+        if (!this.hasValue(valueId)) {
+            return 0;
+        }
+        return this.valueTypeAt(valueId);
+    }
+
+    // Number of scope.begin operations that open the given scope in this function.
+    public Int scopeBeginCount(Int scopeId) {
+        Int count = 0;
+        Int blockId = 1;
+        while (blockId <= this.blockCount()) {
+            SublangBlock block = this.blockAt(blockId);
+            Int index = 0;
+            while (index < block.operationCount()) {
+                SublangOperation op = block.operationAt(index);
+                if (op.opcode() == "scope.begin" && op.ref() == scopeId) {
+                    count = count + 1;
+                }
+                index = index + 1;
+            }
+            blockId = blockId + 1;
+        }
+        return count;
+    }
+
+    public Void freeze() {
+        this.frozenFlag = true;
+        Int index = 0;
+        while (index < this.blockList.length()) {
+            this.blockList.get(index).freeze();
+            index = index + 1;
+        }
+    }
+
+    public Void setProfile(Int profileId) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.profileIdValue = profileId;
+    }
+
+    public Void setEffectSummary(Int effectId) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.effectSummaryIdValue = effectId;
+    }
+
+    public Void setLinkage(String linkage) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.linkageText = linkage + "";
+    }
+
+    public Void setDefinition(String definition) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.definitionText = definition + "";
+    }
+
+    public Int newValue(Int typeId) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return 0;
+        }
+        this.valueTypeIds.add(typeId);
+        return this.valueTypeIds.length();
+    }
+
+    public Int addParam(String name, Int typeId, String passing, Bool noEscape) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return 0;
+        }
+        Int valueId = this.newValue(typeId);
+        SublangParam paramEntry = SublangParam(valueId, name, typeId, passing, noEscape);
+        this.paramList.add(paramEntry);
+        return valueId;
+    }
+
+    public Int addBlock() {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return 0;
+        }
+        SublangBlock blockEntry = SublangBlock(this.blockList.length() + 1);
+        this.blockList.add(blockEntry);
+        return this.blockList.length();
+    }
+
+    // Import a signature after its dense value table, without renumbering SSA ids.
+    // Structural verification still checks uniqueness, definition and type agreement.
+    public Void addParamValue(Int value, String name, Int typeId, String passing, Bool noEscape) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.paramList.add(SublangParam(value, name, typeId, passing, noEscape));
+    }
+
+    public Int addBlockParam(Int blockId, Int typeId) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return 0;
+        }
+        Int valueId = this.newValue(typeId);
+        this.blockList.get(blockId - 1).addParam(valueId);
+        return valueId;
+    }
+
+    public Int newScope() {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return 0;
+        }
+        this.scopeCounter = this.scopeCounter + 1;
+        return this.scopeCounter;
+    }
+}

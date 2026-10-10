@@ -1,0 +1,195 @@
+namespace sublang::body;
+
+use sublang::body::SublangBlock;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+
+// Reachability and dominators of one function. The control-flow graph comes from the
+// terminators, and block 1 is the entry. The dominator table is one flat list, so that
+// slotOf is the only place that knows its layout.
+public class SublangDominance {
+    private SublangFunction function;
+    private Int blockTotal;
+    private List<Bool> reachableFlags;
+    private List<Bool> dominatorFlags;
+
+    public SublangDominance(SublangFunction fnEntry) {
+        this.function = fnEntry;
+        this.blockTotal = fnEntry.blockCount();
+        this.reachableFlags = List();
+        this.dominatorFlags = List();
+        this.computeReachability();
+        this.computeDominators();
+    }
+
+    public Bool isReachable(Int blockId) {
+        if (!this.function.hasBlock(blockId)) {
+            return false;
+        }
+        return this.reachableFlags.get(blockId - 1);
+    }
+
+    // Unreachable blocks dominate nothing and are dominated by nothing; the verifier reports them itself.
+    public Bool dominates(Int dominator, Int blockId) {
+        if (!this.isReachable(dominator) || !this.isReachable(blockId)) {
+            return false;
+        }
+        return this.dominatorFlags.get(this.slotOf(blockId, dominator));
+    }
+
+    // Successors that exist in the function. Invalid targets are left to the verifier, which reports them.
+    public List<Int> successorsOf(Int blockId) {
+        List<Int> result = List();
+        SublangBlock blockEntry = this.function.blockAt(blockId);
+        Int count = blockEntry.operationCount();
+        if (count == 0) {
+            return result;
+        }
+        SublangOperation last = blockEntry.operationAt(count - 1);
+        if (last.opcode() != "branch" && last.opcode() != "cond_branch") {
+            return result;
+        }
+        Int index = 0;
+        while (index < last.targetCount()) {
+            Int target = last.targetAt(index);
+            if (this.function.hasBlock(target)) {
+                result.add(target);
+            }
+            index = index + 1;
+        }
+        return result;
+    }
+
+    public Bool isPredecessor(Int predecessor, Int blockId) {
+        List<Int> successors = this.successorsOf(predecessor);
+        Int index = 0;
+        while (index < successors.length()) {
+            if (successors.get(index) == blockId) {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    private Int slotOf(Int blockId, Int dominatorId) {
+        return (blockId - 1) * this.blockTotal + (dominatorId - 1);
+    }
+
+    private Void computeReachability() {
+        Int index = 0;
+        while (index < this.blockTotal) {
+            this.reachableFlags.add(false);
+            index = index + 1;
+        }
+        if (this.blockTotal == 0) {
+            return;
+        }
+        this.reachableFlags.set(0, true);
+        List<Int> pending = List();
+        pending.add(1);
+        while (pending.length() > 0) {
+            Int current = pending.removeAt(pending.length() - 1);
+            this.markSuccessors(current, pending);
+        }
+    }
+
+    // Each block is visited once: the flag is set before the block is queued.
+    private Void markSuccessors(Int blockId, List<Int> pending) {
+        List<Int> successors = this.successorsOf(blockId);
+        Int index = 0;
+        while (index < successors.length()) {
+            Int successor = successors.get(index);
+            if (!this.reachableFlags.get(successor - 1)) {
+                this.reachableFlags.set(successor - 1, true);
+                pending.add(successor);
+            }
+            index = index + 1;
+        }
+    }
+
+    // Dom(entry) = {entry}. Every other block starts dominated by all blocks and is narrowed until
+    // nothing changes: a block is dominated by a candidate when every reachable predecessor is.
+    private Void computeDominators() {
+        this.initializeDominators();
+        Bool changed = true;
+        while (changed) {
+            changed = this.refineDominators();
+        }
+    }
+
+    private Void initializeDominators() {
+        Int slot = 0;
+        while (slot < this.blockTotal * this.blockTotal) {
+            this.dominatorFlags.add(false);
+            slot = slot + 1;
+        }
+        Int blockId = 2;
+        while (blockId <= this.blockTotal) {
+            this.fillRowWithTrue(blockId);
+            blockId = blockId + 1;
+        }
+        if (this.blockTotal > 0) {
+            this.dominatorFlags.set(0, true);
+        }
+    }
+
+    private Void fillRowWithTrue(Int blockId) {
+        Int dominatorId = 1;
+        while (dominatorId <= this.blockTotal) {
+            this.dominatorFlags.set(this.slotOf(blockId, dominatorId), true);
+            dominatorId = dominatorId + 1;
+        }
+    }
+
+    // One pass over the reachable blocks. The return value tells the caller whether another pass is needed.
+    private Bool refineDominators() {
+        Bool changed = false;
+        Int blockId = 2;
+        while (blockId <= this.blockTotal) {
+            if (this.reachableFlags.get(blockId - 1) && this.refineRow(blockId)) {
+                changed = true;
+            }
+            blockId = blockId + 1;
+        }
+        return changed;
+    }
+
+    // Writes one row of the table. Each cell reads only its own column of the predecessors, so the
+    // order of the cells inside a row cannot change the result.
+    private Bool refineRow(Int blockId) {
+        Bool changed = false;
+        Int dominatorId = 1;
+        while (dominatorId <= this.blockTotal) {
+            Bool holds = this.dominatorHolds(blockId, dominatorId);
+            Int slot = this.slotOf(blockId, dominatorId);
+            if (this.dominatorFlags.get(slot) != holds) {
+                this.dominatorFlags.set(slot, holds);
+                changed = true;
+            }
+            dominatorId = dominatorId + 1;
+        }
+        return changed;
+    }
+
+    // A block dominates itself. Any other candidate dominates the block only if the block has a
+    // reachable predecessor and every such predecessor is dominated by the candidate.
+    private Bool dominatorHolds(Int blockId, Int dominatorId) {
+        if (blockId == dominatorId) {
+            return true;
+        }
+        Bool sawPredecessor = false;
+        Bool everyPredecessorDominated = true;
+        Int predecessorId = 1;
+        while (predecessorId <= this.blockTotal) {
+            if (this.reachableFlags.get(predecessorId - 1) && this.isPredecessor(predecessorId, blockId)) {
+                sawPredecessor = true;
+                if (!this.dominatorFlags.get(this.slotOf(predecessorId, dominatorId))) {
+                    everyPredecessorDominated = false;
+                }
+            }
+            predecessorId = predecessorId + 1;
+        }
+        return sawPredecessor && everyPredecessorDominated;
+    }
+}

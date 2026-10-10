@@ -1,0 +1,53 @@
+namespace sublang::checks::data;
+
+use sublang::ir::SublangModule;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::diagnostics::SublangReport;
+
+public class SublangCollectionChecks {
+    public static Void check(SublangReport report, SublangModule module, SublangFunction function, SublangOperation op) {
+        String error = SublangCollectionChecks.validate(module, function, op);
+        if (error != "") { report.report("SUBLANG-T003", error, op.span()); }
+    }
+
+    private static String validate(SublangModule module, SublangFunction function, SublangOperation op) {
+        String opcode = op.opcode();
+        if (opcode == "list.new") {
+            if (!module.types().isKind(op.ref(), "List") || !op.hasResult() || op.operandCount() != 0) { return "list.new requires a List layout and no operands"; }
+            if (op.resultType() != module.types().refTypeOrZero(op.ref()) || op.resultOwnership() != "owned" || op.scope() <= 0) { return "list.new requires an owned result and destination scope"; }
+            return "";
+        }
+        Int count = 2;
+        if (opcode == "list.length" || opcode == "list.clear") { count = 1; }
+        if (op.operandCount() != count) { return "invalid List operand count"; }
+        Int reference = function.valueTypeOrZero(op.operandAt(0));
+        if (!module.types().isKind(reference, "Ref")) { return "List receiver requires Ref<List>"; }
+        Int type = module.types().typeAt(reference).target();
+        if (!module.types().isKind(type, "List")) { return "List receiver has incompatible layout"; }
+        Int element = module.types().typeAt(type).target();
+        String mode = "borrow_read";
+        if (opcode == "list.push" || opcode == "list.clear") { mode = "borrow_write"; }
+        if (op.modeAt(0) != mode) { return "invalid List access mode"; }
+        if (opcode == "list.clear" || opcode == "list.push") {
+            if (op.hasResult() || op.scope() != 0 || op.resultOwnership() != "") { return "List mutation has no result ownership"; }
+            if (opcode == "list.clear") { return ""; }
+            String passing = "value";
+            if (module.types().isKind(element, "Class")) { element = module.types().refTypeOrZero(element); passing = "owned"; }
+            if (function.valueTypeOrZero(op.operandAt(1)) != element || op.modeAt(1) != passing) { return "list.push requires an element with matching ownership and type"; }
+            return "";
+        }
+        Int result = module.types().intType(); String ownership = "";
+        if (opcode != "list.length") {
+            if (function.valueTypeOrZero(op.operandAt(1)) != module.types().intType() || op.modeAt(1) != "value") { return "List index requires an Int value"; }
+            result = element;
+            if (opcode == "list.borrow") {
+                if (!module.types().isKind(element, "Class")) { return "list.borrow requires class elements"; }
+                result = module.types().refTypeOrZero(element); ownership = "borrow_read";
+            }
+            if (opcode == "list.get" && module.types().isKind(element, "Class")) { return "class elements require a borrowed view"; }
+        }
+        if (!op.hasResult() || op.resultType() != result || op.resultOwnership() != ownership || op.scope() != 0) { return "invalid List result contract"; }
+        return "";
+    }
+}

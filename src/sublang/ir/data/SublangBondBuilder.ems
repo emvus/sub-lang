@@ -1,0 +1,56 @@
+namespace sublang::ir::data;
+
+use sublang::ir::SublangCursor;
+use sublang::body::SublangOperation;
+
+// Shared graph handles are explicit, scoped roots. Edges do not consume a handle.
+public class SublangBondBuilder {
+    private SublangCursor cursor;
+    public SublangBondBuilder(SublangCursor cursor) { this.cursor = cursor; }
+
+    public Int create(Int type, Int scope, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("bond.new", span); op.setRef(type); op.setScope(scope); op.setResultOwnership("owned");
+        return this.value(op, this.cursor.module().types().bondTypeFor(type));
+    }
+    public Int retain(Int object, Int scope, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("bond.retain", span); op.setScope(scope); op.setResultOwnership("owned");
+        op.setOperands(this.args(object, 0), this.modes("borrow_read", ""));
+        return this.value(op, this.cursor.currentFunction().valueTypeOrZero(object));
+    }
+    public Int borrow(Int object, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("bond.borrow", span); op.setResultOwnership("borrow_read");
+        op.setOperands(this.args(object, 0), this.modes("borrow_read", ""));
+        Int target = this.cursor.module().types().typeAt(this.cursor.currentFunction().valueTypeOrZero(object)).target();
+        return this.value(op, this.cursor.module().types().refTypeFor(target));
+    }
+    public Int get(Int object, Int field, Int scope, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("bond.get", span); op.setRef(field); op.setScope(scope); op.setResultOwnership("owned");
+        op.setOperands(this.args(object, 0), this.modes("borrow_read", ""));
+        return this.value(op, this.cursor.module().types().fieldAt(field).typeId());
+    }
+    public Void link(Int object, Int field, Int child, Int span) { this.mutate("bond.link", object, field, child, span); }
+    public Void clear(Int object, Int field, Int span) { this.mutate("bond.clear", object, field, 0, span); }
+    public Void write(Int object, Int field, Int value, Int span) { this.mutate("bond.write", object, field, value, span); }
+    public Void own(Int object, Int field, Int child, Int span) { this.mutate("bond.own", object, field, child, span); }
+
+    private Void mutate(String opcode, Int object, Int field, Int value, Int span) {
+        if (!this.ready()) { return; }
+        SublangOperation op = this.operation(opcode, span); op.setRef(field);
+        String mode = "value";
+        if (opcode == "bond.link") { mode = "borrow_read"; }
+        if (opcode == "bond.own") { mode = "owned"; }
+        if (opcode == "bond.clear") { mode = ""; }
+        op.setOperands(this.args(object, value), this.modes("borrow_write", mode)); this.cursor.currentBlock().addOperation(op);
+    }
+    private List<Int> args(Int object, Int value) { List<Int> args = List(); args.add(object); if (value != 0) { args.add(value); } return args; }
+    private List<String> modes(String first, String second) { List<String> modes = List(); modes.add(first); if (second != "") { modes.add(second); } return modes; }
+    private Bool ready() { if (this.cursor.blockReady()) { return true; } this.cursor.module().refuse(); return false; }
+    private SublangOperation operation(String opcode, Int span) { return SublangOperation(this.cursor.module().nextOperationId(), opcode, span); }
+    private Int value(SublangOperation op, Int type) {
+        Int value = this.cursor.currentFunction().newValue(type); op.setResult(value, type); this.cursor.currentBlock().addOperation(op); return value;
+    }
+}

@@ -1,0 +1,142 @@
+namespace sublang::harness;
+
+use sublang::analysis::SublangVerifier;
+use sublang::analysis::SublangVerification;
+use sublang::body::SublangFunction;
+use sublang::body::SublangBlock;
+use sublang::body::SublangOperation;
+use sublang::dump::SublangDump;
+use sublang::harness::SublangHarnessFixtures;
+use sublang::harness::SublangHarnessSupport;
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+use sublang::proof::SublangProofReference;
+use sublang::semantics::SublangEffectSummary;
+use sublang::vocabulary::SublangVocabulary;
+
+public class SublangHarnessBoundaries {
+    // Retain aliases before freeze, then exercise both input and output list boundaries.
+    public static Bool freezeSnapshots() {
+        SublangBuilder builder = SublangHarnessFixtures.buildValid();
+        SublangModule module = builder.module();
+        SublangFunction function = module.functionAt(1);
+        SublangOperation operation = function.blockAt(1).operationAt(0);
+        List<Int> operands = operation.operands();
+        List<String> modes = List();
+        modes.add("value");
+        modes.add("value");
+        operation.setOperands(operands, modes);
+        List<Int> fields = module.types().typeAt(5).fields();
+        List<SublangBlock> blocks = function.blocks();
+        String before = SublangDump.render(module);
+        builder.freeze();
+        operands.clear();
+        modes.clear();
+        fields.clear();
+        blocks.clear();
+        SublangHarnessBoundaries.tryFrozenMutation(module);
+        SublangVerification verdict = SublangVerifier(module).verify();
+        Bool stable = before == SublangDump.render(module);
+        Bool accepted = verdict.structureStatus() == "valid" && verdict.semanticsStatus() == "valid";
+        return SublangHarnessSupport.report("freeze-list-boundaries", stable && accepted && SublangHarnessBoundaries.targetInputsCopied());
+    }
+
+    private static Void tryFrozenMutation(SublangModule module) {
+        module.types().typeAt(5).addField(9999);
+        module.types().typeAt(5).removeField(1);
+        module.types().typeAt(7).setNullable(true);
+        module.types().typeAt(5).fields().clear();
+        module.semantics().effectSummaryAt(1).facts().clear();
+        module.functionAt(1).params().clear();
+        module.functionAt(1).blocks().clear();
+        module.functionAt(1).blockAt(1).operations().clear();
+        module.functionAt(1).blockAt(1).paramValues().add(9999);
+        SublangOperation operation = module.functionAt(1).blockAt(1).operationAt(0);
+        operation.operands().clear();
+        operation.targets().add(9999);
+        operation.setRef(9999);
+        module.nextOperationId();
+    }
+
+    private static Bool targetInputsCopied() {
+        SublangOperation operation = SublangOperation(1, "branch", 0);
+        List<Int> targets = List();
+        targets.add(1);
+        operation.setTargets(targets, 0);
+        operation.freeze();
+        targets.clear();
+        operation.targets().clear();
+        operation.setTargets(targets, 0);
+        return operation.targetCount() == 1 && operation.targetAt(0) == 1 && operation.refusalCount() == 1;
+    }
+
+    public static Bool failureSignatureRejected() {
+        SublangBuilder builder = SublangBuilder("failure-signature");
+        Int span = builder.syntheticSpan("failure-signature");
+        builder.failureAction("bad.abort", "abort", "provider.bad", "returns Int(Int)", false, "none", span);
+        return SublangHarnessSupport.expectRejected(builder.module(), "failure-signature", "SUBLANG-F002", span);
+    }
+
+    // A well-formed provenance record is not automatically a validated analysis result.
+    public static Bool evidenceBoundaries() {
+        SublangBuilder builder = SublangBuilder("evidence-boundaries");
+        Int span = builder.syntheticSpan("evidence");
+        Int left = builder.addLocation("global", "left", span);
+        Int right = builder.addLocation("global", "right", span);
+        List<Int> dependencies = List();
+        dependencies.add(left);
+        dependencies.add(right);
+        SublangProofReference proof = SublangProofReference("harness.analysis", builder.module().revision(), dependencies);
+        dependencies.clear();
+        builder.module().aliases().addProvenAliasFact(left, right, "NoAlias", proof, span);
+        SublangHarnessBoundaries.addLocatedEffects(builder.module(), left, proof, span);
+        builder.freeze();
+        SublangVerification valid = SublangVerifier(builder.module()).verify();
+        Bool metadataValid = valid.semanticsStatus() == "valid" && valid.effectStatus() == "not_checked";
+        Bool conservative = builder.module().aliases().aliasAnswer(left, right) == "MayAlias";
+        Bool unknown = builder.module().aliases().aliasAnswer(9999, 9999) == "MayAlias";
+        Bool copied = proof.dependencyCount() == 2;
+        Bool dumped = SublangDump.render(builder.module()).indexOf("dependencies=[1,2]") >= 0;
+        return SublangHarnessSupport.report("evidence-boundaries", metadataValid && conservative && unknown && copied && dumped && SublangHarnessBoundaries.invalidEvidenceRejected());
+    }
+
+    private static Void addLocatedEffects(SublangModule module, Int location, SublangProofReference proof, Int span) {
+        Int effectId = module.semantics().addEffectSummary("located", span);
+        SublangEffectSummary summary = module.semantics().effectSummaryAt(effectId);
+        List<String> areas = SublangVocabulary.effectAreas();
+        Int index = 0;
+        while (index < areas.length()) {
+            if (areas.get(index) != "memory-read") {
+                summary.addFact(areas.get(index), "unknown", "assumed-conservative", "", "");
+            }
+            index = index + 1;
+        }
+        List<Int> locations = List();
+        locations.add(location);
+        summary.addLocatedFact("memory-read", "may", "proven", "", proof, locations);
+        locations.clear();
+    }
+
+    private static Bool invalidEvidenceRejected() {
+        SublangBuilder builder = SublangBuilder("invalid-evidence");
+        Int span = builder.syntheticSpan("invalid-evidence");
+        Int left = builder.addLocation("global", "left", span);
+        Int right = builder.addLocation("global", "right", span);
+        List<Int> dependencies = List();
+        dependencies.add(left);
+        dependencies.add(right);
+        SublangProofReference stale = SublangProofReference("harness.analysis", builder.module().revision() + 1, dependencies);
+        builder.module().aliases().addProvenAliasFact(left, right, "NoAlias", stale, span);
+        builder.aliasFact(left, right, "NoAlias", "proven", "text-only", span);
+        dependencies.clear();
+        SublangProofReference missing = SublangProofReference("harness.analysis", builder.module().revision(), dependencies);
+        builder.module().aliases().addProvenAliasFact(left, right, "MustAlias", missing, span);
+        SublangHarnessBoundaries.addLocatedEffects(builder.module(), 9999, stale, span);
+        builder.freeze();
+        SublangVerification verdict = SublangVerifier(builder.module()).verify();
+        Bool staleFound = SublangHarnessSupport.hasDiagnostic(verdict.diagnostics(), "SUBLANG-E003", span);
+        Bool locationFound = SublangHarnessSupport.hasDiagnostic(verdict.diagnostics(), "SUBLANG-E006", span);
+        Bool safe = builder.module().aliases().aliasAnswer(left, right) == "MayAlias";
+        return staleFound && locationFound && safe && verdict.semanticsStatus() == "invalid";
+    }
+}

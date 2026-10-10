@@ -1,0 +1,135 @@
+namespace sublang::wire;
+
+use sublang::ir::SublangModule;
+use sublang::model::SublangType;
+use sublang::model::SublangField;
+use sublang::model::SublangSourceSpan;
+use sublang::semantics::SublangSemanticProfile;
+use sublang::semantics::SublangFailureAction;
+use sublang::wire::SublangWireStream;
+use sublang::wire::SublangWireSelection;
+
+public class SublangWireTables {
+    public static Void sources(SublangWireStream stream, SublangModule module) {
+        stream.expect("sources");
+        Int count = stream.count(module.sourceCount(), 4096);
+        Int index = 1;
+        while (index <= count && stream.valid()) {
+            String name = "";
+            if (!stream.isReading()) { name = module.sourceNameAt(index); }
+            name = stream.text(name);
+            if (stream.isReading()) { module.addSource(name); }
+            index = index + 1;
+        }
+        stream.expect("spans");
+        count = stream.count(module.spanCount(), 32768);
+        index = 1;
+        while (index <= count && stream.valid()) {
+            SublangSourceSpan span = SublangWireSelection.span(stream, module, index);
+            Int source = stream.number(span.source());
+            Int line = stream.number(span.line());
+            Int column = stream.number(span.column());
+            String origin = stream.text(span.origin());
+            if (stream.isReading()) { module.addSpan(source, line, column, origin); }
+            index = index + 1;
+        }
+    }
+
+    public static Void types(SublangWireStream stream, SublangModule module) {
+        if (!stream.isReading()) { SublangWireTables.checkCanonicalTypes(stream, module); }
+        stream.expect("types");
+        Int count = stream.count(module.types().typeCount() - 4, 508);
+        Int index = 5;
+        while (index < count + 5 && stream.valid()) {
+            SublangType type = SublangWireSelection.type(stream, module, index);
+            String kind = stream.text(type.kind());
+            if (stream.version() == 1 && (kind == "String" || kind == "List" || kind == "Bond")) { stream.reject("type requires transport v2"); }
+            String name = stream.text(type.name());
+            Int width = stream.number(type.width());
+            Bool signed = stream.flag(type.isSigned());
+            Int target = stream.number(type.target());
+            Int span = stream.number(type.span());
+            Bool nullable = stream.flag(type.nullable());
+            if (stream.isReading()) {
+                Int id = module.types().addType(kind, name, width, signed, target, span);
+                module.types().typeAt(id).setNullable(nullable);
+            }
+            index = index + 1;
+        }
+        SublangWireTables.fields(stream, module);
+    }
+
+    // Primitive definitions are implicit in schema 1; never silently normalize a
+    // hand-edited descriptor or an alternate nominal-field ordering on export.
+    private static Void checkCanonicalTypes(SublangWireStream stream, SublangModule module) {
+        Int type = 1;
+        while (type <= module.types().typeCount() && stream.valid()) {
+            SublangType entry = module.types().typeAt(type);
+            if (type <= 4 && (entry.nullable() || entry.fieldCount() != 0)) {
+                stream.reject("modified implicit primitive descriptor"); return;
+            }
+            Int field = 1; Int ordinal = 0;
+            while (field <= module.types().fieldCount()) {
+                if (module.types().fieldAt(field).owner() == type) {
+                    if (ordinal >= entry.fieldCount()) { stream.reject("incomplete nominal field order"); return; }
+                    if (entry.fieldAt(ordinal) != field) { stream.reject("noncanonical nominal field order"); return; }
+                    ordinal = ordinal + 1;
+                }
+                field = field + 1;
+            }
+            if (ordinal != entry.fieldCount()) { stream.reject("inconsistent nominal field table"); return; }
+            type = type + 1;
+        }
+    }
+
+    private static Void fields(SublangWireStream stream, SublangModule module) {
+        stream.expect("fields");
+        Int count = stream.count(module.types().fieldCount(), 512);
+        Int index = 1;
+        while (index <= count && stream.valid()) {
+            SublangField field = SublangWireSelection.field(stream, module, index);
+            Int owner = stream.number(field.owner());
+            String name = stream.text(field.name());
+            Int type = stream.number(field.typeId());
+            Bool mutable = stream.flag(field.isMutable());
+            Int span = stream.number(field.span());
+            if (stream.isReading()) { module.types().addField(owner, name, type, mutable, span); }
+            index = index + 1;
+        }
+    }
+
+    public static Void profiles(SublangWireStream stream, SublangModule module) {
+        stream.expect("profiles");
+        Int count = stream.count(module.semantics().profileCount(), 512);
+        Int index = 1;
+        while (index <= count && stream.valid()) {
+            SublangSemanticProfile profile = SublangWireSelection.profile(stream, module, index);
+            String name = stream.text(profile.name());
+            Int version = stream.number(profile.version());
+            String integer = stream.text(profile.integerRules());
+            String floating = stream.text(profile.floatRules());
+            String failure = stream.text(profile.failureModel());
+            String unwind = stream.text(profile.unwindingModel());
+            if (stream.isReading()) { module.semantics().addProfile(name, version, integer, floating, failure, unwind); }
+            index = index + 1;
+        }
+    }
+
+    public static Void failures(SublangWireStream stream, SublangModule module) {
+        stream.expect("failures");
+        Int count = stream.count(module.semantics().failureCount(), 512);
+        Int index = 1;
+        while (index <= count && stream.valid()) {
+            SublangFailureAction action = SublangWireSelection.failure(stream, module, index);
+            String name = stream.text(action.name());
+            String behavior = stream.text(action.behavior());
+            String binding = stream.text(action.binding());
+            String signature = stream.text(action.signature());
+            Bool continues = stream.flag(action.continues());
+            String unwind = stream.text(action.unwinding());
+            Int span = stream.number(action.span());
+            if (stream.isReading()) { module.semantics().addFailureAction(name, behavior, binding, signature, continues, unwind, span); }
+            index = index + 1;
+        }
+    }
+}

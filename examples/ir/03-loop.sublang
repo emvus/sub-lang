@@ -4,18 +4,29 @@ type 1 Void Void
 type 2 Bool Bool width=1 signed=false
 type 3 Int Int width=64 signed=true
 type 4 Float Float width=64 signed=false
-failure 1 example.integer_failure
-func 1 sumBelow(v1 n:Int@value) -> Int methodOf=0 span=1
+profile 1 sublang.startup version=1 integer=i64-signed float=f64-ieee-rne failure=abort unwinding=none startup=true
+effect 1 conservative facts=9 span=0
+  fact allocation unknown provenance=assumed-conservative detail= proof=
+  fact escape unknown provenance=assumed-conservative detail= proof=
+  fact failure unknown provenance=assumed-conservative detail= proof=
+  fact exceptions unknown provenance=assumed-conservative detail= proof=
+  fact memory-read unknown provenance=assumed-conservative detail= proof=
+  fact memory-write unknown provenance=assumed-conservative detail= proof=
+  fact synchronization unknown provenance=assumed-conservative detail= proof=
+  fact observable unknown provenance=assumed-conservative detail= proof=
+  fact control unknown provenance=assumed-conservative detail= proof=
+failure 1 example.integer_failure behavior=abort binding=unbound signature=noreturn_void() continues=false unwinding=none span=0
+func 1 sumBelow(v1 n:Int@value) -> Int methodOf=0 profile=1 effects=1 linkage=internal definition=body span=1
   block 1 params=[]
     v2:Int = const.int value=0 span=1
     v3:Int = const.int value=1 span=1
-    branch v2@value, v2@value targets=[2] trueArgs=0 span=1
+    branch v2@value, v2@value targets=[2] span=1
   block 2 params=[v4:Int,v5:Int]
     v6:Bool = compare v4@value, v1@value predicate=lt span=1
     cond_branch v6@value, v5@value targets=[3,4] trueArgs=0 span=1
   block 3 params=[]
     v7:Int = int.add v5@value, v4@value overflow=trap failure=example.integer_failure span=1
     v8:Int = int.add v4@value, v3@value overflow=trap failure=example.integer_failure span=1
-    branch v8@value, v7@value targets=[2] trueArgs=0 span=1
+    branch v8@value, v7@value targets=[2] span=1
   block 4 params=[v9:Int]
     return v9@value span=1

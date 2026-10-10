@@ -1,0 +1,138 @@
+namespace sublang::harness;
+
+use sublang::analysis::SublangVerification;
+use sublang::analysis::SublangVerifier;
+use sublang::harness::SublangHarnessSupport;
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+public class SublangHarnessSemantics {
+    // A.1: a function that names a semantic profile id which does not exist.
+    public static Bool invalidProfileRejected() {
+        println("== negative: invalid semantic profile id ==");
+        SublangBuilder builder = SublangBuilder("negative-profile");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int failureId = builder.failure("emerald.int_overflow");
+        Int fnSpan = builder.span(sourceId, 160, 5);
+        Int addFn = builder.beginFunction("add", intType, 0, fnSpan);
+        builder.setFunctionProfile(addFn, 99);
+        Int addA = builder.addParam("a", intType, "value", false);
+        Int addB = builder.addParam("b", intType, "value", false);
+        builder.beginBlock();
+        Int sum = builder.ops().intBinary("int.add", addA, addB, "trap", failureId, builder.span(sourceId, 162, 9));
+        builder.ops().returnValue(sum, builder.span(sourceId, 163, 9));
+        return SublangHarnessSupport.expectRejected(builder.module(), "profile-invalid-id", "SUBLANG-P001", fnSpan);
+    }
+
+    // A.1: a semantic profile that declares rules outside the startup set is not supported.
+    public static Bool unsupportedProfileRuleRejected() {
+        println("== negative: semantic profile with rules outside the startup set ==");
+        SublangBuilder builder = SublangBuilder("negative-profile-rule");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int failureId = builder.failure("emerald.int_overflow");
+        Int wide = builder.addProfile("sublang.wide", 1, "i128-signed", "f64-ieee-rne", "abort", "none");
+        Int fnSpan = builder.span(sourceId, 400, 5);
+        builder.beginFunctionWithProfile("add", intType, 0, fnSpan, wide);
+        Int addA = builder.addParam("a", intType, "value", false);
+        Int addB = builder.addParam("b", intType, "value", false);
+        builder.beginBlock();
+        Int sum = builder.ops().intBinary("int.add", addA, addB, "trap", failureId, builder.span(sourceId, 402, 9));
+        builder.ops().returnValue(sum, builder.span(sourceId, 403, 9));
+        return SublangHarnessSupport.expectRejected(builder.module(), "profile-unsupported-rule", "SUBLANG-P002", fnSpan);
+    }
+
+    // A.1: an effect summary that omits an area is incomplete; a missing area is not "none".
+    public static Bool incompleteEffectSummaryRejected() {
+        println("== negative: effect summary that omits areas ==");
+        SublangBuilder builder = SublangBuilder("negative-effects");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int summarySpan = builder.span(sourceId, 410, 5);
+        SublangModule module = builder.module();
+        Int partial = module.semantics().addEffectSummary("partial", summarySpan);
+        module.semantics().effectSummaryAt(partial).addFact("allocation", "unknown", "assumed-conservative", "", "");
+        return SublangHarnessSupport.expectRejected(module, "effects-incomplete", "SUBLANG-E004", summarySpan);
+    }
+
+    // A.1: a failure action without a binding is incomplete and rejected.
+    public static Bool incompleteFailureActionRejected() {
+        println("== negative: failure action without a binding ==");
+        SublangBuilder builder = SublangBuilder("negative-failure");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int actionSpan = builder.span(sourceId, 420, 5);
+        builder.failureAction("broken.abort", "abort", "", "noreturn void()", false, "none", actionSpan);
+        return SublangHarnessSupport.expectRejected(builder.module(), "failure-incomplete", "SUBLANG-F001", actionSpan);
+    }
+
+    // A.1: NoAlias claimed with an assumed-conservative origin is rejected; the blocker names the pair.
+    public static Bool aliasNoAliasWithoutOriginRejected() {
+        println("== negative: NoAlias claimed without a declared or proven origin ==");
+        SublangBuilder builder = SublangBuilder("negative-alias");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int locA = builder.addLocation("global", "a", builder.span(sourceId, 440, 5));
+        Int locB = builder.addLocation("global", "b", builder.span(sourceId, 441, 5));
+        Int claimSpan = builder.span(sourceId, 442, 5);
+        builder.aliasFact(locA, locB, "NoAlias", "assumed-conservative", "", claimSpan);
+        SublangModule module = builder.module();
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        SublangHarnessSupport.printDiagnostics(module, verdict.diagnostics());
+        Bool found = SublangHarnessSupport.hasBlocker(verdict.diagnostics(), "SUBLANG-E007", claimSpan, "alias:" + locA.toString() + "," + locB.toString());
+        return SublangHarnessSupport.report("alias-noalias-unproven", found && verdict.semanticsStatus() == "invalid");
+    }
+
+    // A.1: failure records that continue, name an unsupported behavior or an unsupported unwinding model.
+    public static Bool unsupportedFailureRecordsRejected() {
+        println("== negative: failure records that continue or name unsupported behavior or unwinding ==");
+        SublangBuilder builder = SublangBuilder("negative-failure-records");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int continueSpan = builder.span(sourceId, 450, 5);
+        Int behaviorSpan = builder.span(sourceId, 451, 5);
+        Int unwindSpan = builder.span(sourceId, 452, 5);
+        builder.failureAction("bad.continue", "abort", "unbound", "noreturn void()", true, "none", continueSpan);
+        builder.failureAction("bad.behavior", "trap", "unbound", "noreturn void()", false, "none", behaviorSpan);
+        builder.failureAction("bad.unwind", "abort", "unbound", "noreturn void()", false, "cleanup", unwindSpan);
+        SublangVerification verdict = SublangVerifier(builder.module()).verify();
+        SublangHarnessSupport.printDiagnostics(builder.module(), verdict.diagnostics());
+        Bool continueFound = SublangHarnessSupport.hasDiagnostic(verdict.diagnostics(), "SUBLANG-F003", continueSpan);
+        Bool behaviorFound = SublangHarnessSupport.hasDiagnostic(verdict.diagnostics(), "SUBLANG-U004", behaviorSpan);
+        Bool unwindFound = SublangHarnessSupport.hasDiagnostic(verdict.diagnostics(), "SUBLANG-U005", unwindSpan);
+        return SublangHarnessSupport.report("failure-records-rejected", continueFound && behaviorFound && unwindFound && verdict.semanticsStatus() == "invalid");
+    }
+
+    // A.1: a reference to a missing effect summary and an alias fact on unknown locations are rejected.
+    public static Bool danglingReferencesRejected() {
+        println("== negative: dangling effect summary and alias locations ==");
+        SublangBuilder builder = SublangBuilder("negative-dangling");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int fnSpan = builder.span(sourceId, 460, 5);
+        Int addFn = builder.beginFunction("add", intType, 0, fnSpan);
+        builder.module().functionAt(addFn).setEffectSummary(99);
+        Int aliasSpan = builder.span(sourceId, 461, 5);
+        builder.aliasFact(999, 998, "NoAlias", "proven", "alias-analysis-harness", aliasSpan);
+        SublangVerification verdict = SublangVerifier(builder.module()).verify();
+        SublangHarnessSupport.printDiagnostics(builder.module(), verdict.diagnostics());
+        Bool effectFound = SublangHarnessSupport.hasDiagnostic(verdict.diagnostics(), "SUBLANG-E001", fnSpan);
+        Bool aliasFound = SublangHarnessSupport.hasDiagnostic(verdict.diagnostics(), "SUBLANG-E006", aliasSpan);
+        return SublangHarnessSupport.report("dangling-references-rejected", effectFound && aliasFound && verdict.semanticsStatus() == "invalid");
+    }
+
+    // A.1: a float operation whose rounding mode the function's semantic profile does not provide.
+    public static Bool fpModeProfileMismatchRejected() {
+        println("== negative: float rounding mode that the semantic profile does not provide ==");
+        SublangBuilder builder = SublangBuilder("negative-fp-profile");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int floatType = builder.floatType();
+        Int truncating = builder.addProfile("sublang.rtz", 1, "i64-signed", "f64-ieee-rtz", "abort", "none");
+        builder.beginFunctionWithProfile("scale", floatType, 0, builder.span(sourceId, 470, 5), truncating);
+        Int scaleA = builder.addParam("a", floatType, "value", false);
+        Int scaleB = builder.addParam("b", floatType, "value", false);
+        builder.beginBlock();
+        Int mismatchSpan = builder.span(sourceId, 472, 9);
+        Int product = builder.ops().floatBinary("float.mul", scaleA, scaleB, "rne", mismatchSpan);
+        builder.ops().returnValue(product, builder.span(sourceId, 473, 9));
+        return SublangHarnessSupport.expectRejected(builder.module(), "fp-mode-profile-mismatch", "SUBLANG-P003", mismatchSpan);
+    }
+}

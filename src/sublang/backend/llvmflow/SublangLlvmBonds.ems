@@ -1,0 +1,91 @@
+namespace sublang::backend::llvmflow;
+
+use sublang::ir::SublangModule;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::backend::llvm::SublangLlvmTypes;
+
+public class SublangLlvmBonds {
+    private List<Int> scopes;
+    private List<Int> values;
+    private String storage;
+
+    public SublangLlvmBonds(SublangModule module, SublangFunction function) {
+        this.scopes = List(); this.values = List(); this.storage = "";
+        Int index = 0;
+        while (index < function.paramCount()) {
+            if (module.types().isKind(function.paramAt(index).typeId(), "Bond") && function.paramAt(index).passing() == "owned") { this.add(function.paramAt(index).value(), 0); }
+            index = index + 1;
+        }
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                SublangOperation op = function.blockAt(block).operationAt(index);
+                if (op.hasResult() && module.types().isKind(op.resultType(), "Bond")) { this.add(op.resultValue(), op.scope()); }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+    }
+
+    private Void add(Int value, Int scope) {
+        this.values.add(value);
+        this.storage = this.storage + "  %bond.root" + value.toString() + " = alloca %sublang.bond.root\n  store %sublang.bond.root zeroinitializer, ptr %bond.root" + value.toString() + "\n";
+        if (!this.scopes.contains(scope)) {
+            this.scopes.add(scope);
+            this.storage = this.storage + "  %bond.scope" + scope.toString() + " = alloca ptr\n  store ptr null, ptr %bond.scope" + scope.toString() + "\n";
+        }
+    }
+    public String slots() { return this.storage; }
+    public String adopt(Int value, Int scope, String payload) {
+        return "  call void @sublang.bond.root.add(ptr %bond.scope" + scope.toString() + ", ptr %bond.root" + value.toString() + ", ptr " + payload + ")\n";
+    }
+    public String take(Int value) { return "  call ptr @sublang.bond.root.take(ptr %bond.root" + value.toString() + ")\n"; }
+    public String parameters(SublangModule module, SublangFunction function) {
+        String text = ""; Int index = 0;
+        while (index < function.paramCount()) {
+            Int value = function.paramAt(index).value();
+            if (function.paramAt(index).passing() == "owned" && module.types().isKind(function.paramAt(index).typeId(), "Bond")) { text = text + this.adopt(value, 0, "%arg" + value.toString()); }
+            index = index + 1;
+        }
+        return text;
+    }
+    public String end(Int scope, Bool all) {
+        String text = ""; Int index = 0;
+        while (index < this.scopes.length()) {
+            Int owner = this.scopes.get(index);
+            if (all || scope == owner) { text = text + "  call void @sublang.bond.scope.end(ptr %bond.scope" + owner.toString() + ")\n"; }
+            index = index + 1;
+        }
+        return text;
+    }
+
+    public static String definitions(SublangModule module) {
+        String text = ""; Int type = 1;
+        while (type <= module.types().typeCount()) {
+            if (module.types().isKind(type, "Class")) { text = text + SublangLlvmBonds.trace(module, type); }
+            type = type + 1;
+        }
+        return text;
+    }
+    private static String trace(SublangModule module, Int type) {
+        String text = "define internal void @sublang.bond.trace.t" + type.toString() + "(ptr %payload, i1 %remove) {\nentry:\n";
+        Int index = 0;
+        while (index < module.types().typeAt(type).fieldCount()) {
+            Int field = module.types().typeAt(type).fieldAt(index);
+            if (module.types().isKind(module.types().fieldAt(field).typeId(), "Bond")) {
+                String id = index.toString();
+                text = text + "  %slot" + id + " = getelementptr %t" + type.toString() + ", ptr %payload, i32 0, i32 " + id + "\n  call void @sublang.bond.edge.visit(ptr %slot" + id + ", i1 %remove)\n";
+            }
+            if (module.types().isKind(module.types().fieldAt(field).typeId(), "Ref")) {
+                String id = index.toString(); Int target = module.types().typeAt(module.types().fieldAt(field).typeId()).target();
+                text = text + "  br i1 %remove, label %own" + id + ", label %continue" + id + "\nown" + id + ":\n";
+                text = text + "  %owned.slot" + id + " = getelementptr %t" + type.toString() + ", ptr %payload, i32 0, i32 " + id + "\n  %owned.child" + id + " = load ptr, ptr %owned.slot" + id + "\n  store ptr null, ptr %owned.slot" + id + "\n  call void @sublang.flow.drop(ptr %owned.child" + id + ", ptr @sublang.drop.t" + target.toString() + ")\n  br label %continue" + id + "\ncontinue" + id + ":\n";
+            }
+            index = index + 1;
+        }
+        return text + "  ret void\n}\n";
+    }
+
+}

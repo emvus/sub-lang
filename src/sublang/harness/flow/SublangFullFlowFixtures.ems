@@ -1,0 +1,165 @@
+namespace sublang::harness::flow;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+public class SublangFullFlowFixtures {
+    private static Void entry(SublangBuilder builder, Int span) {
+        Int entry = builder.beginFunction("entry", builder.intType(), 0, span);
+        builder.module().setEntry(entry); builder.beginBlock();
+    }
+    private static List<Int> pair(Int first, Int second) { List<Int> args = List(); args.add(first); args.add(second); return args; }
+
+    public static SublangModule strings(Bool outOfBounds) {
+        SublangBuilder builder = SublangBuilder("static-strings");
+        Int span = builder.syntheticSpan("flow:strings"); SublangFullFlowFixtures.entry(builder, span);
+        Int text = builder.ops().constString("ä\"\\\n", span);
+        Int same = builder.ops().constString("ä\"\\\n", span);
+        Int equal = builder.ops().stringEqual(text, same, span);
+        Int good = builder.newBlock(); Int bad = builder.newBlock(); List<Int> empty = List();
+        builder.ops().condBranch(equal, good, empty, bad, empty, span);
+        builder.enterBlock(bad); builder.ops().returnValue(builder.ops().constInt(-1, span), span);
+        builder.enterBlock(good);
+        Int index = 0; if (outOfBounds) { index = -1; }
+        Int byte = builder.ops().stringByte(text, builder.ops().constInt(index, span), span);
+        Int length = builder.ops().stringLength(text, span);
+        builder.ops().returnValue(builder.ops().intBinary("int.add", byte, length, "wrap", 0, span), span);
+        return builder.module();
+    }
+
+    // Both inline-class and stable owned-object collection layouts exercise growth,
+    // borrowed element views, and release while the list remains alive.
+    public static SublangModule collection(Bool ownedChild) {
+        SublangBuilder builder = SublangBuilder("inline-list"); Int span = builder.syntheticSpan("flow:list");
+        Int point = builder.classType("Point", span); Int x = builder.classField(point, "x", builder.intType(), true, span);
+        Int childField = 0;
+        if (ownedChild) { childField = builder.classField(point, "child", builder.refType(point), true, span); }
+        Int listType = builder.listType(point, span); SublangFullFlowFixtures.entry(builder, span);
+        Int scope = builder.ops().scopeBegin(span); Int list = builder.collections().listNew(listType, scope, span);
+        Int header = builder.newBlock(); Int body = builder.newBlock(); Int done = builder.newBlock();
+        Int zero = builder.ops().constInt(0, span); List<Int> initial = List(); initial.add(zero);
+        builder.ops().branchTo(header, initial, span); builder.enterBlock(header);
+        Int index = builder.addBlockParam(builder.intType()); Int limit = builder.ops().constInt(100, span);
+        List<Int> empty = List(); builder.ops().condBranch(builder.ops().compare("lt", index, limit, span), body, empty, done, empty, span);
+        builder.enterBlock(body);
+        Int pointValue = builder.ops().classNew(point, scope, span); builder.ops().fieldInit(pointValue, x, index, span);
+        if (ownedChild) {
+            Int child = builder.ops().classNew(point, scope, span); builder.ops().fieldInit(child, x, index, span); builder.ops().fieldClear(child, childField, span);
+            builder.ops().fieldInitOwned(pointValue, childField, child, span);
+        }
+        builder.collections().push(list, pointValue, span);
+        List<Int> next = List(); next.add(builder.ops().intBinary("int.add", index, builder.ops().constInt(1, span), "wrap", 0, span));
+        builder.ops().branchTo(header, next, span); builder.enterBlock(done);
+        Int view = builder.collections().borrow(list, builder.ops().constInt(99, span), span);
+        Int result = builder.ops().fieldRead(view, x, span); Int length = builder.collections().length(list, span);
+        Int sum = builder.ops().intBinary("int.add", result, length, "wrap", 0, span);
+        builder.collections().clear(list, span); builder.ops().scopeEnd(scope, span); builder.ops().returnValue(sum, span);
+        return builder.module();
+    }
+
+    public static SublangModule nestedRegions() {
+        SublangBuilder builder = SublangBuilder("nested-regions"); Int span = builder.syntheticSpan("flow:regions");
+        Int point = builder.classType("Point", span); Int x = builder.classField(point, "x", builder.intType(), false, span);
+        Int parent = builder.classType("Parent", span); List<Int> fields = List(); Int index = 0;
+        while (index < 8) { fields.add(builder.classField(parent, "p" + index.toString(), builder.refType(point), false, span)); index = index + 1; }
+        SublangFullFlowFixtures.entry(builder, span); Int outer = builder.ops().scopeBegin(span);
+        Int root = builder.ops().classNew(parent, outer, span); Int inner = builder.ops().scopeBegin(span); index = 0;
+        while (index < 8) {
+            Int child = builder.ops().classNew(point, inner, span); builder.ops().fieldInit(child, x, builder.ops().constInt(index, span), span);
+            builder.ops().fieldInitOwned(root, fields.get(index), child, span); index = index + 1;
+        }
+        builder.ops().scopeEnd(inner, span); Int result = builder.ops().constInt(0, span); index = 0;
+        while (index < 8) {
+            Int view = builder.ops().fieldBorrow(root, fields.get(index), span);
+            result = builder.ops().intBinary("int.add", result, builder.ops().fieldRead(view, x, span), "wrap", 0, span); index = index + 1;
+        }
+        builder.ops().scopeEnd(outer, span); builder.ops().returnValue(result, span); return builder.module();
+    }
+
+    public static SublangModule bondCycle() {
+        SublangBuilder builder = SublangBuilder("bond-cycle"); Int span = builder.syntheticSpan("flow:bond");
+        Int point = builder.classType("Point", span); Int pointX = builder.classField(point, "x", builder.intType(), false, span);
+        Int node = builder.classType("Node", span); Int x = builder.classField(node, "x", builder.intType(), true, span);
+        Int edge = builder.classField(node, "next", builder.bondType(node), true, span);
+        Int owned = builder.classField(node, "owned", builder.refType(point), true, span);
+        Int identity = builder.beginFunction("ownedIdentity", builder.bondType(node), 0, span);
+        Int arg = builder.addParam("node", builder.bondType(node), "owned", false); builder.beginBlock(); builder.ops().returnOwned(arg, span);
+        SublangFullFlowFixtures.entry(builder, span); Int outer = builder.ops().scopeBegin(span);
+        Int first = builder.bonds().create(node, outer, span); builder.bonds().write(first, x, builder.ops().constInt(7, span), span);
+        Int exclusive = builder.ops().classNew(point, outer, span); builder.ops().fieldInit(exclusive, pointX, builder.ops().constInt(13, span), span);
+        builder.bonds().own(first, owned, exclusive, span);
+        Int inner = builder.ops().scopeBegin(span); Int second = builder.bonds().create(node, inner, span);
+        builder.bonds().write(second, x, builder.ops().constInt(35, span), span);
+        builder.bonds().link(first, edge, second, span); builder.bonds().link(second, edge, first, span);
+        builder.ops().scopeEnd(inner, span);
+        List<Int> args = List(); args.add(first); List<String> modes = List(); modes.add("owned");
+        Int moved = builder.ops().callDirectOwned(identity, args, modes, outer, span);
+        Int retained = builder.bonds().retain(moved, outer, span); Int child = builder.bonds().get(retained, edge, outer, span);
+        Int left = builder.ops().fieldRead(builder.bonds().borrow(retained, span), x, span);
+        Int right = builder.ops().fieldRead(builder.bonds().borrow(child, span), x, span);
+        Int sum = builder.ops().intBinary("int.add", left, right, "wrap", 0, span);
+        Int parentView = builder.bonds().borrow(retained, span); Int childView = builder.ops().fieldBorrow(parentView, owned, span);
+        sum = builder.ops().intBinary("int.add", sum, builder.ops().fieldRead(childView, pointX, span), "wrap", 0, span);
+        builder.ops().scopeEnd(outer, span); builder.ops().returnValue(sum, span); return builder.module();
+    }
+
+    public static SublangModule invalidSharedChild() {
+        SublangBuilder builder = SublangBuilder("shared-alias-view"); Int span = builder.syntheticSpan("flow:alias");
+        Int point = builder.classType("Point", span); Int x = builder.classField(point, "x", builder.intType(), false, span);
+        Int parent = builder.classType("Parent", span); Int field = builder.classField(parent, "child", builder.refType(point), true, span);
+        SublangFullFlowFixtures.entry(builder, span); Int scope = builder.ops().scopeBegin(span);
+        Int root = builder.bonds().create(parent, scope, span); Int alias = builder.bonds().retain(root, scope, span);
+        Int child = builder.ops().classNew(point, scope, span); builder.ops().fieldInit(child, x, builder.ops().constInt(42, span), span);
+        builder.bonds().own(root, field, child, span);
+        Int view = builder.ops().fieldBorrow(builder.bonds().borrow(root, span), field, span);
+        builder.bonds().clear(alias, field, span); Int result = builder.ops().fieldRead(view, x, span);
+        builder.ops().scopeEnd(scope, span); builder.ops().returnValue(result, span); return builder.module();
+    }
+
+    public static SublangModule invalidView(Bool bond) {
+        SublangBuilder builder = SublangBuilder("expired-view"); Int span = builder.syntheticSpan("flow:invalid");
+        Int type = builder.classType("Point", span); Int x = builder.classField(type, "x", builder.intType(), false, span);
+        SublangFullFlowFixtures.entry(builder, span); Int scope = builder.ops().scopeBegin(span);
+        Int view = 0;
+        if (bond) {
+            Int handle = builder.bonds().create(type, scope, span); view = builder.bonds().borrow(handle, span);
+            builder.ops().scopeEnd(scope, span);
+        }
+        if (!bond) {
+            Int list = builder.collections().listNew(builder.listType(type, span), scope, span);
+            Int point = builder.ops().classNew(type, scope, span); builder.ops().fieldInit(point, x, builder.ops().constInt(42, span), span);
+            builder.collections().push(list, point, span); view = builder.collections().borrow(list, builder.ops().constInt(0, span), span);
+            builder.collections().clear(list, span);
+        }
+        Int result = builder.ops().fieldRead(view, x, span);
+        if (!bond) { builder.ops().scopeEnd(scope, span); }
+        builder.ops().returnValue(result, span); return builder.module();
+    }
+
+    public static SublangModule valueLists() {
+        SublangBuilder builder = SublangBuilder("value-lists"); Int span = builder.syntheticSpan("flow:values");
+        Int record = builder.recordType("Pair", span); Int x = builder.recordField(record, "x", builder.intType(), span);
+        SublangFullFlowFixtures.entry(builder, span); Int scope = builder.ops().scopeBegin(span);
+        Int list = builder.collections().listNew(builder.listType(record, span), scope, span);
+        List<Int> args = List(); args.add(builder.ops().constInt(42, span));
+        builder.collections().push(list, builder.ops().recordMake(record, args, span), span);
+        Int value = builder.collections().get(list, builder.ops().constInt(0, span), span);
+        Int result = builder.ops().recordGet(value, x, span);
+        builder.ops().scopeEnd(scope, span); builder.ops().returnValue(result, span); return builder.module();
+    }
+
+    public static SublangModule inlineAddress() {
+        SublangBuilder builder = SublangBuilder("inline-local"); Int span = builder.syntheticSpan("flow:inline-local");
+        Int point = builder.classType("Point", span); Int x = builder.classField(point, "x", builder.intType(), true, span);
+        Int writer = builder.beginFunction("increment", builder.intType(), 0, span);
+        Int parameter = builder.addParam("point", builder.refType(point), "borrow_write", false); builder.beginBlock();
+        Int next = builder.ops().intBinary("int.add", builder.ops().fieldRead(parameter, x, span), builder.ops().constInt(1, span), "wrap", 0, span);
+        builder.ops().fieldWrite(parameter, x, next, span); builder.ops().returnValue(next, span);
+        SublangFullFlowFixtures.entry(builder, span); Int scope = builder.ops().scopeBegin(span);
+        Int object = builder.ops().classNew(point, scope, span); builder.ops().fieldInit(object, x, builder.ops().constInt(41, span), span);
+        List<Int> args = List(); args.add(object); List<String> modes = List(); modes.add("borrow_write"); builder.ops().callDirect(writer, args, modes, span);
+        Int list = builder.collections().listNew(builder.listType(point, span), scope, span); builder.collections().push(list, object, span);
+        Int view = builder.collections().borrow(list, builder.ops().constInt(0, span), span); Int result = builder.ops().fieldRead(view, x, span);
+        builder.ops().scopeEnd(scope, span); builder.ops().returnValue(result, span); return builder.module();
+    }
+}

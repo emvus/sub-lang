@@ -1,0 +1,46 @@
+namespace sublang::hyperalloc;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+
+// Borrow origins are SSA definitions, not claims imported from an effect summary.
+// A view never owns storage; every ancestor must remain live at every use.
+public class SublangBorrowViews {
+    private List<Int> sources;
+
+    public SublangBorrowViews(SublangFunction function) {
+        this.sources = List(); Int value = 0;
+        while (value <= function.valueCount()) { this.sources.add(0); value = value + 1; }
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                SublangOperation operation = function.blockAt(block).operationAt(index);
+                if (operation.opcode() == "field.borrow" || operation.opcode() == "list.borrow" || operation.opcode() == "bond.borrow") { this.sources.set(operation.resultValue(), operation.operandAt(0)); }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+    }
+
+    public Bool isView(Int value) { return this.sources.get(value) != 0; }
+    public Int source(Int value) { return this.sources.get(value); }
+
+    public Bool dependsOn(Int view, Int value) {
+        Int rounds = 0;
+        while (view != 0 && rounds < this.sources.length()) {
+            view = this.sources.get(view);
+            if (view == value) { return true; }
+            rounds = rounds + 1;
+        }
+        return false;
+    }
+
+    public Int root(Int value) {
+        Int rounds = 0;
+        while (this.sources.get(value) != 0 && rounds < this.sources.length()) {
+            value = this.sources.get(value); rounds = rounds + 1;
+        }
+        return value;
+    }
+}

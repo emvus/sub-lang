@@ -1,0 +1,197 @@
+namespace sublang::vocabulary;
+
+// Tag vocabulary of Sublang High IR. Every kind, passing mode, opcode, overflow
+// mode, effect area, provenance and profile rule is a plain string here; unknown
+// tags are rejected by the verifier instead of being passed through to a backend.
+public class SublangVocabulary {
+    public static Int schemaVersion() {
+        return 1;
+    }
+
+    public static String stageHigh() {
+        return "High";
+    }
+
+    public static String startupProfileName() {
+        return "sublang.startup";
+    }
+
+    public static Int startupProfileVersion() {
+        return 1;
+    }
+
+    public static String startupIntegerRules() {
+        return "i64-signed";
+    }
+
+    public static String startupFloatRules() {
+        return "f64-ieee-rne";
+    }
+
+    public static String startupFailureModel() {
+        return "abort";
+    }
+
+    public static String startupUnwindingModel() {
+        return "none";
+    }
+
+    // Rounding mode that the startup float rules fix; float operations must name it.
+    public static String startupFloatRounding() {
+        return "rne";
+    }
+
+    public static List<String> effectAreas() {
+        List<String> areas = List();
+        areas.add("allocation");
+        areas.add("escape");
+        areas.add("failure");
+        areas.add("exceptions");
+        areas.add("memory-read");
+        areas.add("memory-write");
+        areas.add("synchronization");
+        areas.add("observable");
+        areas.add("control");
+        return areas;
+    }
+
+    public static Bool isEffectArea(String area) {
+        List<String> areas = SublangVocabulary.effectAreas();
+        Int index = 0;
+        while (index < areas.length()) {
+            if (areas.get(index) == area) {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    public static Bool isEffectValue(String area, String value) {
+        if (area == "control") {
+            return value == "returns" || value == "may-diverge" || value == "unknown";
+        }
+        return value == "none" || value == "may" || value == "unknown";
+    }
+
+    public static Bool isEffectProvenance(String provenance) {
+        return provenance == "declared" || provenance == "assumed-conservative" || provenance == "proven";
+    }
+
+    // Kinds of logical locations used by alias and effect facts.
+    public static Bool isLocationKind(String kind) {
+        return kind == "global" || kind == "allocation" || kind == "field-path" || kind == "container" || kind == "argument-region" || kind == "runtime" || kind == "unknown";
+    }
+
+    // Answers of an alias query. Missing information always yields MayAlias.
+    public static Bool isAliasAnswer(String answer) {
+        return answer == "NoAlias" || answer == "MayAlias" || answer == "MustAlias";
+    }
+
+    public static Bool isKnownTypeKind(String kind) {
+        if (kind == "String" || kind == "List" || kind == "Bond") { return true; }
+        return kind == "Void" || kind == "Bool" || kind == "Int" || kind == "Float" || kind == "Record" || kind == "Class" || kind == "Ref";
+    }
+
+    public static Bool isPrimitiveKind(String kind) {
+        return kind == "Bool" || kind == "Int" || kind == "Float";
+    }
+
+    public static Bool isKnownPassing(String mode) {
+        return mode == "value" || mode == "owned" || mode == "borrow_read" || mode == "borrow_write" || mode == "init";
+    }
+
+    public static Bool isKnownLinkage(String linkage) {
+        return linkage == "internal" || linkage == "external";
+    }
+
+    public static Bool isKnownDefinition(String definition) {
+        return definition == "body" || definition == "contract";
+    }
+
+    public static Bool isKnownPredicate(String predicate) {
+        return predicate == "eq" || predicate == "ne" || predicate == "lt" || predicate == "le" || predicate == "gt" || predicate == "ge";
+    }
+
+    // Ordered and unordered float predicates. Float compares must name one of these explicitly.
+    public static Bool isFloatPredicate(String predicate) {
+        return predicate == "oeq" || predicate == "one" || predicate == "olt" || predicate == "ole" || predicate == "ogt" || predicate == "oge" || predicate == "ueq" || predicate == "une" || predicate == "ult" || predicate == "ule" || predicate == "ugt" || predicate == "uge" || predicate == "ord" || predicate == "uno";
+    }
+
+    public static Bool isTerminator(String opcode) {
+        return opcode == "return" || opcode == "branch" || opcode == "cond_branch" || opcode == "fail";
+    }
+
+    public static Bool isIntOpcode(String opcode) {
+        return opcode == "int.add" || opcode == "int.sub" || opcode == "int.mul" || opcode == "int.div" || opcode == "int.rem" || opcode == "int.neg";
+    }
+
+    public static Bool isFloatOpcode(String opcode) {
+        return opcode == "float.add" || opcode == "float.sub" || opcode == "float.mul" || opcode == "float.div";
+    }
+
+    public static Bool isKnownOpcode(String opcode) {
+        if (opcode == "bond.own") { return true; }
+        if (opcode == "bond.new" || opcode == "bond.retain" || opcode == "bond.borrow" || opcode == "bond.get" || opcode == "bond.link" || opcode == "bond.clear" || opcode == "bond.write") { return true; }
+        if (opcode == "list.new" || opcode == "list.push" || opcode == "list.length" || opcode == "list.get" || opcode == "list.borrow" || opcode == "list.clear") { return true; }
+        if (opcode == "const.string" || opcode == "string.length" || opcode == "string.byte" || opcode == "string.equal") { return true; }
+        if (opcode == "field.borrow") { return true; }
+        if (SublangVocabulary.isTerminator(opcode) || SublangVocabulary.isIntOpcode(opcode) || SublangVocabulary.isFloatOpcode(opcode)) {
+            return true;
+        }
+        return opcode == "const.bool" || opcode == "const.int" || opcode == "const.float" || opcode == "compare" || opcode == "record.make" || opcode == "record.get" || opcode == "record.with" || opcode == "class.new" || opcode == "field.init" || opcode == "field.clear" || opcode == "field.has" || opcode == "field.take" || opcode == "field.read" || opcode == "field.write" || opcode == "call.direct" || opcode == "scope.begin" || opcode == "scope.end";
+    }
+
+    // call.direct is excluded on purpose: whether it produces a value depends on the callee.
+    public static Bool producesValue(String opcode) {
+        if (opcode == "bond.new" || opcode == "bond.retain" || opcode == "bond.borrow" || opcode == "bond.get") { return true; }
+        if (opcode == "list.new" || opcode == "list.length" || opcode == "list.get" || opcode == "list.borrow") { return true; }
+        if (opcode == "const.string" || opcode == "string.length" || opcode == "string.byte" || opcode == "string.equal") { return true; }
+        if (opcode == "field.borrow") { return true; }
+        if (SublangVocabulary.isIntOpcode(opcode) || SublangVocabulary.isFloatOpcode(opcode)) {
+            return true;
+        }
+        return opcode == "const.bool" || opcode == "const.int" || opcode == "const.float" || opcode == "compare" || opcode == "record.make" || opcode == "record.get" || opcode == "record.with" || opcode == "class.new" || opcode == "field.has" || opcode == "field.take" || opcode == "field.read";
+    }
+
+    // Integer division by zero always traps; overflow modes differ per opcode.
+    public static Bool allowsOverflow(String opcode, String overflow) {
+        if (opcode == "int.rem") {
+            return overflow == "zero" || overflow == "trap";
+        }
+        return overflow == "trap" || overflow == "wrap";
+    }
+
+    // Names what SublangOperation.ref() points to for a given opcode.
+    public static String refMeaning(String opcode) {
+        if (opcode == "bond.own") { return "field"; }
+        if (opcode == "bond.new") { return "type"; }
+        if (opcode == "bond.get" || opcode == "bond.link" || opcode == "bond.clear" || opcode == "bond.write") { return "field"; }
+        if (opcode == "list.new") { return "type"; }
+        if (opcode == "field.borrow") { return "field"; }
+        if (opcode == "record.make" || opcode == "class.new") {
+            return "type";
+        }
+        if (opcode == "record.get" || opcode == "record.with" || opcode == "field.init" || opcode == "field.clear" || opcode == "field.has" || opcode == "field.take" || opcode == "field.read" || opcode == "field.write") {
+            return "field";
+        }
+        if (opcode == "call.direct") {
+            return "function";
+        }
+        if (opcode == "scope.begin" || opcode == "scope.end") {
+            return "scope";
+        }
+        if (opcode == "fail" || SublangVocabulary.isIntOpcode(opcode)) {
+            return "failure";
+        }
+        return "none";
+    }
+
+    // Verification dimension of a diagnostic code: S and T are structure, everything else is semantics.
+    public static String dimensionOf(String code) {
+        if (code.startsWith("SUBLANG-S") || code.startsWith("SUBLANG-T")) {
+            return "structure";
+        }
+        return "semantics";
+    }
+}

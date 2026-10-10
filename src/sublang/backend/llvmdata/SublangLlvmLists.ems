@@ -1,0 +1,105 @@
+namespace sublang::backend::llvmdata;
+
+use sublang::ir::SublangModule;
+use sublang::body::SublangOperation;
+use sublang::ir::data::SublangCollectionLayout;
+use sublang::backend::llvm::SublangLlvmContext;
+use sublang::backend::llvm::SublangLlvmTypes;
+
+public class SublangLlvmLists {
+    public static Bool ownedElements(SublangModule module, Int list) {
+        Int element = module.types().typeAt(list).target();
+        return module.types().isKind(element, "Class") && !SublangCollectionLayout.inlineClass(module, element);
+    }
+
+    private static String elementType(SublangModule module, Int list) {
+        if (SublangLlvmLists.ownedElements(module, list)) { return "ptr"; }
+        return SublangLlvmTypes.type(module, module.types().typeAt(list).target());
+    }
+
+    public static String definitions(SublangModule module) {
+        String text = ""; Int type = 1;
+        while (type <= module.types().typeCount()) {
+            if (module.types().isKind(type, "List")) { text = text + SublangLlvmLists.visitor(module, type); }
+            type = type + 1;
+        }
+        return text;
+    }
+
+    private static String visitor(SublangModule module, Int type) {
+        String id = type.toString();
+        String text = "define internal void @sublang.list.clear.t" + id + "(ptr %payload) {\nentry:\n  %len.slot = getelementptr %sublang.list, ptr %payload, i32 0, i32 1\n  %len32 = load i32, ptr %len.slot\n  store i32 0, ptr %len.slot\n";
+        if (SublangLlvmLists.ownedElements(module, type)) {
+            Int element = module.types().typeAt(type).target();
+            text = text + "  %len = zext i32 %len32 to i64\n  %data = load ptr, ptr %payload\n  br label %loop\nloop:\n  %index = phi i64 [ 0, %entry ], [ %next, %drop ]\n  %done = icmp eq i64 %index, %len\n  br i1 %done, label %exit, label %drop\ndrop:\n  %slot = getelementptr ptr, ptr %data, i64 %index\n  %child = load ptr, ptr %slot\n  call void @sublang.flow.drop(ptr %child, ptr @sublang.drop.t" + element.toString() + ")\n  %next = add i64 %index, 1\n  br label %loop\nexit:\n";
+        }
+        text = text + "  ret void\n}\n";
+        // Destruction enqueues class children into the same iterative worklist,
+        // rather than recursing through nested collections.
+        text = text + "define internal void @sublang.drop.t" + id + "(ptr %payload, ptr %pending) {\nentry:\n  %data = load ptr, ptr %payload\n";
+        if (SublangLlvmLists.ownedElements(module, type)) {
+            Int element = module.types().typeAt(type).target();
+            text = text + "  %ls = getelementptr %sublang.list, ptr %payload, i32 0, i32 1\n  %len32 = load i32, ptr %ls\n  %len = zext i32 %len32 to i64\n  br label %loop\nloop:\n  %index = phi i64 [ 0, %entry ], [ %next, %enqueue ]\n  %done = icmp eq i64 %index, %len\n  br i1 %done, label %exit, label %enqueue\nenqueue:\n  %slot = getelementptr ptr, ptr %data, i64 %index\n  %child = load ptr, ptr %slot\n  call void @sublang.flow.enqueue(ptr %pending, ptr %child, ptr @sublang.drop.t" + element.toString() + ")\n  %next = add i64 %index, 1\n  br label %loop\nexit:\n";
+        }
+        return text + "  call void @free(ptr %data)\n  store %sublang.list zeroinitializer, ptr %payload\n  ret void\n}\n";
+    }
+
+    public static String emit(SublangLlvmContext context, SublangOperation op) {
+        if (op.opcode() == "list.new") {
+            String text = "  " + context.result(op) + " = call ptr @sublang.flow.allocate.t" + op.ref().toString() + "(ptr " + context.owners().head(op.scope(), op.ref()) + ", i64 16)\n";
+            return text + "  store %sublang.list zeroinitializer, ptr " + context.result(op) + "\n" + context.store(op, context.result(op));
+        }
+        Int type = context.module.types().typeAt(context.function.valueTypeAt(op.operandAt(0))).target();
+        String tag = "list" + op.id().toString();
+        String text = "  " + context.input(op, 0) + " = load ptr, ptr %v" + op.operandAt(0).toString() + "\n";
+        String receiver = context.input(op, 0);
+        if (op.opcode() == "list.clear") { return text + "  call void @sublang.list.clear.t" + type.toString() + "(ptr " + receiver + ")\n"; }
+        if (op.opcode() == "list.length") {
+            text = text + "  %" + tag + "ls = getelementptr %sublang.list, ptr " + receiver + ", i32 0, i32 1\n  %" + tag + "len = load i32, ptr %" + tag + "ls\n";
+            return text + "  " + context.result(op) + " = zext i32 %" + tag + "len to i64\n" + context.store(op, context.result(op));
+        }
+        String element = SublangLlvmLists.elementType(context.module, type);
+        text = text + "  %" + tag + "end = getelementptr " + element + ", ptr null, i32 1\n  %" + tag + "rawsize = ptrtoint ptr %" + tag + "end to i64\n";
+        text = text + "  %" + tag + "zero = icmp eq i64 %" + tag + "rawsize, 0\n  %" + tag + "size = select i1 %" + tag + "zero, i64 1, i64 %" + tag + "rawsize\n";
+        if (op.opcode() == "list.push") { return text + SublangLlvmLists.push(context, op, type, element, tag); }
+        text = text + "  " + context.input(op, 1) + " = load i64, ptr %v" + op.operandAt(1).toString() + "\n";
+        text = text + "  %" + tag + "slot = call ptr @sublang.list.at(ptr " + receiver + ", i64 " + context.input(op, 1) + ", i64 %" + tag + "size)\n";
+        if (op.opcode() == "list.borrow" && !SublangLlvmLists.ownedElements(context.module, type)) { return text + context.store(op, "%" + tag + "slot"); }
+        return text + "  " + context.result(op) + " = load " + context.type(op.resultType()) + ", ptr %" + tag + "slot\n" + context.store(op, context.result(op));
+    }
+
+    private static String push(SublangLlvmContext context, SublangOperation op, Int type, String element, String tag) {
+        String text = "  %" + tag + "slot = call ptr @sublang.list.push.slot(ptr " + context.input(op, 0) + ", i64 %" + tag + "size)\n";
+        Int value = op.operandAt(1);
+        if (context.isFolded(value)) { return text + SublangLlvmLists.foldedPush(context, op, type, tag); }
+        Int valueType = context.function.valueTypeAt(value);
+        text = text + "  " + context.input(op, 1) + " = load " + context.type(valueType) + ", ptr %v" + value.toString() + "\n";
+        String input = context.input(op, 1);
+        if (op.modeAt(1) == "owned") {
+            Int target = context.module.types().typeAt(valueType).target();
+            Bool headerless = context.isLocal(value) || context.isPool(value);
+            if (!headerless) { text = text + "  call void @sublang.flow.detach(ptr " + input + ")\n"; }
+            if (!SublangLlvmLists.ownedElements(context.module, type)) {
+                text = text + "  %" + tag + "copy = load " + element + ", ptr " + input + "\n";
+                if (!headerless) { text = text + "  call void @sublang.flow.drop(ptr " + input + ", ptr @sublang.drop.t" + target.toString() + ")\n"; }
+                input = "%" + tag + "copy";
+            }
+        }
+        return text + "  store " + element + " " + input + ", ptr %" + tag + "slot\n";
+    }
+
+    private static String foldedPush(SublangLlvmContext context, SublangOperation op, Int type, String tag) {
+        Int element = context.module.types().typeAt(type).target();
+        String text = ""; Int index = 0;
+        while (index < context.module.types().typeAt(element).fieldCount()) {
+            Int field = context.module.types().typeAt(element).fieldAt(index);
+            String fieldType = context.type(context.module.types().fieldAt(field).typeId());
+            String name = "%" + tag + "f" + index.toString();
+            text = text + "  " + name + " = load " + fieldType + ", ptr %fold" + op.operandAt(1).toString() + "_" + field.toString() + "\n";
+            text = text + "  " + name + "slot = getelementptr %t" + element.toString() + ", ptr %" + tag + "slot, i32 0, i32 " + index.toString() + "\n";
+            text = text + "  store " + fieldType + " " + name + ", ptr " + name + "slot\n";
+            index = index + 1;
+        }
+        return text;
+    }
+}

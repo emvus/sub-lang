@@ -1,0 +1,34 @@
+namespace sublang::checks::data;
+
+use sublang::ir::SublangModule;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::diagnostics::SublangReport;
+
+public class SublangStringChecks {
+    public static Bool handles(String opcode) {
+        return opcode == "const.string" || opcode.startsWith("string.");
+    }
+
+    public static Void check(SublangReport report, SublangModule module, SublangFunction function, SublangOperation operation) {
+        Int count = 2;
+        if (operation.opcode() == "const.string") { count = 0; }
+        if (operation.opcode() == "string.length") { count = 1; }
+        if (operation.operandCount() != count) { report.report("SUBLANG-T001", "invalid String operand count", operation.span()); return; }
+        Int index = 0;
+        while (index < count) {
+            String expected = "String";
+            if (operation.opcode() == "string.byte" && index == 1) { expected = "Int"; }
+            if (module.types().kindOf(function.valueTypeOrZero(operation.operandAt(index))) != expected || operation.modeAt(index) != "value") {
+                report.report("SUBLANG-T002", "invalid String operand type or mode", operation.span());
+            }
+            index = index + 1;
+        }
+        String result = "Int";
+        if (operation.opcode() == "const.string") { result = "String"; }
+        if (operation.opcode() == "string.equal") { result = "Bool"; }
+        if (!operation.hasResult() || module.types().kindOf(operation.resultType()) != result || operation.resultOwnership() != "" || operation.scope() != 0) {
+            report.report("SUBLANG-T001", "invalid static String result contract", operation.span());
+        }
+    }
+}

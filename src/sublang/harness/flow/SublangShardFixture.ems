@@ -1,0 +1,113 @@
+namespace sublang::harness::flow;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+// One fixture builder keeps graph layout explicit across small construction phases.
+public class SublangShardFixture {
+    private SublangBuilder builder;
+    private Int span;
+    private Int nodeType;
+    private Int valueField;
+    private Int nextField;
+
+    public SublangShardFixture() {
+        this.builder = SublangBuilder("shard-mixed");
+        this.span = this.builder.syntheticSpan("shard-mixed");
+        this.nodeType = this.builder.classType("Node", this.span);
+        this.valueField = this.builder.classField(this.nodeType, "x", this.builder.intType(), true, this.span);
+        this.nextField = this.builder.classField(this.nodeType, "next", this.builder.refType(this.nodeType), true, this.span);
+    }
+
+    public SublangModule build(Bool churn) {
+        Int writer = this.createWriter();
+        Int run = this.createRunner(writer, churn);
+        this.createMain(run);
+        return this.builder.module();
+    }
+
+    private static List<Int> one(Int value) {
+        List<Int> values = List(); values.add(value); return values;
+    }
+
+    private Int node(Int scope, Int value) {
+        Int object = this.builder.ops().classNew(this.nodeType, scope, this.span);
+        this.builder.ops().fieldInit(object, this.valueField, value, this.span);
+        this.builder.ops().fieldClear(object, this.nextField, this.span);
+        return object;
+    }
+
+    private Int createWriter() {
+        Int writer = this.builder.beginFunction("writeHeapChild", this.builder.intType(), 0, this.span);
+        Int target = this.builder.addParam("target", this.builder.refType(this.nodeType), "borrow_write", false);
+        this.builder.beginBlock();
+        Int scope = this.builder.ops().scopeBegin(this.span);
+        Int child = this.node(scope, this.builder.ops().constInt(42, this.span));
+        this.builder.ops().fieldWriteOwned(target, this.nextField, child, this.span);
+        this.builder.ops().scopeEnd(scope, this.span);
+        this.builder.ops().returnValue(this.builder.ops().constInt(0, this.span), this.span);
+        return writer;
+    }
+
+    private Int createRunner(Int writer, Bool churn) {
+        Int run = this.builder.beginFunction("run", this.builder.intType(), 0, this.span);
+        Int count = this.builder.addParam("count", this.builder.intType(), "value", false);
+        this.builder.beginBlock();
+        Int scope = this.builder.ops().scopeBegin(this.span);
+        Int head = this.node(scope, this.builder.ops().constInt(0, this.span));
+        Int firstChild = this.node(scope, this.builder.ops().constInt(0, this.span));
+        this.builder.ops().fieldWriteOwned(head, this.nextField, firstChild, this.span);
+        Int header = this.builder.newBlock(); Int body = this.builder.newBlock(); Int done = this.builder.newBlock();
+        this.builder.ops().branchTo(header, SublangShardFixture.one(this.builder.ops().constInt(0, this.span)), this.span);
+        this.builder.enterBlock(header);
+        Int index = this.builder.addBlockParam(this.builder.intType());
+        List<Int> empty = List();
+        Int condition = this.builder.ops().compare("lt", index, count, this.span);
+        this.builder.ops().condBranch(condition, body, empty, done, empty, this.span);
+        this.builder.enterBlock(body);
+        this.appendNode(scope, index, head, churn);
+        Int increment = this.builder.ops().intBinary("int.add", index, this.builder.ops().constInt(1, this.span), "wrap", 0, this.span);
+        this.builder.ops().branchTo(header, SublangShardFixture.one(increment), this.span);
+        this.builder.enterBlock(done);
+        this.finishRunner(scope, head, count, writer);
+        return run;
+    }
+
+    private Void appendNode(Int scope, Int index, Int head, Bool churn) {
+        Int child = this.builder.ops().classNew(this.nodeType, scope, this.span);
+        this.builder.ops().fieldInit(child, this.valueField, index, this.span);
+        if (churn) {
+            this.builder.ops().fieldClear(child, this.nextField, this.span);
+            this.builder.ops().fieldWriteOwned(head, this.nextField, child, this.span);
+            return;
+        }
+        Int previous = this.builder.ops().fieldTake(head, this.nextField, scope, this.span);
+        this.builder.ops().fieldInitOwned(child, this.nextField, previous, this.span);
+        this.builder.ops().fieldInitOwned(head, this.nextField, child, this.span);
+    }
+
+    private Void finishRunner(Int scope, Int head, Int count, Int writer) {
+        Int child = this.builder.ops().fieldTake(head, this.nextField, scope, this.span);
+        this.builder.ops().fieldInitOwned(head, this.nextField, child, this.span);
+        Int previous = this.builder.ops().intBinary("int.sub", count, this.builder.ops().constInt(1, this.span), "wrap", 0, this.span);
+        List<String> modes = List(); modes.add("borrow_write");
+        this.builder.ops().callDirect(writer, SublangShardFixture.one(head), modes, this.span);
+        Int heap = this.builder.ops().fieldTake(head, this.nextField, scope, this.span);
+        Int heapValue = this.builder.ops().fieldRead(heap, this.valueField, this.span);
+        this.builder.ops().fieldInitOwned(head, this.nextField, heap, this.span);
+        Int answer = this.builder.ops().intBinary("int.add", previous, heapValue, "wrap", 0, this.span);
+        this.builder.ops().scopeEnd(scope, this.span);
+        this.builder.ops().returnValue(answer, this.span);
+    }
+
+    private Void createMain(Int run) {
+        Int main = this.builder.beginFunction("main", this.builder.intType(), 0, this.span);
+        this.builder.module().setEntry(main);
+        this.builder.beginBlock();
+        List<String> values = List(); values.add("value");
+        Int first = this.builder.ops().callDirect(run, SublangShardFixture.one(this.builder.ops().constInt(5000, this.span)), values, this.span);
+        Int second = this.builder.ops().callDirect(run, SublangShardFixture.one(this.builder.ops().constInt(3, this.span)), values, this.span);
+        Int sum = this.builder.ops().intBinary("int.add", first, second, "wrap", 0, this.span);
+        this.builder.ops().returnValue(sum, this.span);
+    }
+}

@@ -1,22 +1,22 @@
-# Erweiterte Sublang IR — vollständige Entwurfsbeispiele
+# Extended Sublang IR — complete architecture examples
 
-**Status: vorgeschlagene Notation, keine ausführbaren `.sublang`-Programme.**
+**Status: proposed notation, not executable .sublang programs.**
 
-Diese Beispiele konkretisieren den Zielvertrag v0.4 (Sublang_IR_Contracts.md), die v0.3-Grundlage und das Technical Overview. Operationen, Profilattribute, Provider-APIs und Planformate in diesem Dokument sind noch nicht als öffentliche API implementiert. Die derzeit tatsächlich erzeugbaren Dumps stehen daneben in `01-*.sublang` bis `07-*.sublang`.
+These examples illustrate architecture v0.4, its v0.3 basis and the Technical Overview. Operation names, profile attributes, provider APIs and plan formats here are not an implemented public API. Generated core dumps are available separately as 01-*.sublang through 07-*.sublang. For actual executable inputs, see [the IR guide](../../docs/Sublang_IR_Guide.md).
 
-Die nummerierten Module sind eigenständige Entwurfsbeispiele. Die Berichte beziehen sich auf die jeweils genannten Module; symbolische Target-/Runtime-Verträge sind explizite Integrationsabhängigkeiten. `!T` bezeichnet einen Typ, `%x` einen funktionslokalen SSA-Wert, `^b` einen Block, `@name` eine Moduldefinition. Blockargumente übernehmen Phi-Funktionen. Deklarationen wie `runtime`, `provider`, `profile` sind hier erklärende Vertragssyntax, keine festgelegte Textgrammatik. Target- und Runtime-Abhängigkeiten werden explizit angegeben. Konkrete Datensatzfelder werden bei der Implementierung versioniert.
+Each numbered module is an independent design example. Reports refer to their named modules; symbolic target/runtime contracts are explicit dependencies. !T denotes a type, %x a function-local SSA value, ^b a block and @name a module definition. Block arguments serve as phi nodes. Declarations such as runtime/provider/profile are explanatory contract notation, not an established grammar. Record fields will be versioned during implementation.
 
-### Einheitliche v0.4-Notation
+### Common v0.4 notation
 
-`effects @unknown { default=unknown origin=AssumedConservative }` setzt **jedes** nicht näher bekannte Effektfeld konservativ auf unknown. Ein spezialisiertes Summary erbt davon und überschreibt nur ausdrücklich genannte Felder. `origin=Declared trusted=...` bezeichnet einen gebundenen Provider-/Profilvertrag; `origin=Proven analysis=... revision=N` bezeichnet einen beispielhaften Analysebericht desselben Snapshots. Keiner der dargestellten Beweise wurde bereits durch Sublang ausgeführt.
+effects @unknown { default=unknown origin=AssumedConservative } conservatively makes every unspecified effect unknown. Specialized summaries override only explicit facts. Declared/trusted identifies a bound provider/profile contract; Proven/analysis/revision illustrates a same-snapshot analysis result. These proposed proofs have not been executed by Sublang.
 
-Jede Funktion und jeder Call verweist auf ein Summary. Effektbehaftete Built-in-Operationen verwenden explizite versionierte Opcode-Verträge aus der angeforderten Extension; fehlende Verträge führen zur Diagnose. `reads/writes=local(...)` bleibt ein echter Speichereffekt. „Keine globalen Writes“ heißt nicht „keine Writes“.
+Every function/call references a summary. Effectful builtins use explicit versioned opcode contracts from required extensions; missing contracts produce diagnostics. reads/writes=local(...) remains an actual memory effect. No global writes does not mean no writes.
 
-Die vollständigen Modulblöcke stehen zusätzlich als einzelne [v0.4-Dateien](v0.4/readme.md). Diese `.sublang-ir`-Dateien sind **Zielnotation**, keine heutigen Builder-Dumps und kein veröffentlichtes Eingabeformat.
+Complete module blocks also appear as individual [v0.4 files](v0.4/readme.md). Their .sublang-ir notation is a proposal, not today's builder dump or published input grammar.
 
-## 1. Prozedurale Sprache ohne Flow: checked i64
+## 1. Procedural language without Flow: checked i64
 
-Das Frontend kann eine C-artige, funktionale oder andere Sprache implementieren. Dieses konkrete Profil wählt checked i64 und abort, nicht implizit die Regeln einer bestimmten Quellsprache. Eine Sprache mit wrap, Exceptions oder anderen Regeln braucht einen passenden eigenen Vertrag.
+The frontend may implement a C-like, functional or other language. This profile explicitly selects checked i64 and abort rather than inheriting unspecified source-language behavior. Wrapping arithmetic, exceptions or other rules require appropriate contracts.
 
 ```text
 module @procedural stage=High schema=planned revision=1 {
@@ -58,9 +58,9 @@ module @procedural stage=High schema=planned revision=1 {
 pipeline { flow=off; memory=language; backend=llvm }
 ```
 
-Ergebnis 42. Auch wenn `%sum` ungenutzt wäre, darf ein möglicherweise fehlschlagender Call nicht einfach entfernt werden. Bei `2_000_000_000 + 2_000_000_000` ergibt dieses i64-Profil 4_000_000_000; außerhalb des i64-Bereichs wird der Fehlervertrag ausgeführt. `flow=off` deaktiviert weder die Semantik noch notwendige Sicherheitsprüfungen.
+Result: 42. A potentially failing call cannot simply disappear when its result is unused. This i64 profile produces 4_000_000_000 for 2_000_000_000 + 2_000_000_000; out-of-range results follow the failure contract. Flow off does not disable semantics or required safety checks.
 
-## 2. OO: Identität und virtueller Dispatch
+## 2. OO identity and virtual dispatch
 
 ```text
 module @objects stage=High schema=planned revision=1 {
@@ -102,9 +102,9 @@ module @objects stage=High schema=planned revision=1 {
 }
 ```
 
-Das Interface-Profil verlangt, dass Implementierungen nicht unwinden; weitere Effekte bleiben unbekannt. Ein neues unbekanntes Implementierungsziel verhindert unbewiesene Devirtualisierung und Escape-Optimierungen. Ein `borrow_read` des Receivers bedeutet nicht automatisch, dass der Call weder globale Zustände ändert noch allokiert. Nur mit vollständiger Zielmenge oder einem geprüften Guard/Fallback darf Sublang daraus direkte Aufrufe machen. Das dynamische Objekt behält seine Identität.
+The interface contract forbids unwinding; other effects remain unknown. Unknown implementations block unproved devirtualization/escape transformations. A borrowed receiver does not imply no allocation/global mutation. Direct-call replacement needs a complete target set or valid guard/fallback. Dynamic object identity remains observable.
 
-## 3. Flow Managed: temporäres Objekt und Plan bis LLVM
+## 3. Managed Flow: temporary object through planning to LLVM
 
 ### High IR
 
@@ -148,9 +148,9 @@ module @temporary stage=High schema=planned revision=7 {
 pipeline { flow=on; memory=hyperalloc-managed; provider=@flow_simple }
 ```
 
-Hier wird die Identität tatsächlich nie beobachtet. Folded kann das Objekt vollständig entfernen, wenn zusätzlich alle Effekte dies erlauben. Für die folgende **Local-Demonstration ist Folded gezielt deaktiviert**. Die Strategie ist eine Passentscheidung und kein Sprachversprechen.
+Identity is never observed here. Folded may eliminate the object if effects also permit it. Folded is deliberately disabled for this Local demonstration. Placement is a pass decision, not a source-language promise.
 
-### MemoryPlan, schematisch
+### Schematic memory plan
 
 ```text
 plan @temporary_sum {
@@ -176,11 +176,11 @@ plan @temporary_sum {
 }
 ```
 
-Der Plan stützt sich auf gesonderte Ownership-/Lifetime-Analysen. `scope_hint` ist nur ein Kandidat; `scope.end` allein rechtfertigt weder Drop noch Stack-Platzierung. Die hier dargestellten Prüfergebnisse sind erwartete Berichte des Entwurfs.
+The plan relies on separate ownership/lifetime analyses. scope_hint is only a candidate; scope.end alone justifies neither drop nor stack placement. Verdicts shown here are expected design reports.
 
-Die 16 Bytes sind hier **zwei Felder**, kein Flow-Objektheader. Das Layout ist nur für diesen Plan und dieses Target zulässig. Layout-Beobachtung durch FFI oder Reflection würde zusätzliche Bedingungen verlangen. Revision, Ziel und Provider sind Teil der Gültigkeit; eine andere Revision darf den Plan nicht ungeprüft verwenden.
+The 16 bytes here are two fields, not an object header. This layout is valid only for this target/plan. FFI/reflection would add constraints. Revision, target and provider determine validity; another revision cannot reuse the plan unchecked.
 
-### Low IR, schematisch
+### Schematic Low IR
 
 ```text
 module @temporary_low stage=Low revision=8 consumes_plan=@temporary_sum {
@@ -209,11 +209,11 @@ module @temporary_low stage=Low revision=8 consumes_plan=@temporary_sum {
 }
 ```
 
-Der Lowering-Schritt dokumentiert, dass er den High-Plan aus Revision 7 konsumiert und daraus Revision 8 erzeugt. Der Low-Verifier prüft neue Entity-Zuordnung und Layoutumsetzung. Der LLVM-Emitter darf kein eigenes abweichendes Point-Layout erfinden.
+Lowering consumes the High plan at revision 7 and produces revision 8. Low verification checks entity remapping and layout. LLVM emission cannot invent a conflicting Point layout.
 
-### LLVM IR als konkrete Illustration
+### Concrete LLVM illustration
 
-Das folgende Beispiel entspricht diesem 64-Bit-Ziel und dem abort-Vertrag. Es wurde hier nicht durch LLVM assembliert. Die endgültige LLVM-Version/TargetDataLayout legt der Backend-Adapter fest.
+This illustrates the selected 64-bit target and abort contract. It was not assembled as part of this documentation change. The backend defines the supported LLVM version/data layout.
 
 ```llvm
 target triple = "x86_64-unknown-linux-gnu"
@@ -246,59 +246,13 @@ done:
 }
 ```
 
-LLVM kann diesen einfachen Fall weiter zu `ret i64 42` reduzieren. Das ist korrekte allgemeine Optimierung, keine besondere Benchmark-Regel. `nsw` allein würde den geforderten Fehlerpfad nicht implementieren.
+LLVM can reduce this to ret i64 42. That is general optimization, not a benchmark-specific rule. nsw alone would not implement the required failure path.
 
-## 4. Flow Integration: bestehender bewegender GC
+## 4. Former GC integration proposal
 
-```text
-module @integrated stage=High schema=planned revision=1 {
-  require Core@planned, Object@planned, Memory@planned, GC@planned
-  profile @host {
-    integers=signed_i64; unwind=none; finalizers=none
-    object_identity=observable; gc=host_moving
-  }
-  runtime @host_gc {
-    moving=true; roots=updateable_handles
-    safepoints=explicit_and_allocating_calls
-    write_barrier=required_on_reference_store
-    allocation_failure=abort
-  }
-  provider @integration { runtime=@host_gc; collector_replacement=false }
-  class !Node identity=observable {
-    field next: !nullable_ref<!Node> mutable
-  }
+This section is [archived](../../archive/gc-integration/readme.md) and outside active scope. Numbering remains stable for existing references.
 
-  effects @unknown { default=unknown origin=AssumedConservative }
-  effects @gc_effects inherits=@unknown {
-    mayAllocate=true; mayEscape=false; mayThrow=false; mayFail=true
-    reads=runtime+local_nodes; writes=runtime+local_nodes
-    synchronization=provider_defined; observable=none; mayDiverge=unknown
-    origin=Declared trusted=@host_gc
-  }
-  func @linkTwo() -> !i64 profile=@host effects=@gc_effects {
-    ^entry:
-      %roots = gc.root_scope.begin runtime=@host_gc
-      %a = gc.alloc_rooted !Node(next=null) roots=%roots
-      %b = gc.alloc_rooted !Node(next=null) roots=%roots
-      gc.store_ref_with_barrier base_root=%a field=!Node.next value_root=%b
-      gc.safepoint runtime=@host_gc
-      %currentA = gc.root.load %a
-      %currentB = gc.root.load %b
-      %next = object.field.read %currentA, !Node.next
-      %same = object.ref.equal %next, %currentB
-      %answer = core.select %same, i64(1), i64(0)
-      gc.root_scope.end %roots
-      core.return %answer
-  }
-}
-pipeline { flow=on; memory=hyperalloc-integration; provider=@integration }
-```
-
-`gc.alloc_rooted` ist eine vorgeschlagene Provider-Operation: Allokation und Veröffentlichung des Handles sind GC-sicher, Initialisierung setzt das Ref-Feld auf null. Der Barrier-Vertrag nimmt Handles und löst aktuelle Adressen auf. Nach einem Safepoint werden Referenzen erneut aus aktualisierten Roots geladen; veraltete rohe Pointer werden nicht weiterbenutzt. Zwischen diesen Loads und dem letzten Feldzugriff liegt hier kein weiterer Safepoint.
-
-Ergebnis 1. Die Root-Scope-Ende-Operation gibt Handles frei, nicht eigenmächtig die Heap-Objekte. Der bestehende GC verwaltet deren Speicher. Ohne kompatiblen Root-/Barrier-Vertrag wird dieser Modus abgelehnt. Flow darf kompatible Optimierungen anwenden, aber nicht einfach den Collector ersetzen.
-
-## 5. Flow Managed mit Sharing/Zyklen: Bond
+## 5. Managed sharing and cycles: Bond
 
 ```text
 module @cycles stage=High schema=planned revision=1 {
@@ -335,86 +289,45 @@ module @cycles stage=High schema=planned revision=1 {
 pipeline { flow=on; memory=hyperalloc-managed; provider=@bond }
 ```
 
-Edge-Operationen aktualisieren Sharing-/Cycle-Metadaten. `release` gibt jeweils einen externen Owner frei; die beiden internen Kanten bestehen zunächst weiter. Der Provider muss den unerreichbaren Zyklus erkennen und freigeben können. Die IR behauptet keine sofortige Collection. Mit beobachtbaren Finalizern, Weak-Refs oder Threads wäre dieser begrenzte Provider unzureichend; Sublang darf diese Features nicht still verwerfen.
+Edges update sharing/cycle metadata. Release removes an external owner while internal edges initially remain. The provider must reclaim unreachable cycles; immediate collection is not asserted. Observable finalizers, weak refs or threads require stronger contracts and cannot be silently discarded.
 
-## 6. Dynamische Sprache: Tags, beweglicher Heap und Runtime-Fallback
-
-Das konkrete Minisprachprofil erlaubt i64, f64 und immutable Strings. Addition addiert Zahlen mit i64→f64-Promotion oder konkateniert zwei Strings; i64-Overflow führt in den Runtime-Fallback, dessen Ergebnis hier f64 ist. Andere Kombinationen aborten. Das ist bewusst eine eigene Minisprachsemantik, keine implizite Python-/JS-Regel.
+## 6. Dynamic heap values with ownership
 
 ```text
+// Illustrative target notation, not accepted input syntax or an executed analysis.
 module @dynamic stage=High schema=planned revision=1 {
-  require Core@planned, Dynamic@planned, Memory@planned, GC@planned
-  profile @dynamic_language {
-    values={i64,f64,immutable_string}; overflow=runtime_numeric_dispatch
-    numeric_promotion=i64_to_f64; string_add=concatenate; invalid_add=abort
-    unwind=none; gc=host_moving
-  }
-  runtime @dynamic_runtime {
-    roots=updateable_handles; moving=true; safepoints=allocating_calls
-    small_i64_box=immediate; errors=abort
-    add_contract=@dynamic_language; root_drop=nonallocating_nonthrowing
-  }
-  provider @integration { runtime=@dynamic_runtime; collector_replacement=false }
+  require Core@planned, Dynamic@planned, Memory@planned
+  profile @dynamic_owned { integers=signed_i64; floats=ieee_f64; overflow=checked; unwind=none }
+  provider @hyperalloc { heap=nonmoving; ownership=unique; release=deterministic }
   effects @unknown { default=unknown origin=AssumedConservative }
-  effects @tag_effects inherits=@unknown {
-    mayAllocate=false; mayEscape=false; mayThrow=false; mayFail=false
-    reads=argument_root_handles; writes=none; synchronization=none; observable=none
-    mayDiverge=false origin=Declared trusted=@dynamic_runtime.tag_contract
+  effects @concat inherits=@unknown {
+    mayAllocate=true; mayFail=true; mayThrow=false
+    parameter0=borrow_read_noescape; parameter1=borrow_read_noescape
+    result=owned
+    origin=Declared trusted=bound_runtime_contract
   }
-  effects @add_effects inherits=@unknown {
-    mayAllocate=true; mayThrow=false; mayFail=true
-    escape.arguments=none; escape.result=owned_rooted
-    reads=arguments+runtime; writes=runtime
-    synchronization=provider_defined; observable=none; mayDiverge=unknown
-    origin=Declared trusted=@dynamic_runtime.add
+  effects @length inherits=@unknown {
+    mayAllocate=false; mayThrow=false; parameter0=borrow_read_noescape
+    origin=Declared trusted=bound_runtime_contract
   }
-  extern func @addSlow(!dyn_root, !dyn_root) -> owned !dyn_root
-      profile=@dynamic_language cc=provider contract=@dynamic_runtime.add
-      effects=@add_effects
-
-  func @add(%a: borrow_read !dyn_root, %b: borrow_read !dyn_root)
-      -> owned !dyn_root profile=@dynamic_language effects=@add_effects {
+  runtime @concat_owned(borrow !dyn, borrow !dyn) -> owned !dyn effects=@concat
+  runtime @byte_length(borrow !dyn) -> !i64 effects=@length
+  func @join_length(%left: borrow !dyn, %right: borrow !dyn) -> !i64
+      profile=@dynamic_owned effects=@unknown {
     ^entry:
-      %aInt = dynamic.root.tag.is %a, i64 effects=@tag_effects
-      %bInt = dynamic.root.tag.is %b, i64 effects=@tag_effects
-      %both = core.bool.and %aInt, %bInt
-      core.cond_branch %both, ^integers, ^slow
-    ^integers:
-      %x = dynamic.root.unbox.i64 %a proof=%aInt effects=@tag_effects
-      %y = dynamic.root.unbox.i64 %b proof=%bInt effects=@tag_effects
-      (%sum, %overflow) = core.int.add_with_overflow %x, %y
-      core.cond_branch %overflow, ^slow, ^box(%sum)
-    ^box(%value: !i64):
-      %r = dynamic.root.box.i64 %value runtime=@dynamic_runtime result=owned
-      core.return_owned %r
-    ^slow:
-      %r = core.call.external @addSlow(%a, %b) effects=@add_effects
-           contract=@dynamic_runtime.add
-      core.return_owned %r
-  }
-
-  func @main() -> !i64 profile=@dynamic_language effects=@add_effects {
-    ^entry:
-      %roots = gc.root_scope.begin runtime=@dynamic_runtime
-      %a = dynamic.string.new_rooted bytes="hello" roots=%roots
-      %b = dynamic.string.new_rooted bytes=" world" roots=%roots
-      %joined = core.call.direct @add(%a, %b) effects=@add_effects
-      gc.root.adopt_owned %joined into=%roots
-      gc.safepoint runtime=@dynamic_runtime
-      %current = dynamic.root.load %joined
-      %length = dynamic.string.byte_length %current contract=@dynamic_runtime.no_safepoint_read
-      gc.root_scope.end %roots
-      core.return %length
+      %joined = core.call.direct @concat_owned(%left, %right) effects=@concat
+      %size = core.call.direct @byte_length(%joined) effects=@length
+      memory.drop %joined provider=@hyperalloc
+      core.return %size
   }
 }
-pipeline { flow=on; memory=hyperalloc-integration; provider=@integration }
+pipeline { flow=on; memory=hyperalloc-managed; provider=@hyperalloc }
+// The caller retains input owners across calls. The owned result is dropped exactly once.
+// This slice illustrates heap lifetime only; type tests, numeric fallback and closures
+// remain required in the actual Dynamic AOT milestone, not claimed implemented here.
 ```
 
-Erwartetes Ergebnis 11. Die Runtime erhält Handles statt veralteter Heap-Pointer. Ergebnisse werden vor einem weiteren Safepoint in einen Root-Scope übernommen; `adopt_owned` ist nicht allokierend. Auch der Fastpath gibt einen owned Handle zurück. Der Byte-Length-Zugriff und das Root-Scope-Ende führen hier keinen Safepoint aus. Zwei rohe `!dyn`-Parameter allein hätten diesen bewegenden-GC-Vertrag nicht erfüllt.
-
-`@add_effects` ist eine konservative Obergrenze: Ein einzelner Zahlen-Fastpath allokiert möglicherweise nicht, der Gesamtcall kann Strings allokieren und Runtime-Zustand ändern. Alias zu Runtime-Locations bleibt MayAlias, solange keine Analyse das präzisiert. Ein nicht unterstützter bewegender Provider führt zur Diagnose, nicht zu stiller Verwendung alter Adressen. Das Beispiel verlangt weiterhin keinen JIT.
-
-## 7. Closure mit Capture-Lebensdauer
+## 7. Closure capture lifetime
 
 ```text
 module @closure stage=High schema=planned revision=1 {
@@ -452,24 +365,24 @@ module @closure stage=High schema=planned revision=1 {
 }
 ```
 
-Ergebnis 42. Das Capture ist ein eigener Wert, kein Borrow auf einen später zerstörten Stack-Local. Bei einer tatsächlich entkommenden Closure mit borrowed Capture muss die Lifetime-Prüfung entweder die Lebensdauer belegen, eine semantisch zulässige Repräsentation wählen oder ablehnen. Eine automatische Kopie wäre bei beobachtbarer Identität/Mutation nicht allgemein korrekt.
+Result: 42. The capture is an independent value, not a borrow of an expired stack local. Escaping borrowed captures require a lifetime proof, a semantically valid representation or rejection. Automatic copying is not generally correct with observable identity/mutation.
 
-## Alle acht Flow-Strategien in der IR
+## All eight Flow strategies in IR
 
-Die High IR beschreibt logische Objekte und Sprachregeln. Strategien stehen im Analyse-/MemoryPlan; Frontends müssen nicht acht spezielle Allokations-Opcodes erfinden.
+High IR expresses logical objects and language rules. Placement belongs to analysis/memory plans; frontends do not need eight allocation opcodes.
 
-| Strategie | Logisches Beispiel | Physische Umsetzung bei gültigem Nachweis |
+| Strategy | Logical example | Physical implementation with valid proof |
 | --- | --- | --- |
-| Folded | temporäres Point, nur Felder gelesen | skalare SSA-Werte; keine Objektallokation |
-| Inline | List von Werten mit unobservable Identität | Elemente direkt im Buffer; Stride/Layout aus Plan |
-| Local | nicht entkommendes Objekt im Scope | Stack-Slot, Lifetime-Markierungen, notwendige Cleanup-Aktionen |
-| Pool | wiederholte, abgeschlossene Objektlebensdauern | Slot nach Ende sämtlicher alter Referenzen wiederverwenden |
-| Shard | Gruppe mit gemeinsamem Lifetime-Ende | Region allokieren, notwendige Drops, dann Region freigeben |
-| Root | eindeutiger Owner mit Transfer | Ownership übertragen; genau einmal auf jedem relevanten Pfad droppen |
-| Bond | geteilte Objektgraphen, ggf. Zyklen | kompatibler Sharing-/Cycle-Provider und getrackte Kanten |
-| Static | unveränderliche geeignete Daten/Literale | konstante Globals; Identitäts-/Internierungsregeln erhalten |
+| Folded | Temporary Point, fields only | Scalar values, no object allocation |
+| Inline | Value list with unobservable identity | Direct buffer elements, planned stride/layout |
+| Local | Nonescaping scoped object | Stack slot, lifetime markers and required cleanup |
+| Pool | Repeated complete lifetimes | Reuse after every prior reference expires |
+| Shard | Group with compatible lifetime | Region, required drops, then bulk release |
+| Root | Exclusive transferable owner | Transfer and exactly-once cleanup on relevant paths |
+| Bond | Shared graph/cycles | Compatible sharing/cycle runtime and tracked edges |
+| Static | Eligible immutable data/literals | Globals preserving identity/interning semantics |
 
-### Beispiel eines gemischten Plans
+### Example mixed plan
 
 ```text
 plan @mixed revision=12 target=@target provider=@flow {
@@ -484,87 +397,48 @@ plan @mixed revision=12 target=@target provider=@flow {
 }
 ```
 
-Die Beweisreferenzen sind hier Platzhalter für echte versionierte Analyseergebnisse. Wenn ein optionaler Optimierungsbeweis fehlt, bleibt der kompatible Basispfad. Wenn dagegen die erforderliche Sprach-/Runtime-Semantik fehlt, wird die Konfiguration diagnostiziert. Weder ein Strategietag noch ein strukturell gültiges Modul ist bereits `codegenReady`.
+Proof references are placeholders for actual versioned results. Missing optional optimization proofs preserve a compatible baseline. Missing required language/runtime semantics produce diagnostics. A strategy label or structural validity alone does not imply codegen readiness.
 
-## Gültige und ungültige Moduswahl
+## Valid and invalid mode selection
 
-| Flow-Pässe | Speicher-Modus | Bedeutung |
+| Flow passes | Memory mode | Meaning |
 | --- | --- | --- |
-| off | language | Basispipeline mit vollständiger Sprachsicherheit und notwendigem Cleanup |
-| on / auto | language | kompatible Optimierungen, bisheriger Runtime-/Provider-Vertrag |
-| on / auto | hyperalloc-integration | vorhandenen GC erhalten; passenden Integration-Provider verlangen |
-| on / auto | hyperalloc-managed | Flow-Provider explizit anfordern; erforderliche Semantik vollständig abdecken |
-| off | hyperalloc-managed / hyperalloc-integration | widersprüchlich, Diagnose |
+| off | language | Baseline preserves language safety and required cleanup |
+| on / auto | language | Compatible optimization under the existing provider contract |
+| on / auto | hyperalloc-managed | Explicit Flow provider with complete required semantics |
+| off | hyperalloc-managed | Contradiction in this proposed configuration; diagnose |
 
-`auto` mit ausdrücklich gewähltem Flow-Speichermodus ist keine Erlaubnis, den Modus still zu ignorieren. Es gibt keinen automatischen GC-Wechsel. Diese Optionen sind Zielverträge; aktuell implementiert `SublangOptions` nur das Flow-Mode-Tag.
+An explicit required provider cannot be silently ignored/replaced under auto. This table is a proposed broader configuration contract, not the current launcher behavior. Current native options are documented in the IR guide; off retains required ownership cleanup.
 
-## 8. Effekt- und Alias-Provenance: vollständiger Call-Site-Kontext
+## 8. Escape blocker and explicit ownership transfer
 
 ```text
-module @explain stage=High schema=planned revision=3 {
-  require Core@planned, Object@planned, Memory@planned, GC@planned
-  profile @host { unwind=none; finalizers=none; integers=signed_i64; gc=host }
-  runtime @plugin_runtime {
-    ownership=host_gc; roots=handles; errors=abort; moving=false
-    apply_accepts_root_handle=true
-    apply_may_retain_object=true; retained_object_is_gc_visible=true
-  }
-  provider @integration { runtime=@plugin_runtime; collector_replacement=false }
+// Illustrative target notation, not accepted input syntax or an executed analysis.
+module @explain_escape stage=High schema=planned revision=1 {
+  require Core@planned, Object@planned, Memory@planned
+  profile @owned { integers=signed_i64; unwind=none }
+  provider @hyperalloc { heap=nonmoving; ownership=unique; release=deterministic }
   class !Point { field x: !i64 immutable }
-  effects @unknown { default=unknown origin=AssumedConservative }
-  effects @apply_effects inherits=@unknown {
-    mayThrow=false origin=Declared trusted=@plugin_runtime.apply
-    mayAllocate=unknown origin=AssumedConservative
-    escape.argument0=unknown origin=AssumedConservative
-    reads=UnknownLocation origin=AssumedConservative
-    writes=UnknownLocation origin=AssumedConservative
-    synchronization=unknown origin=AssumedConservative
-  }
-  effects @main_effects inherits=@unknown {
-    mayThrow=false origin=Proven analysis=@main_no_unwind revision=3
-    mayAllocate=true origin=Proven analysis=@main_alloc revision=3
-  }
-  extern func @plugin.apply(borrow_read !root<!Point>) -> !i64
-      profile=@host cc=provider effects=@apply_effects contract=@plugin_runtime.apply
-
-  func @main() -> !i64 profile=@host effects=@main_effects {
+  effects @consume { default=unknown origin=AssumedConservative }
+  runtime @plugin_take(owned !ref<!Point>) -> !i64 effects=@consume
+  func @main() -> !i64 profile=@owned effects=@consume {
     ^entry:
-      %lexical = memory.scope.begin
-      %roots = gc.root_scope.begin runtime=@plugin_runtime
-      %point = gc.alloc_rooted !Point(x=i64(42)) roots=%roots scope_hint=%lexical
-      %result = core.call.external @plugin.apply(%point)
-                effects=@apply_effects contract=@plugin_runtime.apply
-      gc.root_scope.end %roots
-      memory.scope.end %lexical
-      core.return %result
+      %scope = memory.scope.begin
+      %point = object.new !Point(x=i64(42)) result=owned provider=@hyperalloc scope_hint=%scope
+      %answer = core.call.direct @plugin_take(move %point) effects=@consume
+      memory.scope.end %scope
+      core.return %answer
   }
 }
-pipeline { flow=on; memory=hyperalloc-integration; provider=@integration }
+pipeline { flow=on; memory=hyperalloc-managed; provider=@hyperalloc }
+// Ownership transfers to plugin_take: the provider must own and eventually release it.
+// Explain: stack placement blocked by escape into an unknown owned-consuming call.
+// No scope-end lifetime proof, automatic early free, or collector hook is implied.
 ```
 
-Der Provider kann eine entkommene Referenz GC-sichtbar erhalten. Der Call darf argument0 trotz Read-Zugriff behalten; das ursprüngliche Root-Handle selbst darf er nicht ungesichert speichern. `scope.end` und Root-Scope-Ende bedeuten keine Objektfreigabe. Das Modul ist deshalb ein konsistenter Basispfad für das unbekannte Escape.
+## 9. Exceptions with cleanup on both exits
 
-```text
-explain @local_blocked {
-  code=FLOW-LOCAL-ESCAPE-UNKNOWN; severity=remark
-  entity=(@explain, revision=3, @main, %point)
-  requested=Local; effective=host_gc_heap
-  related_alias=@point_unknown
-  blocker={call=@plugin.apply; argument=0; fact=escape.argument0=unknown;
-           origin=AssumedConservative; summary=@apply_effects}
-  reason="Call kann das Objekt über die lokale Lebensdauer hinaus erhalten."
-}
-alias_fact @point_unknown {
-  query=(location(@main,%point), UnknownLocation)
-  answer=MayAlias; origin=AssumedConservative; revision=3
-}
-```
-
-Entity, Modul und Revision stimmen zwischen IR und Bericht überein. Keine erfundene positive Provenance: Unknown bleibt Unknown. Ein ungeprüftes noescape-Attribut löst den Blocker nicht auf. Ohne einen passenden Heap-/Escape-Provider wäre die angeforderte Integration abzulehnen.
-
-## 9. Exceptions mit Cleanup auf beiden Ausgängen
-
-Eigenständiges schematisches Modul. Es zeigt die High-IR-Semantik; EH-/Resource-Operationen und deren Provider sind noch nicht implementiert.
+Independent schematic module illustrating High-IR semantics. These EH/resource operations and providers are not implemented.
 
 ```text
 module @exception_cleanup stage=High schema=planned revision=1 {
@@ -635,11 +509,11 @@ module @exception_cleanup stage=High schema=planned revision=1 {
 }
 ```
 
-Die Resultat-/Exception-Namen an den Invoke-Kanten stehen für ausschließlich dort definierte Kantenergebnisse. `%buffer` dominiert beide Ausgänge. Der Provider bewahrt die rooted Exception über eventuelle Cleanup-Safepoints. Der normale Wert wird nicht auf dem Unwind-Pfad benutzt. Ein Throw während nonthrowing Cleanup verletzt hier den Vertrag; eine Sprache mit anderen Finally-Regeln braucht ein anderes Profil und Lowering.
+Invoke edge names denote results defined only on their corresponding edges. Buffer dominates both exits. The provider preserves the owned exception across cleanup. The normal result is not used on unwind. Throwing from nonthrowing cleanup violates this contract; other finally semantics need another profile/lowering.
 
-Das Resource wird auf jedem relevanten Ausgang einmal gedroppt. Ein zusätzliches lexikalisches `scope.end` würde diese Prüfung nicht ersetzen. Bei weiteren Ausgängen (frühem Return, Catch, Break oder einem weiteren Throw) muss der CFG passende Cleanup-Pfade enthalten. Abort mit erforderlichem beobachtbarem Cleanup wäre ebenfalls ausdrücklich zu modellieren.
+The resource is dropped once on every required exit. Another lexical scope.end would not prove this. Early return/catch/break/additional throw need matching cleanup paths. Required observable cleanup before abort must also be explicit.
 
-## 10. Pass- und Protokollberichte
+## 10. Pass and protocol reports
 
 ```text
 pass_result @local_attempt {
@@ -657,24 +531,24 @@ pass_result @local_attempt {
 }
 ```
 
-Dieser Passlauf auf Beispiel 8 verändert nichts, weil der einzige Local-Kandidat blockiert ist; Snapshot und Revision bleiben deshalb gleich. Ein tatsächlich mutierender Pass wie das Lowering in Beispiel 3 muss eine neue Revision samt Entity-Mapping liefern und abhängige Analysen invalidieren oder gültig übertragen. Der Verifier belegt hier die aufgeführten Invarianten, nicht automatisch volle Programm-Äquivalenz.
+This pass changes nothing because the only Local candidate is blocked, so snapshot/revision remain unchanged. Actual transformations, such as section 3 lowering, need new revisions/entity mappings and analysis invalidation/preservation. Verification proves listed invariants, not arbitrary program equivalence.
 
 ```text
 client -> Hello {
   protocol_major=P; protocol_minor=M
   schemas=[S]
-  required_extensions={Core:V; Dynamic:V; Memory:V; GC:V}
+  required_extensions={Core:V; Dynamic:V; Memory:V}
 }
 server -> Capabilities {
   protocol_major=P; selected_schema=S
-  supported_extensions={Core:V; Dynamic:V; Memory:V; GC:V}
-  targets=[@selected_target]; providers=[@integration]
+  supported_extensions={Core:V; Dynamic:V; Memory:V}
+  targets=[@selected_target]; providers=[@hyperalloc]
 }
 client -> Submit {
   request_id=17
   snapshot=<module @dynamic from example 6, encoded under schema S>
-  target=@selected_target; provider=@integration
-  pipeline={flow=auto; memory=hyperalloc-integration}
+  target=@selected_target; provider=@hyperalloc
+  pipeline={flow=auto; memory=hyperalloc-managed}
 }
 server -> Result {
   request_id=17
@@ -688,7 +562,7 @@ server -> Result {
 }
 ```
 
-Ein konkreter abgelehnter Request erhält dieselbe strukturierte Diagnose wie die Textansicht:
+A rejected request receives the same structured diagnosis as the text view:
 
 ```text
 server -> Rejected {
@@ -704,12 +578,12 @@ server -> Rejected {
 }
 ```
 
-Die Snapshot-Identität umfasst Modul-ID, Revision, Funktions-ID und lokale Entity-ID. Eine Wire-Section referenziert diese IDs und speichert Konstanten beispielsweise als `f64 bits=0x8000000000000000` für -0, nicht als verlustbehafteten Dezimaltext. Diagnostik referenziert Source-IDs aus einer versionierten Source-Tabelle. Das Diagnosebeispiel ergänzt eine illustrative Source-/Entity-Zuordnung für den Request; es behauptet keine tatsächliche Zeile im Zielmodul.
+Snapshot identity includes module/revision/function/local entity. Wire records reference those IDs and preserve raw constants, e.g. negative-zero bits rather than lossy decimal float formatting. Diagnostics reference a versioned source table. The illustrated source/entity mapping does not assert an actual source line in a target module.
 
-Dies ist eine lesbare Protokollskizze, weder JSON-Wireformat noch feste Bytekodierung. P/M/S/V sind symbolisch; keine bereits veröffentlichte Versionsnummer. Fehlt eine erforderliche Dynamic-Extension, erfolgt eine Diagnose vor Optimierung. Das spätere Binärformat serialisiert keine nativen Zeiger oder internen Emerald-Objektlayouts.
+This is a readable protocol sketch, not JSON wire encoding or fixed bytes. P/M/S/V are symbolic, not published versions. Missing required extensions fail before optimization. Serialization must not expose process pointers or Emerald object layouts.
 
 
-## 11. Lexikalischer Scope endet, Objekt lebt weiter
+## 11. Scope ends while the object survives
 
 ```text
 module @ownership_transfer stage=High schema=planned revision=1 {
@@ -741,20 +615,20 @@ module @ownership_transfer stage=High schema=planned revision=1 {
 }
 ```
 
-Erwartetes Ergebnis 42. Der erste Scope endet vor dem letzten Objektzugriff. Das ist korrekt, weil Ownership zum Aufrufer transferiert wurde; eine Local-Platzierung im Stackframe von `@make` wäre falsch. Eine Rückgabe eines Borrows auf dasselbe lokale Objekt ohne gültigen Lifetime-Vertrag wäre dagegen abzulehnen. `memory.move` konsumiert `%object`; danach darf die alte Owner-Referenz nicht weiterverwendet werden.
+Expected result: 42. Ownership has transferred before the original scope ends, so placing the object in make's stack frame would be incorrect. Returning a borrow without a lifetime contract must fail. memory.move consumes object; the prior owner cannot be reused.
 
-## Abdeckung der Nutzeranforderungen
+## Requirement coverage
 
-| Anforderung | Konkretes Beispiel |
+| Requirement | Example |
 | --- | --- |
-| Erstklassige Effekte, globale Reads/Writes, Synchronisation | Summaries in 1–9; UnknownLocation und Synchronisation in 8 |
-| Declared / AssumedConservative / Proven | einheitliche Notation, 2 und 8 |
-| Scope unabhängig von Lifetime/Ownership | Plan in 3, GC-Escape in 8, Transfer in 11 |
-| Fehleraktion, Unwinding, Cleanup, Catch, Rethrow | 1/3 und 9 |
-| Schema, Features, stabile IDs, Diagnosen, öffentliche Grenze | 10 und `Sublang_IR_Contracts.md`; kein natives Objektlayout als Wire-ABI |
-| Struktur / Semantik / Memory separat, Revision/Invalidierung | Plan in 3, Pass- und Result-Bericht in 10 |
-| Gemeinsame Effect-/Alias-Abstraktion | 3 und 8 |
-| Explain nennt blockierenden Call und Alias-Fakt | 8 |
-| Dynamische Typen, Heap-Referenzen und Runtime-Fallback | 6 |
+| First-class effects, globals and synchronization | Summaries in 1–9; UnknownLocation/synchronization in 8 |
+| Declared / AssumedConservative / Proven | Common notation, 2 and 8 |
+| Scope distinct from lifetime/ownership | Plan 3, escape 8, transfer 11 |
+| Failure, unwind, cleanup, catch and rethrow | 1/3 and 9 |
+| Schema/features/stable IDs/diagnostics/public boundary | 10 and IR Contracts; no native layouts as Wire ABI |
+| Separate validation and revision invalidation | Plan 3 and reports 10 |
+| Shared effect/alias abstraction | 3 and 8 |
+| Explain identifies blocking call/alias | 8 |
+| Dynamic types, heap values and fallback | 6 |
 
-Alle positiven Prüfberichte und Analysebeweise der Zielbeispiele sind **illustrative erwartete Resultate**. Nur die getrennten schema=1-Builder-Dumps besitzen den früher dokumentierten tatsächlichen Strukturprüflauf. Für diese Überarbeitung wurde kein Compiler gestartet.
+All positive analysis/validation reports in these architecture examples are illustrative expected results. Historical core dumps have separate structural-check evidence; executable native examples have their own bounded backend evidence. No compiler was run for this documentation translation.

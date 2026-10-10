@@ -1,0 +1,185 @@
+namespace sublang::checks;
+
+use sublang::body::SublangFunction;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+use sublang::semantics::SublangAliasFact;
+use sublang::semantics::SublangEffectFact;
+use sublang::semantics::SublangEffectSummary;
+use sublang::semantics::SublangFailureAction;
+use sublang::semantics::SublangLocation;
+use sublang::semantics::SublangSemanticProfile;
+use sublang::vocabulary::SublangVocabulary;
+use sublang::checks::SublangEvidenceChecks;
+
+// Checks the semantic data a module carries: failure records, effect summaries, locations,
+// alias facts and the profile and effect references of functions. These checks only test
+// that the data is well formed and that claims are backed by their declared origin. They
+// never prove the claims themselves; that is the job of a later analysis.
+public class SublangSemanticChecks {
+    private SublangReport findings;
+    private SublangModule module;
+
+    public SublangSemanticChecks(SublangReport report, SublangModule source) {
+        this.findings = report;
+        this.module = source;
+    }
+
+    public Void checkFailureActions() {
+        Int failureId = 1;
+        while (failureId <= this.module.semantics().failureCount()) {
+            this.checkFailureAction(this.module.semantics().failureActionAt(failureId));
+            failureId = failureId + 1;
+        }
+    }
+
+    // Failure records are complete only when they name their behavior, binding and signature.
+    // Only abort without continuation and with no unwinding is implemented in v0.1.
+    private Void checkFailureAction(SublangFailureAction action) {
+        if (action.behavior() != SublangVocabulary.startupFailureModel()) {
+            this.findings.report("SUBLANG-U004", "failure action " + action.name() + " has behavior " + action.behavior() + "; only abort is supported in v0.1", action.span());
+        }
+        if (action.continues()) {
+            this.findings.report("SUBLANG-F003", "failure action " + action.name() + " must not continue; abort never returns", action.span());
+        }
+        if (action.unwinding() != SublangVocabulary.startupUnwindingModel()) {
+            this.findings.report("SUBLANG-U005", "failure action " + action.name() + " declares unwinding " + action.unwinding() + "; not supported in v0.1", action.span());
+        }
+        if (action.signature() != "noreturn void()") {
+            this.findings.report("SUBLANG-F002", "abort requires signature noreturn void()", action.span());
+        }
+        if (!action.isComplete()) {
+            this.findings.report("SUBLANG-F001", "failure action " + action.name() + " is incomplete; binding and signature are required", action.span());
+        }
+    }
+
+    public Void checkEffectSummaries() {
+        Int effectId = 1;
+        while (effectId <= this.module.semantics().effectSummaryCount()) {
+            this.checkEffectSummary(this.module.semantics().effectSummaryAt(effectId));
+            effectId = effectId + 1;
+        }
+    }
+
+    // A missing area is reported instead of being read as "no effect": absence is unknown.
+    private Void checkEffectSummary(SublangEffectSummary summary) {
+        this.checkMissingAreas(summary);
+        Int index = 0;
+        while (index < summary.factCount()) {
+            this.checkEffectFact(summary, summary.factAt(index));
+            index = index + 1;
+        }
+    }
+
+    private Void checkMissingAreas(SublangEffectSummary summary) {
+        List<String> areas = SublangVocabulary.effectAreas();
+        Int areaIndex = 0;
+        while (areaIndex < areas.length()) {
+            if (!this.summaryHasArea(summary, areas.get(areaIndex))) {
+                this.findings.report("SUBLANG-E004", "effect summary " + summary.name() + " lacks area " + areas.get(areaIndex) + "; a missing area is not 'none'", summary.span());
+            }
+            areaIndex = areaIndex + 1;
+        }
+    }
+
+    private Bool summaryHasArea(SublangEffectSummary summary, String area) {
+        Int index = 0;
+        while (index < summary.factCount()) {
+            if (summary.factAt(index).area() == area) {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    private Void checkEffectFact(SublangEffectSummary summary, SublangEffectFact fact) {
+        this.checkEffectArea(summary, fact);
+        if (!SublangVocabulary.isEffectProvenance(fact.provenance())) {
+            this.findings.report("SUBLANG-E002", "effect summary " + summary.name() + " has unknown provenance " + fact.provenance(), summary.span());
+        }
+        SublangEvidenceChecks(this.findings, this.module).checkEffect(summary, fact);
+    }
+
+    private Void checkEffectArea(SublangEffectSummary summary, SublangEffectFact fact) {
+        if (!SublangVocabulary.isEffectArea(fact.area())) {
+            this.findings.report("SUBLANG-E002", "effect summary " + summary.name() + " has unknown area " + fact.area(), summary.span());
+            return;
+        }
+        if (!SublangVocabulary.isEffectValue(fact.area(), fact.value())) {
+            this.findings.report("SUBLANG-E002", "effect summary " + summary.name() + " gives " + fact.value() + " for area " + fact.area(), summary.span());
+        }
+    }
+
+    public Void checkLocations() {
+        Int locationId = 1;
+        while (locationId <= this.module.aliases().locationCount()) {
+            this.checkLocation(this.module.aliases().locationAt(locationId));
+            locationId = locationId + 1;
+        }
+    }
+
+    private Void checkLocation(SublangLocation locationEntry) {
+        if (!SublangVocabulary.isLocationKind(locationEntry.kind())) {
+            this.findings.report("SUBLANG-S001", "location " + locationEntry.name() + " has unknown kind " + locationEntry.kind(), locationEntry.span());
+        }
+    }
+
+    public Void checkAliasFacts() {
+        Int factId = 1;
+        while (factId <= this.module.aliases().aliasFactCount()) {
+            this.checkAliasFact(this.module.aliases().aliasFactAt(factId));
+            factId = factId + 1;
+        }
+    }
+
+    // An assumed-conservative fact can only state MayAlias, and a proven fact needs the analysis
+    // it came from. Declared facts pass as data; SublangModule.aliasAnswer never lets them answer.
+    private Void checkAliasFact(SublangAliasFact fact) {
+        this.checkAliasEndpoints(fact);
+        if (!SublangVocabulary.isEffectProvenance(fact.origin())) {
+            this.findings.report("SUBLANG-E002", "alias fact " + fact.id().toString() + " has unknown origin " + fact.origin(), fact.span());
+            return;
+        }
+        this.checkAliasClaim(fact);
+        if (fact.origin() == "proven" && !this.module.aliases().aliasProofWellFormed(fact)) {
+            this.findings.report("SUBLANG-E003", "alias evidence requires the current revision and valid dependencies covering both locations", fact.span());
+        }
+    }
+
+    private Void checkAliasEndpoints(SublangAliasFact fact) {
+        if (!this.module.aliases().hasLocation(fact.left()) || !this.module.aliases().hasLocation(fact.right())) {
+            this.findings.report("SUBLANG-E006", "alias fact " + fact.id().toString() + " refers to an unknown location", fact.span());
+        }
+        if (!SublangVocabulary.isAliasAnswer(fact.answer())) {
+            this.findings.report("SUBLANG-E006", "alias fact " + fact.id().toString() + " has unknown answer " + fact.answer(), fact.span());
+        }
+    }
+
+    private Void checkAliasClaim(SublangAliasFact fact) {
+        if (fact.answer() == "MayAlias" || fact.origin() != "assumed-conservative") {
+            return;
+        }
+        String pair = "alias:" + fact.left().toString() + "," + fact.right().toString();
+        this.findings.reportBlocked("SUBLANG-E007", "alias fact " + fact.id().toString() + " claims " + fact.answer() + " from an assumed-conservative origin; only MayAlias is allowed there", fact.span(), pair);
+    }
+
+    // A function must name a known semantic profile and an existing effect summary.
+    public Void checkFunctionReferences(SublangFunction fnEntry) {
+        this.checkProfileReference(fnEntry);
+        if (!this.module.semantics().hasEffectSummary(fnEntry.effectSummary())) {
+            this.findings.report("SUBLANG-E001", "function " + fnEntry.name() + " refers to effect summary " + fnEntry.effectSummary().toString() + ", which does not exist", fnEntry.span());
+        }
+    }
+
+    private Void checkProfileReference(SublangFunction fnEntry) {
+        if (!this.module.semantics().hasProfile(fnEntry.profile())) {
+            this.findings.report("SUBLANG-P001", "function " + fnEntry.name() + " refers to semantic profile " + fnEntry.profile().toString() + ", which does not exist", fnEntry.span());
+            return;
+        }
+        SublangSemanticProfile profile = this.module.semantics().profileAt(fnEntry.profile());
+        if (!profile.isStartupSupported()) {
+            this.findings.report("SUBLANG-P002", "semantic profile " + profile.name() + " of " + fnEntry.name() + " uses rules outside the startup set; not supported in v0.1", fnEntry.span());
+        }
+    }
+}

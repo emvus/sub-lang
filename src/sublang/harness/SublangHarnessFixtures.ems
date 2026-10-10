@@ -1,0 +1,69 @@
+namespace sublang::harness;
+
+use sublang::ir::SublangBuilder;
+
+public class SublangHarnessFixtures {
+    // Free function add, record Pair, class Counter with a mutable field and the
+    // receiver method Counter.read, plus main, which uses all of them once.
+    public static SublangBuilder buildValid() {
+        SublangBuilder builder = SublangBuilder("valid-demo");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int failureId = builder.failure("emerald.int_overflow");
+
+        Int pairType = builder.recordType("Pair", builder.span(sourceId, 10, 5));
+        Int pairX = builder.recordField(pairType, "x", intType, builder.span(sourceId, 11, 5));
+        Int pairY = builder.recordField(pairType, "y", intType, builder.span(sourceId, 12, 5));
+
+        Int counterType = builder.classType("Counter", builder.span(sourceId, 14, 5));
+        Int counterValue = builder.classField(counterType, "value", intType, true, builder.span(sourceId, 15, 5));
+        Int counterRef = builder.refType(counterType);
+
+        Int addFn = builder.beginFunction("add", intType, 0, builder.span(sourceId, 20, 5));
+        Int addA = builder.addParam("a", intType, "value", false);
+        Int addB = builder.addParam("b", intType, "value", false);
+        builder.beginBlock();
+        Int addSum = builder.ops().intBinary("int.add", addA, addB, "trap", failureId, builder.span(sourceId, 21, 9));
+        builder.ops().returnValue(addSum, builder.span(sourceId, 22, 9));
+
+        Int readFn = builder.beginFunction("Counter.read", intType, counterType, builder.span(sourceId, 24, 5));
+        Int readSelf = builder.addParam("self", counterRef, "borrow_read", true);
+        builder.beginBlock();
+        Int readValue = builder.ops().fieldRead(readSelf, counterValue, builder.span(sourceId, 25, 9));
+        builder.ops().returnValue(readValue, builder.span(sourceId, 26, 9));
+
+        SublangHarnessFixtures.addValidMain(builder, sourceId, intType, pairType, pairX, pairY, counterType, counterValue, addFn, readFn);
+        return builder;
+    }
+
+    public static Void addValidMain(SublangBuilder builder, Int sourceId, Int intType, Int pairType, Int pairX, Int pairY, Int counterType, Int counterValue, Int addFn, Int readFn) {
+        Int mainFn = builder.beginFunction("main", intType, 0, builder.span(sourceId, 30, 5));
+        builder.beginBlock();
+        Int scopeId = builder.ops().scopeBegin(builder.span(sourceId, 31, 9));
+        Int twenty = builder.ops().constInt(20, builder.span(sourceId, 32, 9));
+        Int twentyTwo = builder.ops().constInt(22, builder.span(sourceId, 33, 9));
+        List<Int> pairValues = List();
+        pairValues.add(twenty);
+        pairValues.add(twentyTwo);
+        Int pairValue = builder.ops().recordMake(pairType, pairValues, builder.span(sourceId, 34, 9));
+        Int pairLeft = builder.ops().recordGet(pairValue, pairX, builder.span(sourceId, 35, 9));
+        Int pairRight = builder.ops().recordGet(pairValue, pairY, builder.span(sourceId, 36, 9));
+        List<Int> addArgs = List();
+        addArgs.add(pairLeft);
+        addArgs.add(pairRight);
+        List<String> addModes = List();
+        addModes.add("value");
+        addModes.add("value");
+        Int total = builder.ops().callDirect(addFn, addArgs, addModes, builder.span(sourceId, 37, 9));
+        Int counter = builder.ops().classNew(counterType, scopeId, builder.span(sourceId, 38, 9));
+        builder.ops().fieldInit(counter, counterValue, total, builder.span(sourceId, 39, 9));
+        List<Int> readArgs = List();
+        readArgs.add(counter);
+        List<String> readModes = List();
+        readModes.add("borrow_read");
+        Int observed = builder.ops().callDirect(readFn, readArgs, readModes, builder.span(sourceId, 40, 9));
+        builder.ops().scopeEnd(scopeId, builder.span(sourceId, 41, 9));
+        builder.ops().returnValue(observed, builder.span(sourceId, 42, 9));
+        builder.module().setEntry(mainFn);
+    }
+}

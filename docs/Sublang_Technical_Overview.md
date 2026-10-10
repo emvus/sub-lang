@@ -1,6 +1,6 @@
 # Sublang
 
-Naming migration: terminology has been updated to Sublang, Optimind and HyperAlloc Flow. This is an editorially migrated copy; the original user-supplied file and its original hash remain historical provenance, not the checksum of this revision. Technical scope and reported benchmark evidence are unchanged.
+Naming migration: terminology has been updated to Sublang, Optimind and HyperAlloc Flow. This is an editorially migrated copy; the original user-supplied file and its original hash remain historical provenance, not the checksum of this revision. Reported benchmark evidence is retained. Current scope excludes foreign GC integration; the earlier design is archived under archive/gc-integration.
 
 > **High-level compiler optimization, semantic-aware object lowering, and optional memory intelligence — without forcing a language to adopt Emerald's runtime or memory model.**
 
@@ -51,13 +51,12 @@ Sublang High IR represents typed values and control flow with explicit semantic 
 | **Core** | Primitive types, value aggregates, functions, SSA values, control flow, direct calls, arithmetic rules |
 | **Object** | Reference classes, object identity, fields, methods, inheritance, interfaces, dynamic dispatch |
 | **Memory** | Ownership, borrowing, reference relationships, lifetimes, transfers, storage constraints |
-| **GC / Runtime** | GC roots, barriers, safepoints, pinning, weak references, finalizers, collector contracts |
 
 A language uses the capabilities that match its semantics. A procedural language does not need to manufacture classes; an object-oriented language is not forced into Emerald's class representation. Extensions that affect correctness must be understood and preserved by the passes that encounter them.
 
 ### Low IR: concrete implementation choices
 
-Sublang Low IR expresses the representation decisions made from high-level semantics: layouts, memory operations, calls, transfers, and cleanup. The LLVM lowering then targets the appropriate platform data layout and ABI. Runtime object headers and collector-specific metadata are defined by the corresponding runtime integration rather than by a universal Emerald object layout.
+Sublang Low IR expresses the representation decisions made from high-level semantics: layouts, memory operations, calls, transfers, and cleanup. The LLVM lowering then targets the appropriate platform data layout and ABI. Runtime object headers and allocation metadata are defined by the corresponding runtime integration rather than by a universal Emerald object layout.
 
 ### Semantic contracts, not guesses
 
@@ -84,27 +83,11 @@ Its optimization vocabulary includes:
 
 These are **candidate transformations, not unconditional promises**: a strategy is chosen only when its proof obligations and runtime contracts are satisfied. Crucially, some strategies remove allocations or change representation without requiring Sublang to own the language's memory management at all.
 
-### Flow does **not** require replacing a tracing GC
+### Optional Flow-managed memory
 
-Sublang separates three independent decisions:
+Optimind and LLVM lowering can be developed independently of HyperAlloc Flow. A frontend can explicitly select Flow-managed ownership, allocation placement, regions, reuse and deterministic release where the runtime supports its semantics. Shared graphs and cycles require separately validated Flow capabilities.
 
-1. **Use Sublang as an optimization framework?** A language may use Sublang analyses and lowering without enabling HyperAlloc Flow.
-2. **Enable Flow?** A language may use Flow's compatible analysis and optimization passes while retaining its existing allocator or tracing garbage collector.
-3. **Delegate memory management to Flow?** A language may explicitly select a Flow-managed runtime if its semantics and required runtime capabilities are covered.
-
-These are separate configuration and integration choices. **Using Sublang does not imply using Flow; using Flow does not imply replacing a GC; and choosing LLVM lowering does not inherently require replacing a language's runtime.**
-
-#### Flow Integration Mode: keep the language runtime
-
-The language retains its own GC, allocator, object runtime, and externally observable semantics. A runtime provider supplies relevant capabilities such as roots, write barriers, safepoints, moving-reference handling, pinning, finalizers, and native-call conventions. Flow performs only transformations compatible with those contracts.
-
-This mode can permit object elimination, scalar replacement, selected stack allocation, and other valid improvements **without adopting Root/Bond or Emerald's object layout**. Exactly which optimizations are legal depends on the source language and collector behavior.
-
-#### Flow Managed Mode: delegate memory strategy
-
-A language may intentionally choose Flow as its memory-management layer. In this mode, Flow can coordinate allocation placement, ownership, regions, reuse, deterministic release, and shared-graph handling using appropriate runtime mechanisms.
-
-This is **an opt-in runtime architecture**, not a mandatory upgrade or an automatic way to delete any GC. Dynamic graphs, weak references, resurrection, finalization, concurrency, reflection, and moving-object semantics still require explicit, correct support. A particular reference-counting and cycle-collection mechanism is not a drop-in semantic replacement for every tracing collector.
+Foreign garbage collector integration is outside the active roadmap. The previous Integration Mode, roots, barriers, safepoints and moving-object provider design is preserved in [the archive](../archive/gc-integration/readme.md). Dynamic-language support remains a goal, initially through explicit ownership and a non-moving heap.
 
 ## Object-oriented lowering is a first-class concern
 
@@ -177,7 +160,7 @@ The meaningful technical claim is not that Sublang automatically makes every lan
 
 **Keep your language. Keep your semantics. Keep your runtime if you want it.**
 
-Use Sublang to centralize the difficult compiler work between high-level language constructs and LLVM: semantic verification, cross-function analysis, object-aware optimization, storage and representation planning, and lowering. Turn on HyperAlloc Flow when its optimizations are useful; integrate with your existing collector or opt into a Flow-managed memory model when that is the right architectural choice.
+Use Sublang to centralize the difficult compiler work between high-level language constructs and LLVM: semantic verification, cross-function analysis, object-aware optimization, storage and representation planning, and lowering. Turn on HyperAlloc Flow when its optimizations are useful; opt into the supported Flow-managed memory model when that is the right architectural choice.
 
 > **Sublang turns rich language semantics into optimization opportunities before they disappear into low-level IR. HyperAlloc Flow makes object representation and memory behavior part of that optimization space — without making its memory runtime compulsory.**
 

@@ -1,0 +1,22 @@
+namespace sublang::optimind;
+
+use sublang::ir::SublangModule;
+use sublang::body::SublangFunction;
+use sublang::optimind::SublangOptimind;
+
+// Plan-side decision report. It repeats the pure analysis only to count accepted
+// folds and identities; it neither feeds code generation nor rewrites the module.
+public class SublangOptimindReport {
+    public static String render(SublangModule module, Bool enabled) {
+        if (!enabled) { return "optimind: disabled; no transformation decisions\n"; }
+        String text = "optimind: enabled; decisions are safe constant folds and integer identities\n";
+        Int id = 1;
+        while (id <= module.functionCount()) {
+            SublangFunction function = module.functionAt(id);
+            Int decisions = SublangOptimind.analyzeModule(module, function, true).changes();
+            text = text + "optimind: fn" + id.toString() + " " + function.name() + ": " + decisions.toString() + " decisions\n";
+            id = id + 1;
+        }
+        return text;
+    }
+}

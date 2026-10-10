@@ -1,0 +1,84 @@
+namespace sublang::dump;
+
+use sublang::body::SublangBlock;
+use sublang::body::SublangFunction;
+use sublang::body::SublangParam;
+use sublang::ir::SublangModule;
+use sublang::dump::SublangDumpOperation;
+use sublang::dump::SublangDumpText;
+
+// One function: a header line with its signature and properties, then each block with its
+// parameters and operations. Values print as v<id>, so a use can be matched to its definition.
+public class SublangDumpFunction {
+    public static String functionText(SublangModule module, Int functionId) {
+        SublangFunction fnEntry = module.functionAt(functionId);
+        String text = SublangDumpFunction.headerLine(module, fnEntry);
+        Int blockId = 1;
+        while (blockId <= fnEntry.blockCount()) {
+            text = text + SublangDumpFunction.blockText(module, fnEntry, blockId);
+            blockId = blockId + 1;
+        }
+        return text;
+    }
+
+    public static String headerLine(SublangModule module, SublangFunction fnEntry) {
+        String text = "func " + fnEntry.id().toString() + " " + fnEntry.name() + "(" + SublangDumpFunction.parameterList(module, fnEntry);
+        return text + ") -> " + SublangDumpText.typeName(module, fnEntry.returnType()) + " methodOf=" + fnEntry.methodOf().toString() + " profile=" + fnEntry.profile().toString() + " effects=" + fnEntry.effectSummary().toString() + " linkage=" + fnEntry.linkage() + " definition=" + fnEntry.definition() + " span=" + fnEntry.span().toString() + "\n";
+    }
+
+    public static String parameterList(SublangModule module, SublangFunction fnEntry) {
+        String text = "";
+        Int index = 0;
+        while (index < fnEntry.paramCount()) {
+            String separator = "";
+            if (index > 0) {
+                separator = ", ";
+            }
+            text = text + separator + SublangDumpFunction.parameterText(module, fnEntry.paramAt(index));
+            index = index + 1;
+        }
+        return text;
+    }
+
+    public static String parameterText(SublangModule module, SublangParam paramEntry) {
+        String text = "v" + paramEntry.value().toString() + " " + paramEntry.name() + ":" + SublangDumpText.typeName(module, paramEntry.typeId()) + "@" + paramEntry.passing();
+        if (paramEntry.noEscape()) {
+            text = text + " noescape";
+        }
+        return text;
+    }
+
+    public static String blockText(SublangModule module, SublangFunction fnEntry, Int blockId) {
+        SublangBlock blockEntry = fnEntry.blockAt(blockId);
+        String text = "  block " + blockEntry.id().toString() + " params=" + SublangDumpFunction.valueListText(module, fnEntry, blockEntry.paramValues()) + "\n";
+        Int opIndex = 0;
+        while (opIndex < blockEntry.operationCount()) {
+            text = text + SublangDumpOperation.operationText(module, blockEntry.operationAt(opIndex));
+            opIndex = opIndex + 1;
+        }
+        return text;
+    }
+
+    // Block parameters are listed with their types, so a reader sees what each block expects.
+    public static String valueListText(SublangModule module, SublangFunction fnEntry, List<Int> values) {
+        String text = "[";
+        Int index = 0;
+        while (index < values.length()) {
+            Int valueId = values.get(index);
+            String separator = "";
+            if (index > 0) {
+                separator = ",";
+            }
+            text = text + separator + "v" + valueId.toString() + SublangDumpFunction.valueTypeSuffix(module, fnEntry, valueId);
+            index = index + 1;
+        }
+        return text + "]";
+    }
+
+    public static String valueTypeSuffix(SublangModule module, SublangFunction fnEntry, Int valueId) {
+        if (!fnEntry.hasValue(valueId)) {
+            return "";
+        }
+        return ":" + SublangDumpText.typeName(module, fnEntry.valueTypeAt(valueId));
+    }
+}

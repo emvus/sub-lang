@@ -1,0 +1,96 @@
+namespace sublang::harness;
+
+use sublang::analysis::SublangVerification;
+use sublang::analysis::SublangVerifier;
+use sublang::diagnostics::SublangDiagnostic;
+use sublang::ir::SublangModule;
+use sublang::model::SublangSourceSpan;
+
+public class SublangHarnessSupport {
+    public static String yesNo(Bool value) {
+        if (value) {
+            return "yes";
+        }
+        return "no";
+    }
+
+    public static String describeSpan(SublangModule module, Int spanId) {
+        if (!module.hasSpan(spanId)) {
+            return "span=" + spanId.toString() + " (invalid)";
+        }
+        SublangSourceSpan spanEntry = module.spanAt(spanId);
+        String source = "?";
+        if (module.hasSource(spanEntry.source())) {
+            source = module.sourceNameAt(spanEntry.source());
+        }
+        return "span=" + spanId.toString() + " at " + source + ":" + spanEntry.line().toString() + ":" + spanEntry.column().toString();
+    }
+
+    public static Bool hasDiagnostic(List<SublangDiagnostic> found, String code, Int spanId) {
+        Int index = 0;
+        while (index < found.length()) {
+            SublangDiagnostic entry = found.get(index);
+            if (entry.code() == code && entry.spanId() == spanId) {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    public static Bool hasBlocker(List<SublangDiagnostic> found, String code, Int spanId, String blocker) {
+        Int index = 0;
+        while (index < found.length()) {
+            SublangDiagnostic entry = found.get(index);
+            if (entry.code() == code && entry.spanId() == spanId) {
+                List<String> blockers = entry.blockers();
+                Int position = 0;
+                while (position < blockers.length()) {
+                    if (blockers.get(position) == blocker) {
+                        return true;
+                    }
+                    position = position + 1;
+                }
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    public static Void printDiagnostics(SublangModule module, List<SublangDiagnostic> found) {
+        Int index = 0;
+        while (index < found.length()) {
+            SublangDiagnostic entry = found.get(index);
+            String blockerText = "";
+            List<String> blockers = entry.blockers();
+            Int position = 0;
+            while (position < blockers.length()) {
+                blockerText = blockerText + " blocker=" + blockers.get(position);
+                position = position + 1;
+            }
+            println("  " + entry.code() + " [" + entry.dimension() + "] " + entry.entity() + " " + SublangHarnessSupport.describeSpan(module, entry.spanId()) + ": " + entry.message() + blockerText);
+            index = index + 1;
+        }
+    }
+
+    public static Bool report(String label, Bool passed) {
+        if (passed) {
+            println("PASS " + label);
+            return passed;
+        }
+        println("FAIL " + label);
+        return passed;
+    }
+
+    // Passes when the expected code is reported at the expected span and the module is
+    // rejected in its dimension (structure or semantics).
+    public static Bool expectRejected(SublangModule module, String label, String code, Int spanId) {
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        SublangHarnessSupport.printDiagnostics(module, verdict.diagnostics());
+        Bool found = SublangHarnessSupport.hasDiagnostic(verdict.diagnostics(), code, spanId);
+        Bool rejected = verdict.structureStatus() == "invalid" || verdict.semanticsStatus() == "invalid";
+        println("expected " + code + " at span " + spanId.toString() + ": " + SublangHarnessSupport.yesNo(found));
+        return SublangHarnessSupport.report(label, found && rejected);
+    }
+}

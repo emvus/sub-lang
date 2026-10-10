@@ -2,26 +2,62 @@ namespace sublang::analysis;
 
 use sublang::diagnostics::SublangDiagnostic;
 
-// Result of verification. Structural validity and the lifetime/effect proof are
-// separate facts: a structurally valid module is still not cleared for code
-// generation until the lifetime proof exists, and that proof is not implemented yet.
+// Result of verification with one status per dimension: structure, semantics and
+// memory/lifetime. The result copies its diagnostics and computes its statuses once, at
+// construction. Later changes to the list passed in, or to a list returned by diagnostics(),
+// do not change the result. Semantics covers the well-formedness of effect and alias data;
+// it does not prove those claims. Memory and lifetime are not checked yet, so a structurally
+// and semantically valid module is still not cleared for code generation.
 public class SublangVerification {
     private List<SublangDiagnostic> issueList;
+    private String structureText;
+    private String semanticsText;
 
     public SublangVerification(List<SublangDiagnostic> issues) {
-        this.issueList = issues;
+        this.issueList = List();
+        Int index = 0;
+        while (index < issues.length()) {
+            this.issueList.add(issues.get(index));
+            index = index + 1;
+        }
+        this.structureText = this.statusOf("structure");
+        this.semanticsText = this.statusOf("semantics");
+    }
+
+    // A fresh copy on every call: clearing it does not touch this result.
+    public List<SublangDiagnostic> diagnostics() {
+        List<SublangDiagnostic> copy = List();
+        Int index = 0;
+        while (index < this.issueList.length()) {
+            copy.add(this.issueList.get(index));
+            index = index + 1;
+        }
+        return copy;
+    }
+
+    public String structureStatus() {
+        return this.structureText;
+    }
+
+    public String semanticsStatus() {
+        return this.semanticsText;
+    }
+
+    // Effect claims are not proven here; well-formed effect data is checked under semantics.
+    public String effectStatus() {
+        return "not_checked";
+    }
+
+    public String memoryStatus() {
+        return "not_checked";
     }
 
     public Bool structurallyValid() {
-        return this.issueList.length() == 0;
-    }
-
-    public List<SublangDiagnostic> diagnostics() {
-        return this.issueList;
+        return this.structureText == "valid";
     }
 
     public String lifetimeStatus() {
-        return "not_checked";
+        return this.memoryStatus();
     }
 
     public Bool lifetimeProven() {
@@ -29,6 +65,17 @@ public class SublangVerification {
     }
 
     public Bool codegenReady() {
-        return this.structurallyValid() && this.lifetimeProven();
+        return this.structurallyValid() && this.semanticsText == "valid" && this.lifetimeProven();
+    }
+
+    private String statusOf(String dimension) {
+        Int index = 0;
+        while (index < this.issueList.length()) {
+            if (this.issueList.get(index).dimension() == dimension) {
+                return "invalid";
+            }
+            index = index + 1;
+        }
+        return "valid";
     }
 }

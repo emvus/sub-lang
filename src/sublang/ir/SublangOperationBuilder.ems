@@ -1,0 +1,450 @@
+namespace sublang::ir;
+
+use sublang::body::SublangOperation;
+
+// Appends operations to the block the cursor points at. Every constructor asks canEmit() first.
+// A rejected request is counted as a refusal and adds nothing: value constructors return 0 and
+// effect constructors do nothing, so the caller can see the failure without a partial operation.
+public class SublangOperationBuilder {
+    private SublangCursor cursor;
+
+    public SublangOperationBuilder(SublangCursor target) {
+        this.cursor = target;
+    }
+
+    public Int constBool(Bool value, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("const.bool", span);
+        op.setConstBool(value);
+        return this.emitValue(op, this.cursor.module().types().boolType());
+    }
+
+    public Int constInt(Int value, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("const.int", span);
+        op.setConstInt(value);
+        return this.emitValue(op, this.cursor.module().types().intType());
+    }
+
+    public Int constString(String value, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation operation = this.newOperation("const.string", span);
+        operation.setConstText(value);
+        return this.emitValue(operation, this.cursor.module().types().stringType());
+    }
+
+    public Int stringLength(Int value, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation operation = this.newOperation("string.length", span);
+        operation.setOperands(this.single(value), this.valueModes(1));
+        return this.emitValue(operation, this.cursor.module().types().intType());
+    }
+
+    public Int stringByte(Int value, Int index, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation operation = this.newOperation("string.byte", span);
+        operation.setOperands(this.pair(value, index), this.valueModes(2));
+        return this.emitValue(operation, this.cursor.module().types().intType());
+    }
+
+    public Int stringEqual(Int left, Int right, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation operation = this.newOperation("string.equal", span);
+        operation.setOperands(this.pair(left, right), this.valueModes(2));
+        return this.emitValue(operation, this.cursor.module().types().boolType());
+    }
+
+    // Float constant from its raw IEEE-754 bit pattern carried in an Int64.
+    // -0.0 is 0x8000000000000000; NaN payloads are kept bit for bit.
+    public Int constFloatBits(Int bits, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("const.float", span);
+        op.setConstFloatBits(bits);
+        return this.emitValue(op, this.cursor.module().types().floatType());
+    }
+
+    public Int intBinary(String opcode, Int left, Int right, String overflow, Int failureId, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation(opcode, span);
+        op.setOperands(this.pair(left, right), this.valueModes(2));
+        op.setOverflow(overflow);
+        op.setRef(failureId);
+        return this.emitValue(op, this.cursor.module().types().intType());
+    }
+
+    public Int intNeg(Int operand, String overflow, Int failureId, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("int.neg", span);
+        op.setOperands(this.single(operand), this.valueModes(1));
+        op.setOverflow(overflow);
+        op.setRef(failureId);
+        return this.emitValue(op, this.cursor.module().types().intType());
+    }
+
+    public Int floatBinary(String opcode, Int left, Int right, String fpMode, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation(opcode, span);
+        op.setOperands(this.pair(left, right), this.valueModes(2));
+        op.setFpMode(fpMode);
+        return this.emitValue(op, this.cursor.module().types().floatType());
+    }
+
+    public Int compare(String predicate, Int left, Int right, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("compare", span);
+        op.setOperands(this.pair(left, right), this.valueModes(2));
+        op.setPredicate(predicate);
+        return this.emitValue(op, this.cursor.module().types().boolType());
+    }
+
+    public Int recordMake(Int recordTypeId, List<Int> values, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("record.make", span);
+        op.setOperands(values, this.valueModes(values.length()));
+        op.setRef(recordTypeId);
+        return this.emitValue(op, recordTypeId);
+    }
+
+    public Int recordGet(Int recordValue, Int fieldId, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("record.get", span);
+        op.setOperands(this.single(recordValue), this.valueModes(1));
+        op.setRef(fieldId);
+        return this.emitValue(op, this.fieldTypeOf(fieldId));
+    }
+
+    public Int recordWith(Int recordValue, Int fieldId, Int newValue, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("record.with", span);
+        op.setOperands(this.pair(recordValue, newValue), this.valueModes(2));
+        op.setRef(fieldId);
+        return this.emitValue(op, this.valueTypeOf(recordValue));
+    }
+
+    // A class instance is an owned reference tied to a scope, so the point where it is released is known.
+    public Int classNew(Int classTypeId, Int scopeId, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("class.new", span);
+        op.setRef(classTypeId);
+        op.setScope(scopeId);
+        op.setResultOwnership("owned");
+        return this.emitValue(op, this.cursor.module().types().refTypeFor(classTypeId));
+    }
+
+    // Field initialisation takes the receiver in init mode, because the object is not yet visible to others.
+    public Void fieldInit(Int objectValue, Int fieldId, Int value, Int span) {
+        if (!this.canEmit()) {
+            return;
+        }
+        SublangOperation op = this.newOperation("field.init", span);
+        List<String> modes = List();
+        modes.add("init");
+        modes.add("value");
+        op.setOperands(this.pair(objectValue, value), modes);
+        op.setRef(fieldId);
+        this.emitEffect(op);
+    }
+
+    public Void fieldInitOwned(Int objectValue, Int fieldId, Int child, Int span) {
+        if (!this.canEmit()) { return; }
+        SublangOperation op = this.newOperation("field.init", span);
+        List<String> modes = List();
+        modes.add("init");
+        modes.add("owned");
+        op.setOperands(this.pair(objectValue, child), modes);
+        op.setRef(fieldId);
+        this.emitEffect(op);
+    }
+
+    public Void fieldWriteOwned(Int objectValue, Int fieldId, Int child, Int span) {
+        if (!this.canEmit()) { return; }
+        SublangOperation op = this.newOperation("field.write", span);
+        List<String> modes = List();
+        modes.add("borrow_write");
+        modes.add("owned");
+        op.setOperands(this.pair(objectValue, child), modes);
+        op.setRef(fieldId);
+        this.emitEffect(op);
+    }
+
+    public Void fieldClear(Int objectValue, Int fieldId, Int span) {
+        if (!this.canEmit()) { return; }
+        SublangOperation op = this.newOperation("field.clear", span);
+        List<String> modes = List();
+        modes.add("borrow_write");
+        op.setOperands(this.single(objectValue), modes);
+        op.setRef(fieldId);
+        this.emitEffect(op);
+    }
+
+    public Int fieldHas(Int objectValue, Int fieldId, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation op = this.newOperation("field.has", span);
+        List<String> modes = List();
+        modes.add("borrow_read");
+        op.setOperands(this.single(objectValue), modes);
+        op.setRef(fieldId);
+        return this.emitValue(op, this.cursor.module().types().boolType());
+    }
+
+    public Int fieldTake(Int objectValue, Int fieldId, Int scope, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation op = this.newOperation("field.take", span);
+        List<String> modes = List();
+        modes.add("borrow_write");
+        op.setOperands(this.single(objectValue), modes);
+        op.setRef(fieldId);
+        op.setScope(scope);
+        op.setResultOwnership("owned");
+        return this.emitValue(op, this.fieldTypeOf(fieldId));
+    }
+
+    public Int fieldBorrow(Int objectValue, Int fieldId, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation operation = this.newOperation("field.borrow", span);
+        List<String> modes = List(); modes.add("borrow_read");
+        operation.setOperands(this.single(objectValue), modes);
+        operation.setRef(fieldId); operation.setResultOwnership("borrow_read");
+        return this.emitValue(operation, this.fieldTypeOf(fieldId));
+    }
+
+    public Int fieldRead(Int objectValue, Int fieldId, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("field.read", span);
+        List<String> modes = List();
+        modes.add("borrow_read");
+        op.setOperands(this.single(objectValue), modes);
+        op.setRef(fieldId);
+        return this.emitValue(op, this.fieldTypeOf(fieldId));
+    }
+
+    public Void fieldWrite(Int objectValue, Int fieldId, Int value, Int span) {
+        if (!this.canEmit()) {
+            return;
+        }
+        SublangOperation op = this.newOperation("field.write", span);
+        List<String> modes = List();
+        modes.add("borrow_write");
+        modes.add("value");
+        op.setOperands(this.pair(objectValue, value), modes);
+        op.setRef(fieldId);
+        this.emitEffect(op);
+    }
+
+    // A call carries the effect summary of its callee, so an unknown callee stays unknown at the call site.
+    public Int callDirect(Int functionId, List<Int> args, List<String> modes, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation("call.direct", span);
+        op.setOperands(args, modes);
+        op.setRef(functionId);
+        op.setEffectSummary(this.effectSummaryOf(functionId));
+        Int returnTypeId = this.returnTypeOf(functionId);
+        if (returnTypeId == this.cursor.module().types().voidType()) {
+            this.emitEffect(op);
+            return 0;
+        }
+        return this.emitValue(op, returnTypeId);
+    }
+
+    // Owned reference results are adopted by the caller's explicit destination scope.
+    public Int callDirectOwned(Int functionId, List<Int> args, List<String> modes, Int scope, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation op = this.newOperation("call.direct", span);
+        op.setOperands(args, modes);
+        op.setRef(functionId);
+        op.setEffectSummary(this.effectSummaryOf(functionId));
+        op.setResultOwnership("owned");
+        op.setScope(scope);
+        return this.emitValue(op, this.returnTypeOf(functionId));
+    }
+
+    // This terminator transfers one fully initialized object and closes remaining scopes.
+    public Void returnOwned(Int value, Int span) {
+        if (!this.canEmit()) { return; }
+        SublangOperation op = this.newOperation("return", span);
+        List<String> modes = List();
+        modes.add("owned");
+        op.setOperands(this.single(value), modes);
+        this.emitEffect(op);
+    }
+
+    public Int scopeBegin(Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        Int scopeId = this.cursor.currentFunction().newScope();
+        SublangOperation op = this.newOperation("scope.begin", span);
+        op.setRef(scopeId);
+        this.emitEffect(op);
+        return scopeId;
+    }
+
+    public Void scopeEnd(Int scopeId, Int span) {
+        if (!this.canEmit()) {
+            return;
+        }
+        SublangOperation op = this.newOperation("scope.end", span);
+        op.setRef(scopeId);
+        this.emitEffect(op);
+    }
+
+    // A value of 0 means a Void return: there is no operand to pass.
+    public Void returnValue(Int value, Int span) {
+        if (!this.canEmit()) {
+            return;
+        }
+        SublangOperation op = this.newOperation("return", span);
+        List<Int> operands = List();
+        if (value != 0) {
+            operands.add(value);
+        }
+        op.setOperands(operands, this.valueModes(operands.length()));
+        this.emitEffect(op);
+    }
+
+    public Void branchTo(Int target, List<Int> args, Int span) {
+        if (!this.canEmit()) {
+            return;
+        }
+        SublangOperation op = this.newOperation("branch", span);
+        op.setOperands(args, this.valueModes(args.length()));
+        List<Int> targets = List();
+        targets.add(target);
+        op.setTargets(targets, 0);
+        this.emitEffect(op);
+    }
+
+    // The operands are the condition followed by the true arguments and the false arguments; the
+    // operation records how many belong to the true target, so the verifier can split them again.
+    public Void condBranch(Int cond, Int trueTarget, List<Int> trueArgs, Int falseTarget, List<Int> falseArgs, Int span) {
+        if (!this.canEmit()) {
+            return;
+        }
+        SublangOperation op = this.newOperation("cond_branch", span);
+        List<Int> operands = List();
+        operands.add(cond);
+        this.appendAll(operands, trueArgs);
+        this.appendAll(operands, falseArgs);
+        op.setOperands(operands, this.valueModes(operands.length()));
+        List<Int> targets = List();
+        targets.add(trueTarget);
+        targets.add(falseTarget);
+        op.setTargets(targets, trueArgs.length());
+        this.emitEffect(op);
+    }
+
+    public Void failWith(Int failureId, Int span) {
+        if (!this.canEmit()) {
+            return;
+        }
+        SublangOperation op = this.newOperation("fail", span);
+        op.setRef(failureId);
+        this.emitEffect(op);
+    }
+
+    // Refusing is the only way a rejected write is reported, so it is counted on the module.
+    private Bool canEmit() {
+        if (this.cursor.blockReady()) {
+            return true;
+        }
+        this.cursor.module().refuse();
+        return false;
+    }
+
+    private SublangOperation newOperation(String opcode, Int span) {
+        return SublangOperation(this.cursor.module().nextOperationId(), opcode, span);
+    }
+
+    private List<Int> single(Int first) {
+        List<Int> operands = List();
+        operands.add(first);
+        return operands;
+    }
+
+    private List<Int> pair(Int first, Int second) {
+        List<Int> operands = List();
+        operands.add(first);
+        operands.add(second);
+        return operands;
+    }
+
+    private Void appendAll(List<Int> target, List<Int> source) {
+        Int index = 0;
+        while (index < source.length()) {
+            target.add(source.get(index));
+            index = index + 1;
+        }
+    }
+
+    private List<String> valueModes(Int count) {
+        List<String> modes = List();
+        Int index = 0;
+        while (index < count) {
+            modes.add("value");
+            index = index + 1;
+        }
+        return modes;
+    }
+
+    private Int emitValue(SublangOperation op, Int typeId) {
+        Int valueId = this.cursor.currentFunction().newValue(typeId);
+        op.setResult(valueId, typeId);
+        this.cursor.currentBlock().addOperation(op);
+        return valueId;
+    }
+
+    private Void emitEffect(SublangOperation op) {
+        this.cursor.currentBlock().addOperation(op);
+    }
+
+    private Int valueTypeOf(Int valueId) {
+        return this.cursor.currentFunction().valueTypeOrZero(valueId);
+    }
+
+    private Int fieldTypeOf(Int fieldId) {
+        if (this.cursor.module().types().hasField(fieldId)) {
+            return this.cursor.module().types().fieldAt(fieldId).typeId();
+        }
+        return 0;
+    }
+
+    private Int returnTypeOf(Int functionId) {
+        if (this.cursor.module().hasFunction(functionId)) {
+            return this.cursor.module().functionAt(functionId).returnType();
+        }
+        return 0;
+    }
+
+    private Int effectSummaryOf(Int functionId) {
+        if (this.cursor.module().hasFunction(functionId)) {
+            return this.cursor.module().functionAt(functionId).effectSummary();
+        }
+        return 0;
+    }
+}

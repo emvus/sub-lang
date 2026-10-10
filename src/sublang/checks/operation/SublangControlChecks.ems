@@ -1,0 +1,224 @@
+namespace sublang::checks::operation;
+
+use sublang::body::SublangBlock;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::body::SublangParam;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+
+// Calls, scopes, returns, branches and failures. These operations decide where control goes,
+// so every target and argument must match the block or function it transfers to.
+public class SublangControlChecks {
+    private SublangReport findings;
+    private SublangModule module;
+
+    public SublangControlChecks(SublangReport report, SublangModule source) {
+        this.findings = report;
+        this.module = source;
+    }
+
+    public Void check(SublangFunction fnEntry, SublangOperation op) {
+        String opcode = op.opcode();
+        if (opcode == "call.direct") {
+            this.checkCall(fnEntry, op);
+            return;
+        }
+        if (opcode == "scope.begin") {
+            this.checkScopeBegin(fnEntry, op);
+            return;
+        }
+        if (opcode == "scope.end") {
+            this.checkScopeEnd(fnEntry, op);
+            return;
+        }
+        if (opcode == "return") {
+            this.checkReturn(fnEntry, op);
+            return;
+        }
+        if (opcode == "branch") {
+            this.checkBranch(fnEntry, op);
+            return;
+        }
+        if (opcode == "cond_branch") {
+            this.checkCondBranch(fnEntry, op);
+            return;
+        }
+        if (opcode == "fail") {
+            this.checkFail(op);
+        }
+    }
+
+    // An external contract has no body to run, so a call to it is blocked until a provider exists.
+    // The blocker names the callee, so the explanation can point at the exact call.
+    private Void checkCall(SublangFunction fnEntry, SublangOperation op) {
+        Int calleeId = op.ref();
+        if (!this.module.hasFunction(calleeId)) {
+            this.findings.report("SUBLANG-S002", "call.direct uses an unknown function", op.span());
+            return;
+        }
+        SublangFunction callee = this.module.functionAt(calleeId);
+        if (callee.definition() == "contract") {
+            this.findings.reportBlocked("SUBLANG-U006", "call to external function " + callee.name() + " needs a trusted provider contract; not supported in v0.1", op.span(), "call:" + callee.name());
+        }
+        Bool countMatches = this.checkArgumentCount(op, callee);
+        if (countMatches) {
+            this.checkArguments(fnEntry, op, callee);
+        }
+        this.checkCallResult(op, callee);
+    }
+
+    private Bool checkArgumentCount(SublangOperation op, SublangFunction callee) {
+        if (op.operandCount() == callee.paramCount()) {
+            return true;
+        }
+        this.findings.report("SUBLANG-T002", "call to " + callee.name() + " passes " + op.operandCount().toString() + " argument(s), expected " + callee.paramCount().toString(), op.span());
+        return false;
+    }
+
+    private Void checkArguments(SublangFunction fnEntry, SublangOperation op, SublangFunction callee) {
+        Int index = 0;
+        while (index < op.operandCount()) {
+            this.checkArgument(fnEntry, op, callee, index);
+            index = index + 1;
+        }
+    }
+
+    private Void checkArgument(SublangFunction fnEntry, SublangOperation op, SublangFunction callee, Int index) {
+        SublangParam paramEntry = callee.paramAt(index);
+        if (fnEntry.valueTypeOrZero(op.operandAt(index)) != paramEntry.typeId()) {
+            this.findings.report("SUBLANG-T002", "argument " + index.toString() + " of call to " + callee.name() + " has the wrong type", op.span());
+        }
+        if (op.modeAt(index) != paramEntry.passing()) {
+            this.findings.report("SUBLANG-T002", "argument " + index.toString() + " of call to " + callee.name() + " must use passing mode " + paramEntry.passing(), op.span());
+        }
+    }
+
+    private Void checkCallResult(SublangOperation op, SublangFunction callee) {
+        if (callee.returnType() == this.module.types().voidType()) {
+            if (op.hasResult()) {
+                this.findings.report("SUBLANG-T002", "call to void function " + callee.name() + " must not produce a value", op.span());
+            }
+            return;
+        }
+        if (!op.hasResult() || op.resultType() != callee.returnType()) {
+            this.findings.report("SUBLANG-T002", "call to " + callee.name() + " must produce " + this.module.types().typeNameOf(callee.returnType()), op.span());
+        }
+        if ((this.module.types().isKind(callee.returnType(), "Ref") || this.module.types().isKind(callee.returnType(), "Bond")) && (op.resultOwnership() != "owned" || op.scope() < 1)) {
+            this.findings.report("SUBLANG-T004", "reference call result needs owned ownership and destination scope", op.span());
+        }
+    }
+
+    // A scope is opened once. Reopening it would make the end of the first scope ambiguous.
+    private Void checkScopeBegin(SublangFunction fnEntry, SublangOperation op) {
+        if (op.operandCount() != 0) {
+            this.findings.report("SUBLANG-T001", "scope.begin takes no operands", op.span());
+        }
+        if (op.ref() < 1) {
+            this.findings.report("SUBLANG-S002", "scope.begin needs a positive scope id", op.span());
+            return;
+        }
+        if (fnEntry.scopeBeginCount(op.ref()) > 1) {
+            this.findings.report("SUBLANG-S003", "scope " + op.ref().toString() + " is begun more than once", op.span());
+        }
+    }
+
+    private Void checkScopeEnd(SublangFunction fnEntry, SublangOperation op) {
+        if (op.operandCount() != 0) {
+            this.findings.report("SUBLANG-T001", "scope.end takes no operands", op.span());
+        }
+        if (fnEntry.scopeBeginCount(op.ref()) == 0) {
+            this.findings.report("SUBLANG-S002", "scope.end " + op.ref().toString() + " has no matching scope.begin", op.span());
+        }
+    }
+
+    private Void checkReturn(SublangFunction fnEntry, SublangOperation op) {
+        Int returnType = fnEntry.returnType();
+        if (returnType == this.module.types().voidType()) {
+            if (op.operandCount() != 0) {
+                this.findings.report("SUBLANG-T002", "void function " + fnEntry.name() + " must not return a value", op.span());
+            }
+            return;
+        }
+        if (op.operandCount() != 1) {
+            this.findings.report("SUBLANG-T002", "return in " + fnEntry.name() + " must pass exactly one value", op.span());
+            return;
+        }
+        if (fnEntry.valueTypeOrZero(op.operandAt(0)) != returnType) {
+            this.findings.report("SUBLANG-T001", "return value has the wrong type for " + fnEntry.name(), op.span());
+        }
+        if ((this.module.types().isKind(returnType, "Ref") || this.module.types().isKind(returnType, "Bond")) && op.modeAt(0) != "owned") {
+            this.findings.report("SUBLANG-T004", "reference return must explicitly transfer ownership", op.span());
+        }
+    }
+
+    private Void checkBranch(SublangFunction fnEntry, SublangOperation op) {
+        if (op.targetCount() != 1) {
+            this.findings.report("SUBLANG-S005", "branch needs exactly one target", op.span());
+            return;
+        }
+        Int target = op.targetAt(0);
+        if (!fnEntry.hasBlock(target)) {
+            this.findings.report("SUBLANG-S002", "branch target block " + target.toString() + " is not defined", op.span());
+            return;
+        }
+        this.checkBranchArguments(fnEntry, op, 0, op.operandCount(), target);
+    }
+
+    // The operands after the condition are split between the two targets; trueArgs says where.
+    private Void checkCondBranch(SublangFunction fnEntry, SublangOperation op) {
+        if (op.targetCount() != 2) {
+            this.findings.report("SUBLANG-S005", "cond_branch needs exactly two targets", op.span());
+            return;
+        }
+        if (op.operandCount() < 1) {
+            this.findings.report("SUBLANG-S005", "cond_branch needs a condition operand", op.span());
+            return;
+        }
+        if (fnEntry.valueTypeOrZero(op.operandAt(0)) != this.module.types().boolType()) {
+            this.findings.report("SUBLANG-T001", "cond_branch condition must be Bool", op.span());
+        }
+        Int trueCount = op.trueArgs();
+        Int falseCount = op.operandCount() - 1 - trueCount;
+        if (trueCount < 0 || falseCount < 0) {
+            this.findings.report("SUBLANG-S005", "cond_branch argument split is invalid", op.span());
+            return;
+        }
+        Int trueTarget = op.targetAt(0);
+        Int falseTarget = op.targetAt(1);
+        if (!fnEntry.hasBlock(trueTarget) || !fnEntry.hasBlock(falseTarget)) {
+            this.findings.report("SUBLANG-S002", "cond_branch target block is not defined", op.span());
+            return;
+        }
+        this.checkBranchArguments(fnEntry, op, 1, trueCount, trueTarget);
+        this.checkBranchArguments(fnEntry, op, 1 + trueCount, falseCount, falseTarget);
+    }
+
+    // Block arguments become the block parameters. A count or type mismatch would bind the wrong value.
+    private Void checkBranchArguments(SublangFunction fnEntry, SublangOperation op, Int firstOperand, Int count, Int targetId) {
+        SublangBlock targetBlock = fnEntry.blockAt(targetId);
+        Int paramCount = targetBlock.paramCount();
+        if (paramCount != count) {
+            this.findings.report("SUBLANG-S005", "branch to block " + targetId.toString() + " passes " + count.toString() + " argument(s), block takes " + paramCount.toString(), op.span());
+            return;
+        }
+        Int index = 0;
+        while (index < count) {
+            Int argumentType = fnEntry.valueTypeOrZero(op.operandAt(firstOperand + index));
+            Int parameterType = fnEntry.valueTypeOrZero(targetBlock.paramAt(index));
+            if (argumentType != parameterType) {
+                this.findings.report("SUBLANG-T001", "branch argument " + index.toString() + " to block " + targetId.toString() + " has the wrong type", op.span());
+            }
+            index = index + 1;
+        }
+    }
+
+    private Void checkFail(SublangOperation op) {
+        if (!this.module.semantics().hasFailure(op.ref())) {
+            this.findings.report("SUBLANG-S002", "fail uses an unknown failure action", op.span());
+        }
+        if (op.operandCount() != 0) {
+            this.findings.report("SUBLANG-T001", "fail takes no operands", op.span());
+        }
+    }
+}

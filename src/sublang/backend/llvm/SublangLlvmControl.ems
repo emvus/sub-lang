@@ -1,0 +1,80 @@
+namespace sublang::backend::llvm;
+
+use sublang::body::SublangOperation;
+use sublang::backend::llvm::SublangLlvmContext;
+
+public class SublangLlvmControl {
+    public static String emit(SublangLlvmContext context, SublangOperation operation) {
+        String opcode = operation.opcode();
+        if (opcode == "fail") { return "  call void @abort()\n  unreachable\n"; }
+        if (opcode == "branch") { return SublangLlvmControl.edge(context, operation, 0, 0); }
+        String text = context.loadInputs(operation);
+        if (opcode == "return") {
+            Bool ownedReturn = context.module.types().kindOf(context.function.returnType()) == "Ref";
+            Bool bondReturn = context.module.types().kindOf(context.function.returnType()) == "Bond";
+            if (ownedReturn) { text = text + "  call void @sublang.flow.detach(ptr " + context.input(operation, 0) + ")\n"; }
+            if (bondReturn) { text = text + context.bonds().take(operation.operandAt(0)); }
+            text = text + SublangLlvmControl.cleanup(context, ownedReturn || bondReturn);
+            if (operation.operandCount() == 0) { return text + "  ret void\n"; }
+            return text + "  ret " + context.type(context.function.returnType()) + " " + context.input(operation, 0) + "\n";
+        }
+        if (opcode == "call.direct") { return text + SublangLlvmControl.call(context, operation); }
+        String label = "edge" + operation.id().toString();
+        text = text + "  br i1 " + context.input(operation, 0) + ", label %" + label + "t, label %" + label + "f\n";
+        text = text + label + "t:\n" + SublangLlvmControl.edge(context, operation, 0, 1);
+        return text + label + "f:\n" + SublangLlvmControl.edge(context, operation, 1, 1 + operation.trueArgs());
+    }
+
+    private static String call(SublangLlvmContext context, SublangOperation operation) {
+        String transfers = "";
+        Int argument = 0;
+        while (argument < operation.operandCount()) {
+            if (operation.modeAt(argument) == "owned") {
+                Int type = context.function.valueTypeAt(operation.operandAt(argument));
+                if (context.module.types().isKind(type, "Ref")) { transfers = transfers + "  call void @sublang.flow.detach(ptr " + context.input(operation, argument) + ")\n"; }
+                if (context.module.types().isKind(type, "Bond")) { transfers = transfers + context.bonds().take(operation.operandAt(argument)); }
+            }
+            argument = argument + 1;
+        }
+        String expression = "call " + context.type(context.module.functionAt(operation.ref()).returnType()) + " @fn" + operation.ref().toString() + "(";
+        Int index = 0;
+        while (index < operation.operandCount()) {
+            if (index > 0) { expression = expression + ", "; }
+            Int type = context.function.valueTypeAt(operation.operandAt(index));
+            expression = expression + context.type(type) + " " + context.input(operation, index);
+            index = index + 1;
+        }
+        expression = expression + ")";
+        if (!operation.hasResult()) { return transfers + "  " + expression + "\n"; }
+        String text = transfers + "  " + context.result(operation) + " = " + expression + "\n";
+        if (context.module.types().kindOf(operation.resultType()) == "Ref") {
+            text = text + "  call void @sublang.flow.adopt(ptr " + context.owners().head(operation.scope(), context.owners().target(operation.resultType())) + ", ptr " + context.result(operation) + ")\n";
+        }
+        if (context.module.types().isKind(operation.resultType(), "Bond")) { text = text + context.bonds().adopt(operation.resultValue(), operation.scope(), context.result(operation)); }
+        return text + context.store(operation, context.result(operation));
+    }
+
+    private static String cleanup(SublangLlvmContext context, Bool allScopes) {
+        return context.owners().end(0, allScopes) + context.bonds().end(0, allScopes);
+    }
+
+    private static String edge(SublangLlvmContext context, SublangOperation operation, Int targetIndex, Int offset) {
+        Int target = operation.targetAt(targetIndex);
+        String text = "";
+        Int index = 0;
+        while (index < context.function.blockAt(target).paramCount()) {
+            Int argument = operation.operandAt(offset + index);
+            String register = "%edge" + operation.id().toString() + "_" + targetIndex.toString() + "_" + index.toString();
+            text = text + "  " + register + " = load " + context.type(context.function.valueTypeAt(argument)) + ", ptr %v" + argument.toString() + "\n";
+            index = index + 1;
+        }
+        index = 0;
+        while (index < context.function.blockAt(target).paramCount()) {
+            Int value = context.function.blockAt(target).paramAt(index);
+            String register = "%edge" + operation.id().toString() + "_" + targetIndex.toString() + "_" + index.toString();
+            text = text + "  store " + context.type(context.function.valueTypeAt(value)) + " " + register + ", ptr %v" + value.toString() + "\n";
+            index = index + 1;
+        }
+        return text + "  br label %b" + target.toString() + "\n";
+    }
+}

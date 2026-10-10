@@ -1,0 +1,136 @@
+namespace sublang::hyperalloc;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::hyperalloc::SublangObjectUses;
+use sublang::ir::data::SublangCollectionLayout;
+
+// Immutable lowering decisions, constructed only after the backend lifetime gate.
+// These are not imported proof claims and cannot authorize broader IR semantics.
+public class SublangFunctionMemoryPlan {
+    private List<Bool> localValues;
+    private SublangObjectUses uses;
+    private List<Bool> foldedValues;
+    private List<Bool> shardValues;
+    private Int regionScope;
+    private List<Bool> poolValues;
+    private String report;
+    private Int snapshotRevision;
+    private Int functionId;
+    private SublangModule module;
+
+    public SublangFunctionMemoryPlan(SublangModule module, SublangFunction function, Bool enabled) {
+        this.module = module;
+        this.snapshotRevision = module.revision();
+        this.functionId = function.id();
+        this.localValues = List();
+        this.uses = SublangObjectUses(module, function);
+        this.foldedValues = List();
+        this.shardValues = List();
+        this.regionScope = 0;
+        this.poolValues = List();
+        this.report = "";
+        this.initializeValues(function.valueCount());
+        this.collectAllocations(function, enabled);
+    }
+
+    private Void initializeValues(Int count) {
+        Int value = 0;
+        while (value <= count) {
+            this.localValues.add(false);
+            this.foldedValues.add(false);
+            this.shardValues.add(false);
+            this.poolValues.add(false);
+            value = value + 1;
+        }
+    }
+
+    private Void collectAllocations(SublangFunction function, Bool enabled) {
+        Bool entryOnce = this.entryOnce(function);
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                SublangOperation operation = function.blockAt(block).operationAt(index);
+                if (operation.opcode() == "class.new") { this.addDecision(operation, enabled, block == 1 && entryOnce); }
+                if (operation.opcode() == "const.string") { this.report = this.report + "operation=" + operation.id().toString() + " Static: immutable string bytes in constant globals; no runtime allocation\n"; }
+                if (operation.opcode() == "list.new") { this.collectionDecision(operation); }
+                if (operation.opcode() == "bond.new") { this.report = this.report + "operation=" + operation.id().toString() + " Bond: counted roots/edges, local trial deletion and revision-checked SCC cache; sidecar only for shared graphs\n"; }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+    }
+
+    private Bool hasOwnedFields(Int type) {
+        Int index = 0;
+        while (index < this.module.types().typeAt(type).fieldCount()) {
+            Int field = this.module.types().typeAt(type).fieldAt(index);
+            if (this.module.types().isKind(this.module.types().fieldAt(field).typeId(), "Ref")) { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    private Void collectionDecision(SublangOperation operation) {
+        Int element = this.module.types().typeAt(operation.ref()).target();
+        Bool owned = this.module.types().isKind(element, "Class") && !SublangCollectionLayout.inlineClass(this.module, element);
+        String choice = "Inline: contiguous values; consumed class owners expose only read-only container views; no per-element header";
+        if (owned) { choice = "Root List: stable owned elements; reference children require graph cleanup"; }
+        this.report = this.report + "operation=" + operation.id().toString() + " " + choice + "; checked i32 lengths and realloc growth\n";
+    }
+
+    private Bool entryOnce(SublangFunction function) {
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int count = function.blockAt(block).operationCount();
+            SublangOperation terminal = function.blockAt(block).operationAt(count - 1);
+            Int index = 0;
+            while (index < terminal.targetCount()) {
+                if (terminal.targetAt(index) == 1) { return false; }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        return true;
+    }
+
+    private Void addDecision(SublangOperation operation, Bool enabled, Bool once) {
+        Int value = operation.resultValue();
+        Bool graph = this.hasOwnedFields(operation.ref());
+        Bool reusable = !this.uses.transferred(value);
+        Bool folded = enabled && reusable && !graph && !this.uses.addressObserved(value);
+        this.foldedValues.set(value, folded);
+        this.localValues.set(operation.resultValue(), enabled && once && reusable && !graph && !folded);
+        this.poolValues.set(operation.resultValue(), enabled && !once && reusable && !folded);
+        Bool shard = enabled && !reusable && this.uses.shardScope() > 0;
+        this.shardValues.set(value, shard);
+        if (shard) { this.regionScope = this.uses.shardScope(); }
+        String choice = "Heap: Flow disabled; scope-owned runtime release";
+        if (enabled) { choice = "ScopeOwned: CFG allocation or ownership transfer requires runtime storage; verified lifetime"; }
+        if (enabled && this.uses.transferred(operation.resultValue())) { choice = "ScopeOwned: ownership transfer requires stable storage"; }
+        if (enabled && this.hasOwnedFields(operation.ref())) { choice = "Root: owned reference fields require iterative ownership cleanup; Shard blocked: " + this.uses.shardBlocker(); }
+        if (this.localValues.get(operation.resultValue())) { choice = "Local: entry allocation, definite initialization, no reference escape"; }
+        if (this.poolValues.get(operation.resultValue())) { choice = "Pool: reusable per-site frame slot; fixed layout, no aliases or ownership escape"; }
+        if (this.poolValues.get(value) && graph) { choice = "Pool: reusable graph slot; owned children destroyed on reset and scope exit; object cannot escape"; }
+        if (folded) { choice = "Folded: primitive fields only; object address and identity unobserved; scalar field slots"; }
+        if (shard) { choice = "Shard: closed ownership graph; nested regions join toward the longer lifetime on adoption"; }
+        this.report = this.report + "revision=" + this.snapshotRevision.toString() + " function=" + this.functionId.toString();
+        this.report = this.report + " operation=" + operation.id().toString() + " value=" + operation.resultValue().toString();
+        this.report = this.report + " scope=" + operation.scope().toString() + " type=" + operation.ref().toString() + " " + choice + "\n";
+    }
+
+    public Bool isFolded(Int value) { return this.foldedValues.get(value); }
+    public Bool isShard(Int value) { return this.shardValues.get(value); }
+    public Int shardScope() { return this.regionScope; }
+    public Bool isPool(Int value) { return this.poolValues.get(value); }
+    public Bool isGraphPool(Int value) {
+        if (!this.isPool(value)) { return false; }
+        return this.hasOwnedFields(this.module.types().typeAt(this.module.functionAt(this.functionId).valueTypeAt(value)).target());
+    }
+    public Bool isLocal(Int value) { return this.localValues.get(value); }
+    public Int revision() { return this.snapshotRevision; }
+    public Int function() { return this.functionId; }
+    public String explain() { return this.report; }
+}

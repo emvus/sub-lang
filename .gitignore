@@ -10,3 +10,4 @@ build/
 
 # Historical user archive, kept locally
 examples/ir/v0.4/Archiv.zip
+dist/

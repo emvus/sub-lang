@@ -1,0 +1,217 @@
+namespace sublang::harness;
+
+use sublang::analysis::SublangVerification;
+use sublang::analysis::SublangVerifier;
+use sublang::harness::SublangHarnessSupport;
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+public class SublangHarnessRejected {
+    public static Bool typeErrorRejected() {
+        println("== negative: type error ==");
+        SublangBuilder builder = SublangBuilder("negative-type-error");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int boolType = builder.boolType();
+        Int failureId = builder.failure("emerald.int_overflow");
+        builder.beginFunction("add", intType, 0, builder.span(sourceId, 100, 5));
+        Int paramA = builder.addParam("a", intType, "value", false);
+        Int paramFlag = builder.addParam("flag", boolType, "value", false);
+        builder.beginBlock();
+        Int addSpan = builder.span(sourceId, 102, 9);
+        Int total = builder.ops().intBinary("int.add", paramA, paramFlag, "trap", failureId, addSpan);
+        builder.ops().returnValue(total, builder.span(sourceId, 103, 9));
+        return SublangHarnessSupport.expectRejected(builder.module(), "type-error", "SUBLANG-T001", addSpan);
+    }
+
+    public static Bool dominanceRejected() {
+        println("== negative: dominance violation ==");
+        SublangBuilder builder = SublangBuilder("negative-dominance");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int boolType = builder.boolType();
+        Int failureId = builder.failure("emerald.int_overflow");
+        builder.beginFunction("choose", intType, 0, builder.span(sourceId, 120, 5));
+        Int flag = builder.addParam("flag", boolType, "value", false);
+        builder.beginBlock();
+        Int one = builder.ops().constInt(1, builder.span(sourceId, 122, 9));
+        Int two = builder.ops().constInt(2, builder.span(sourceId, 123, 9));
+        Int thenBlock = builder.newBlock();
+        Int falseBlock = builder.newBlock();
+        List<Int> noThenArgs = List();
+        List<Int> noFalseArgs = List();
+        builder.ops().condBranch(flag, thenBlock, noThenArgs, falseBlock, noFalseArgs, builder.span(sourceId, 124, 9));
+        builder.enterBlock(thenBlock);
+        Int inThen = builder.ops().intBinary("int.add", one, two, "trap", failureId, builder.span(sourceId, 126, 13));
+        builder.ops().returnValue(inThen, builder.span(sourceId, 127, 13));
+        builder.enterBlock(falseBlock);
+        Int useSpan = builder.span(sourceId, 129, 13);
+        builder.ops().returnValue(inThen, useSpan);
+        return SublangHarnessSupport.expectRejected(builder.module(), "dominance", "SUBLANG-S007", useSpan);
+    }
+
+    public static Bool missingOverflowRejected() {
+        println("== negative: missing overflow and failure semantics ==");
+        SublangBuilder builder = SublangBuilder("negative-overflow");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        builder.beginFunction("unchecked", intType, 0, builder.span(sourceId, 140, 5));
+        Int paramA = builder.addParam("a", intType, "value", false);
+        Int paramB = builder.addParam("b", intType, "value", false);
+        builder.beginBlock();
+        Int noModeSpan = builder.span(sourceId, 142, 9);
+        Int unmarked = builder.ops().intBinary("int.add", paramA, paramB, "", 0, noModeSpan);
+        Int noFailureSpan = builder.span(sourceId, 143, 9);
+        Int trapped = builder.ops().intBinary("int.sub", paramA, paramB, "trap", 0, noFailureSpan);
+        Int combined = builder.ops().intBinary("int.add", unmarked, trapped, "wrap", 0, builder.span(sourceId, 144, 9));
+        builder.ops().returnValue(combined, builder.span(sourceId, 145, 9));
+        SublangModule module = builder.module();
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        SublangHarnessSupport.printDiagnostics(module, verdict.diagnostics());
+        Bool missingMode = SublangHarnessSupport.hasDiagnostic(verdict.diagnostics(), "SUBLANG-A001", noModeSpan);
+        Bool missingFailure = SublangHarnessSupport.hasDiagnostic(verdict.diagnostics(), "SUBLANG-A002", noFailureSpan);
+        return SublangHarnessSupport.report("missing-overflow", missingMode && missingFailure && verdict.semanticsStatus() == "invalid");
+    }
+
+    // A.1: a float compare with a generic predicate is rejected; ordered and unordered
+    // predicates must be named explicitly.
+    public static Bool floatGenericPredicateRejected() {
+        println("== negative: float compare with a generic predicate ==");
+        SublangBuilder builder = SublangBuilder("negative-float-predicate");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int floatType = builder.floatType();
+        Int boolType = builder.boolType();
+        builder.beginFunction("order", boolType, 0, builder.span(sourceId, 220, 5));
+        Int genericA = builder.addParam("a", floatType, "value", false);
+        Int genericB = builder.addParam("b", floatType, "value", false);
+        builder.beginBlock();
+        Int genericSpan = builder.span(sourceId, 223, 9);
+        Int genericLess = builder.ops().compare("lt", genericA, genericB, genericSpan);
+        builder.ops().returnValue(genericLess, builder.span(sourceId, 224, 9));
+        return SublangHarnessSupport.expectRejected(builder.module(), "float-generic-predicate", "SUBLANG-A003", genericSpan);
+    }
+
+    // A.1: a call to an external contract is rejected until a provider contract exists; the
+    // diagnostic names the call as its blocker.
+    public static Bool externalCallRejected() {
+        println("== negative: call to external contract without provider ==");
+        SublangBuilder builder = SublangBuilder("negative-external");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int hostFn = builder.declareExternal("host_clock", intType, builder.span(sourceId, 180, 5));
+        builder.beginFunction("main", intType, 0, builder.span(sourceId, 181, 5));
+        builder.beginBlock();
+        List<Int> noArgs = List();
+        List<String> noModes = List();
+        Int callSpan = builder.span(sourceId, 183, 9);
+        Int now = builder.ops().callDirect(hostFn, noArgs, noModes, callSpan);
+        builder.ops().returnValue(now, builder.span(sourceId, 184, 9));
+        SublangVerification verdict = SublangVerifier(builder.module()).verify();
+        SublangHarnessSupport.printDiagnostics(builder.module(), verdict.diagnostics());
+        Bool found = SublangHarnessSupport.hasBlocker(verdict.diagnostics(), "SUBLANG-U006", callSpan, "call:host_clock");
+        return SublangHarnessSupport.report("external-call", found && verdict.semanticsStatus() == "invalid");
+    }
+
+    // A.0: a block parameter whose type id does not exist.
+    public static Bool undefinedBlockParamTypeRejected() {
+        println("== A.0 negative: block parameter with an undefined type ==");
+        SublangBuilder builder = SublangBuilder("a0-block-param-type");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int fnSpan = builder.span(sourceId, 300, 5);
+        builder.beginFunction("pick", intType, 0, fnSpan);
+        Int pickParam = builder.addParam("p", intType, "value", false);
+        builder.beginBlock();
+        Int joined = builder.newBlock();
+        List<Int> joinArgs = List();
+        joinArgs.add(pickParam);
+        builder.ops().branchTo(joined, joinArgs, builder.span(sourceId, 302, 9));
+        builder.enterBlock(joined);
+        builder.addBlockParam(9999);
+        builder.ops().returnValue(pickParam, builder.span(sourceId, 304, 9));
+        return SublangHarnessSupport.expectRejected(builder.module(), "a0-block-param-type", "SUBLANG-S002", fnSpan);
+    }
+
+    // A.0: an operand with a passing mode that the vocabulary does not know.
+    public static Bool unknownPassingModeRejected() {
+        println("== A.0 negative: unknown passing mode on an operand ==");
+        SublangBuilder builder = SublangBuilder("a0-unknown-mode");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int failureId = builder.failure("emerald.int_overflow");
+        Int addFn = builder.beginFunction("add", intType, 0, builder.span(sourceId, 310, 5));
+        Int addA = builder.addParam("a", intType, "value", false);
+        Int addB = builder.addParam("b", intType, "value", false);
+        builder.beginBlock();
+        Int addSum = builder.ops().intBinary("int.add", addA, addB, "trap", failureId, builder.span(sourceId, 312, 9));
+        builder.ops().returnValue(addSum, builder.span(sourceId, 313, 9));
+        builder.beginFunction("main", intType, 0, builder.span(sourceId, 315, 5));
+        builder.beginBlock();
+        Int one = builder.ops().constInt(1, builder.span(sourceId, 317, 9));
+        Int two = builder.ops().constInt(2, builder.span(sourceId, 318, 9));
+        List<Int> args = List();
+        args.add(one);
+        args.add(two);
+        List<String> modes = List();
+        modes.add("banana");
+        modes.add("value");
+        Int callSpan = builder.span(sourceId, 320, 9);
+        Int total = builder.ops().callDirect(addFn, args, modes, callSpan);
+        builder.ops().returnValue(total, builder.span(sourceId, 321, 9));
+        return SublangHarnessSupport.expectRejected(builder.module(), "a0-unknown-mode", "SUBLANG-S001", callSpan);
+    }
+
+    // A.0: a record type whose field list names a field id that does not exist.
+    public static Bool unknownRecordFieldRejected() {
+        println("== A.0 negative: record field list with an unknown field id ==");
+        SublangBuilder builder = SublangBuilder("a0-unknown-field");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int pairSpan = builder.span(sourceId, 330, 5);
+        Int pairType = builder.recordType("Pair", pairSpan);
+        builder.recordField(pairType, "x", intType, builder.span(sourceId, 331, 5));
+        builder.recordField(pairType, "y", intType, builder.span(sourceId, 332, 5));
+        builder.module().types().typeAt(pairType).addField(9999);
+        builder.beginFunction("make", pairType, 0, builder.span(sourceId, 334, 5));
+        builder.beginBlock();
+        Int left = builder.ops().constInt(1, builder.span(sourceId, 336, 9));
+        Int right = builder.ops().constInt(2, builder.span(sourceId, 337, 9));
+        List<Int> values = List();
+        values.add(left);
+        values.add(right);
+        Int made = builder.ops().recordMake(pairType, values, builder.span(sourceId, 339, 9));
+        builder.ops().returnValue(made, builder.span(sourceId, 340, 9));
+        return SublangHarnessSupport.expectRejected(builder.module(), "a0-unknown-field", "SUBLANG-S002", pairSpan);
+    }
+
+    // A.0: a primitive descriptor with a width that the v0.1 slice does not support.
+    public static Bool unsupportedWidthRejected() {
+        println("== A.0 negative: primitive with unsupported width ==");
+        SublangBuilder builder = SublangBuilder("a0-width");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int narrowSpan = builder.span(sourceId, 350, 5);
+        Int narrowType = builder.module().types().addType("Int", "Narrow", -7, true, 0, narrowSpan);
+        builder.beginFunction("identity", narrowType, 0, builder.span(sourceId, 352, 5));
+        Int identityValue = builder.addParam("x", narrowType, "value", false);
+        builder.beginBlock();
+        builder.ops().returnValue(identityValue, builder.span(sourceId, 354, 9));
+        return SublangHarnessSupport.expectRejected(builder.module(), "a0-unsupported-width", "SUBLANG-T006", narrowSpan);
+    }
+
+    // A.0: a bare class (identity layout type) passed by value; values must use Ref<class>.
+    public static Bool bareClassParamRejected() {
+        println("== A.0 negative: bare class passed by value ==");
+        SublangBuilder builder = SublangBuilder("a0-bare-class");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int counterType = builder.classType("Counter", builder.span(sourceId, 360, 5));
+        Int takeSpan = builder.span(sourceId, 361, 5);
+        builder.beginFunction("take", intType, 0, takeSpan);
+        builder.addParam("c", counterType, "value", false);
+        builder.beginBlock();
+        Int zero = builder.ops().constInt(0, builder.span(sourceId, 363, 9));
+        builder.ops().returnValue(zero, builder.span(sourceId, 364, 9));
+        return SublangHarnessSupport.expectRejected(builder.module(), "a0-bare-class-param", "SUBLANG-T005", takeSpan);
+    }
+}

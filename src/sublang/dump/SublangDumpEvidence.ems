@@ -1,0 +1,40 @@
+namespace sublang::dump;
+
+use sublang::proof::SublangProofReference;
+use sublang::semantics::SublangEffectFact;
+
+// Include provenance dependencies in deterministic dumps so distinct contracts stay visible.
+public class SublangDumpEvidence {
+    public static String render(SublangProofReference proof) {
+        if (proof.analysis() == "" && proof.revision() == 0 && proof.dependencyCount() == 0) {
+            return "";
+        }
+        String dependencies = "[";
+        Int index = 0;
+        while (index < proof.dependencyCount()) {
+            if (index > 0) {
+                dependencies = dependencies + ",";
+            }
+            dependencies = dependencies + proof.dependencyAt(index).toString();
+            index = index + 1;
+        }
+        return " analysis=" + proof.analysis() + " proofRevision=" + proof.revision().toString() + " dependencies=" + dependencies + "]";
+    }
+
+    public static String effect(SublangEffectFact fact) {
+        String text = SublangDumpEvidence.render(fact.proofReference());
+        if (fact.locationCount() == 0) {
+            return text;
+        }
+        text = text + " locations=[";
+        Int index = 0;
+        while (index < fact.locationCount()) {
+            if (index > 0) {
+                text = text + ",";
+            }
+            text = text + fact.locationAt(index).toString();
+            index = index + 1;
+        }
+        return text + "]";
+    }
+}

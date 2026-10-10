@@ -1,0 +1,130 @@
+namespace sublang::ir;
+
+use sublang::semantics::SublangAliasFact;
+use sublang::semantics::SublangLocation;
+use sublang::proof::SublangProofReference;
+
+// Logical locations and alias facts of one module revision. Without a supporting proof every
+// query answers MayAlias, because the absence of a fact is not evidence that two locations are
+// distinct. After freeze() the table refuses mutations and counts them.
+public class SublangAliasTable {
+    private Int revisionNumber;
+    private Bool frozenFlag;
+    private Int refusalCounter;
+    private List<SublangLocation> locationList;
+    private List<SublangAliasFact> aliasList;
+
+    public SublangAliasTable(Int revision) {
+        this.revisionNumber = revision;
+        this.frozenFlag = false;
+        this.refusalCounter = 0;
+        this.locationList = List();
+        this.aliasList = List();
+    }
+
+    public Void freeze() {
+        this.frozenFlag = true;
+    }
+
+    public Int refusalCount() {
+        return this.refusalCounter;
+    }
+
+    public Void refuse() {
+        this.refusalCounter = this.refusalCounter + 1;
+    }
+
+    // Logical memory location for alias and effect facts.
+    public Int addLocation(String kind, String name, Int span) {
+        if (this.frozenFlag) {
+            this.refuse();
+            return 0;
+        }
+        Int locationId = this.locationList.length() + 1;
+        SublangLocation locationEntry = SublangLocation(locationId, kind, name, span);
+        this.locationList.add(locationEntry);
+        return locationId;
+    }
+
+    public Bool hasLocation(Int id) {
+        return id >= 1 && id <= this.locationList.length();
+    }
+
+    public SublangLocation locationAt(Int id) {
+        return this.locationList.get(id - 1);
+    }
+
+    public Int locationCount() {
+        return this.locationList.length();
+    }
+
+    // Recorded answer about two locations. The revision is stored with the fact, so the dump shows
+    // which revision the fact was recorded for.
+    public Int addAliasFact(Int left, Int right, String answer, String origin, String proof, Int span) {
+        if (this.frozenFlag) {
+            this.refuse();
+            return 0;
+        }
+        Int factId = this.aliasList.length() + 1;
+        SublangAliasFact factEntry = SublangAliasFact(factId, left, right, answer, origin, proof, this.revisionNumber, span);
+        this.aliasList.add(factEntry);
+        return factId;
+    }
+
+    public Int addProvenAliasFact(Int left, Int right, String answer, SublangProofReference proof, Int span) {
+        if (this.frozenFlag) {
+            this.refuse();
+            return 0;
+        }
+        Int factId = this.aliasList.length() + 1;
+        this.aliasList.add(SublangAliasFact.withProof(factId, left, right, answer, proof, this.revisionNumber, span));
+        return factId;
+    }
+
+    public Bool proofWellFormed(SublangProofReference proof) {
+        if (!proof.matchesRevision(this.revisionNumber)) {
+            return false;
+        }
+        Int index = 0;
+        while (index < proof.dependencyCount()) {
+            if (!this.hasLocation(proof.dependencyAt(index))) {
+                return false;
+            }
+            index = index + 1;
+        }
+        return true;
+    }
+
+    public Void importAliasFact(Int left, Int right, String answer, String origin, String label, SublangProofReference proof, Int span) {
+        if (this.frozenFlag) { this.refuse(); return; }
+        this.aliasList.add(SublangAliasFact.imported(this.aliasList.length() + 1, left, right, answer, origin, label, proof, this.revisionNumber, span));
+    }
+
+    public Bool aliasProofWellFormed(SublangAliasFact fact) {
+        if (!this.hasLocation(fact.left()) || !this.hasLocation(fact.right())) {
+            return false;
+        }
+        SublangProofReference proof = fact.proofReference();
+        return fact.revision() == this.revisionNumber && this.proofWellFormed(proof) && proof.dependsOn(fact.left()) && proof.dependsOn(fact.right());
+    }
+
+    public SublangAliasFact aliasFactAt(Int id) {
+        return this.aliasList.get(id - 1);
+    }
+
+    public Int aliasFactCount() {
+        return this.aliasList.length();
+    }
+
+    // Identity is intrinsic. Other claims remain conservative until an analysis checker
+    // validates evidence against this frozen snapshot. Metadata alone never grants NoAlias.
+    public String aliasAnswer(Int left, Int right) {
+        if (!this.hasLocation(left) || !this.hasLocation(right)) {
+            return "MayAlias";
+        }
+        if (left == right) {
+            return "MustAlias";
+        }
+        return "MayAlias";
+    }
+}

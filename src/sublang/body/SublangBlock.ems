@@ -1,0 +1,91 @@
+namespace sublang::body;
+
+use sublang::body::SublangOperation;
+
+// Basic block with typed block parameters (SSA value ids) and ordered operations.
+// The verifier requires exactly one terminator, as the last operation. A frozen
+// block refuses new parameters and operations.
+public class SublangBlock {
+    private Int blockIdValue;
+    private Bool frozenFlag;
+    private Int refusalCounter;
+    private List<Int> paramValueIds;
+    private List<SublangOperation> operationList;
+
+    public SublangBlock(Int id) {
+        this.blockIdValue = id;
+        this.frozenFlag = false;
+        this.refusalCounter = 0;
+        this.paramValueIds = List();
+        this.operationList = List();
+    }
+
+    public Int id() {
+        return this.blockIdValue;
+    }
+
+    public List<Int> paramValues() {
+        List<Int> copy = List();
+        Int index = 0;
+        while (index < this.paramValueIds.length()) {
+            copy.add(this.paramValueIds.get(index));
+            index = index + 1;
+        }
+        return copy;
+    }
+
+    public List<SublangOperation> operations() {
+        List<SublangOperation> copy = List();
+        Int index = 0;
+        while (index < this.operationList.length()) {
+            copy.add(this.operationList.get(index));
+            index = index + 1;
+        }
+        return copy;
+    }
+
+    public Int paramCount() {
+        return this.paramValueIds.length();
+    }
+
+    public Int paramAt(Int index) {
+        return this.paramValueIds.get(index);
+    }
+
+    public Int operationCount() {
+        return this.operationList.length();
+    }
+
+    public SublangOperation operationAt(Int index) {
+        return this.operationList.get(index);
+    }
+
+    public Int refusalCount() {
+        return this.refusalCounter;
+    }
+
+    public Void freeze() {
+        this.frozenFlag = true;
+        Int index = 0;
+        while (index < this.operationList.length()) {
+            this.operationList.get(index).freeze();
+            index = index + 1;
+        }
+    }
+
+    public Void addParam(Int valueId) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.paramValueIds.add(valueId);
+    }
+
+    public Void addOperation(SublangOperation op) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.operationList.add(op);
+    }
+}

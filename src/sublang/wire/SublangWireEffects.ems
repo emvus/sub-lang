@@ -1,0 +1,104 @@
+namespace sublang::wire;
+
+use sublang::ir::SublangModule;
+use sublang::semantics::SublangLocation;
+use sublang::semantics::SublangAliasFact;
+use sublang::semantics::SublangEffectSummary;
+use sublang::semantics::SublangEffectFact;
+use sublang::proof::SublangProofReference;
+use sublang::wire::SublangWireStream;
+use sublang::wire::SublangWireSelection;
+
+public class SublangWireEffects {
+    public static List<Int> ids(SublangWireStream stream, List<Int> original, Int limit) {
+        Int count = stream.count(original.length(), limit);
+        List<Int> result = List();
+        Int index = 0;
+        while (index < count && stream.valid()) {
+            Int value = 0;
+            if (!stream.isReading()) { value = original.get(index); }
+            result.add(stream.number(value));
+            index = index + 1;
+        }
+        return result;
+    }
+
+    public static SublangProofReference proof(SublangWireStream stream, SublangProofReference original) {
+        String analysis = stream.text(original.analysis());
+        Int revision = stream.number(original.revision());
+        List<Int> dependencies = List();
+        Int index = 0;
+        while (index < original.dependencyCount()) {
+            dependencies.add(original.dependencyAt(index)); index = index + 1;
+        }
+        List<Int> transferred = SublangWireEffects.ids(stream, dependencies, 4096);
+        return SublangProofReference(analysis, revision, transferred);
+    }
+
+    public static Void locations(SublangWireStream stream, SublangModule module) {
+        stream.expect("locations");
+        Int count = stream.count(module.aliases().locationCount(), 4096);
+        Int index = 1;
+        while (index <= count && stream.valid()) {
+            SublangLocation location = SublangWireSelection.location(stream, module, index);
+            String kind = stream.text(location.kind());
+            String name = stream.text(location.name());
+            Int span = stream.number(location.span());
+            if (stream.isReading()) { module.aliases().addLocation(kind, name, span); }
+            index = index + 1;
+        }
+        SublangWireEffects.aliases(stream, module);
+    }
+
+    private static Void aliases(SublangWireStream stream, SublangModule module) {
+        stream.expect("aliases");
+        Int count = stream.count(module.aliases().aliasFactCount(), 4096);
+        Int index = 1;
+        while (index <= count && stream.valid()) {
+            SublangAliasFact fact = SublangWireSelection.alias(stream, module, index);
+            Int left = stream.number(fact.left()); Int right = stream.number(fact.right());
+            String answer = stream.text(fact.answer()); String origin = stream.text(fact.origin());
+            String label = stream.text(fact.proof()); Int revision = stream.number(fact.revision());
+            Int span = stream.number(fact.span());
+            SublangProofReference proof = SublangWireEffects.proof(stream, fact.proofReference());
+            if (revision != module.revision()) { stream.reject("alias revision mismatch"); }
+            if (stream.isReading()) { module.aliases().importAliasFact(left, right, answer, origin, label, proof, span); }
+            index = index + 1;
+        }
+    }
+
+    public static Void summaries(SublangWireStream stream, SublangModule module) {
+        stream.expect("effects");
+        Int count = stream.count(module.semantics().effectSummaryCount(), 4096);
+        Int index = 1;
+        while (index <= count && stream.valid()) {
+            SublangEffectSummary summary = SublangWireSelection.summary(stream, module, index);
+            String name = stream.text(summary.name()); Int span = stream.number(summary.span());
+            if (stream.isReading()) {
+                Int id = module.semantics().addEffectSummary(name, span);
+                SublangWireEffects.facts(stream, module.semantics().effectSummaryAt(id));
+            }
+            if (!stream.isReading()) { SublangWireEffects.facts(stream, summary); }
+            index = index + 1;
+        }
+    }
+
+    private static Void facts(SublangWireStream stream, SublangEffectSummary summary) {
+        Int count = stream.count(summary.factCount(), 512);
+        Int index = 0;
+        while (index < count && stream.valid()) {
+            SublangEffectFact fact = SublangWireSelection.fact(stream, summary, index);
+            String area = stream.text(fact.area()); String value = stream.text(fact.value());
+            String origin = stream.text(fact.provenance()); String detail = stream.text(fact.detail());
+            String label = stream.text(fact.proof());
+            SublangProofReference proof = SublangWireEffects.proof(stream, fact.proofReference());
+            List<Int> locations = List(); Int location = 0;
+            while (location < fact.locationCount()) {
+                locations.add(fact.locationAt(location)); location = location + 1;
+            }
+            List<Int> transferred = SublangWireEffects.ids(stream, locations, 4096);
+            if (stream.isReading()) { summary.importFact(area, value, origin, detail, label, proof, transferred); }
+            index = index + 1;
+        }
+    }
+}

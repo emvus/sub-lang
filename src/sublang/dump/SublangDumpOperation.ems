@@ -1,0 +1,110 @@
+namespace sublang::dump;
+
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::vocabulary::SublangVocabulary;
+use sublang::dump::SublangDumpText;
+
+// One operation on one line. The attributes always appear in the same order (result, opcode and
+// operands, constant, flags, reference, targets, span), so two dumps differ only where the
+// modules differ.
+public class SublangDumpOperation {
+    public static String operationText(SublangModule module, SublangOperation op) {
+        String text = SublangDumpOperation.resultPrefix(module, op) + SublangDumpOperation.operandText(op);
+        text = text + SublangDumpOperation.constantText(op) + SublangDumpOperation.flagText(op);
+        text = text + SublangDumpOperation.referenceText(module, op) + SublangDumpOperation.targetText(op);
+        return text + " span=" + op.span().toString() + "\n";
+    }
+
+    public static String resultPrefix(SublangModule module, SublangOperation op) {
+        if (!op.hasResult()) {
+            return "    ";
+        }
+        return "    v" + op.resultValue().toString() + ":" + SublangDumpText.typeName(module, op.resultType()) + " = ";
+    }
+
+    public static String operandText(SublangOperation op) {
+        String text = op.opcode();
+        Int index = 0;
+        while (index < op.operandCount()) {
+            String separator = " ";
+            if (index > 0) {
+                separator = ", ";
+            }
+            text = text + separator + "v" + op.operandAt(index).toString() + "@" + op.modeAt(index);
+            index = index + 1;
+        }
+        return text;
+    }
+
+    public static String constantText(SublangOperation op) {
+        if (op.opcode() == "const.int") {
+            return " value=" + op.constInt().toString();
+        }
+        if (op.opcode() == "const.bool") {
+            return " value=" + SublangDumpText.boolText(op.constBool());
+        }
+        if (op.opcode() == "const.float") {
+            return " value=" + SublangDumpText.hex64(op.constFloatBits());
+        }
+        return "";
+    }
+
+    public static String flagText(SublangOperation op) {
+        String text = "";
+        if (op.overflow() != "") {
+            text = text + " overflow=" + op.overflow();
+        }
+        if (op.predicate() != "") {
+            text = text + " predicate=" + op.predicate();
+        }
+        if (op.fpMode() != "") {
+            text = text + " fp=" + op.fpMode();
+        }
+        if (op.scope() != 0) {
+            text = text + " scope=" + op.scope().toString();
+        }
+        if (op.resultOwnership() != "") {
+            text = text + " result=" + op.resultOwnership();
+        }
+        if (op.effectSummary() != 0) {
+            text = text + " effects=" + op.effectSummary().toString();
+        }
+        return text;
+    }
+
+    // The meaning of the reference depends on the opcode: a type, a field, a callee, a scope or a failure.
+    public static String referenceText(SublangModule module, SublangOperation op) {
+        if (op.ref() == 0) {
+            return "";
+        }
+        String meaning = SublangVocabulary.refMeaning(op.opcode());
+        if (meaning == "type") {
+            return " type=" + SublangDumpText.typeName(module, op.ref());
+        }
+        if (meaning == "field") {
+            return " field=" + SublangDumpText.fieldName(module, op.ref());
+        }
+        if (meaning == "function") {
+            return " callee=" + SublangDumpText.functionName(module, op.ref());
+        }
+        if (meaning == "scope") {
+            return " scope=" + op.ref().toString();
+        }
+        if (meaning == "failure") {
+            return " failure=" + SublangDumpText.failureName(module, op.ref());
+        }
+        return "";
+    }
+
+    public static String targetText(SublangOperation op) {
+        String text = "";
+        if (op.targetCount() > 0) {
+            text = text + " targets=" + SublangDumpText.listText(op.targets());
+        }
+        if (op.opcode() == "cond_branch") {
+            text = text + " trueArgs=" + op.trueArgs().toString();
+        }
+        return text;
+    }
+}

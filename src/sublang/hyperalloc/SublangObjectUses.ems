@@ -1,0 +1,139 @@
+namespace sublang::hyperalloc;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::hyperalloc::SublangControlCycles;
+use sublang::optimind::SublangCallAnalysis;
+use sublang::ir::data::SublangCollectionLayout;
+
+// Closed-body use classification. Frontend optimization hints grant no proof.
+public class SublangObjectUses {
+    private List<Bool> observed;
+    private List<Bool> moved;
+    private Int region;
+    private SublangControlCycles cycles;
+    private Bool regionSafe;
+    private Int allocationSites;
+    private Bool repeated;
+    private String blocker;
+
+    public SublangObjectUses(SublangModule module, SublangFunction function) {
+        this.cycles = SublangControlCycles(function);
+        this.observed = List();
+        this.moved = List();
+        this.region = 0;
+        this.allocationSites = 0;
+        this.repeated = false;
+        this.blocker = "owned result may leave the region";
+        this.regionSafe = !module.types().isKind(function.returnType(), "Ref");
+        Int value = 0;
+        while (value <= function.valueCount()) { this.observed.add(false); this.moved.add(false); value = value + 1; }
+        Int parameter = 0;
+        while (parameter < function.paramCount()) {
+            if (module.types().isKind(function.paramAt(parameter).typeId(), "Ref")) { this.blockShard("reference parameter can connect to an external graph"); }
+            parameter = parameter + 1;
+        }
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                this.visit(module, function, function.blockAt(block).operationAt(index), block);
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        this.retentionCost(module, function);
+    }
+
+    private Void retentionCost(SublangModule module, SublangFunction function) {
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                SublangOperation op = function.blockAt(block).operationAt(index);
+                if (this.cycles.contains(block) && op.opcode() == "field.take" && !this.moved.get(op.resultValue())) { this.blockShard("taken subtree released in a loop would retain dead region storage"); }
+                if (this.cycles.contains(block) && op.opcode() == "class.new" && !this.moved.get(op.resultValue())) {
+                    Int field = 0;
+                    while (field < module.types().typeAt(op.ref()).fieldCount()) {
+                        Int id = module.types().typeAt(op.ref()).fieldAt(field);
+                        if (module.types().isKind(module.types().fieldAt(id).typeId(), "Ref")) { this.blockShard("Pool graph reset in a loop would retain discarded region storage"); }
+                        field = field + 1;
+                    }
+                }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+    }
+
+    private Void visit(SublangModule module, SublangFunction function, SublangOperation operation, Int block) {
+        String opcode = operation.opcode();
+        if (opcode == "scope.begin") {
+            this.region = operation.ref();
+        }
+        if (opcode.startsWith("list.")) { this.blockShard("collection elements require independent ownership storage"); }
+        if (opcode.startsWith("bond.")) { this.blockShard("shared graph lifetime is managed by Bond"); }
+        if (opcode == "call.direct" && operation.hasResult() && module.types().isKind(operation.resultType(), "Ref")) {
+            this.blockShard("reference call result requires an imported ownership region");
+        }
+        this.cost(module, operation, block);
+        Int argument = 0;
+        while (argument < operation.operandCount()) {
+            Int value = operation.operandAt(argument);
+            if (operation.modeAt(argument) == "owned") {
+                Bool inlinePush = false;
+                if (opcode == "list.push" && argument == 1) {
+                    Int type = module.types().typeAt(function.valueTypeAt(value)).target();
+                    inlinePush = SublangCollectionLayout.inlineClass(module, type);
+                }
+                if (!inlinePush) { this.moved.set(value, true); }
+                if (opcode == "call.direct" || opcode == "return") { this.blockShard("owned call or return may leave the region"); }
+            }
+            Bool scalarField = argument == 0 && (opcode == "field.init" || opcode == "field.write" || opcode == "field.read");
+            if (opcode == "list.push" && argument == 1 && module.types().isKind(function.valueTypeAt(value), "Ref")) {
+                if (SublangCollectionLayout.inlineClass(module, module.types().typeAt(function.valueTypeAt(value)).target())) { scalarField = true; }
+            }
+            if (argument == 0 && SublangCallAnalysis.getterField(module, operation) != 0) { scalarField = true; }
+            if (module.types().isKind(function.valueTypeAt(value), "Ref") && !scalarField) { this.observed.set(value, true); }
+            argument = argument + 1;
+        }
+    }
+
+    private Void blockShard(String reason) {
+        if (this.regionSafe) { this.blocker = reason; }
+        this.regionSafe = false;
+    }
+
+    // Cost guard: avoid retaining discarded loop subtrees until the region ends.
+    // CFG cycle membership is a profitability condition, never a lifetime proof.
+    private Void cost(SublangModule module, SublangOperation operation, Int block) {
+        if (operation.opcode() == "class.new") {
+            this.allocationSites = this.allocationSites + 1;
+            if (this.cycles.contains(block)) { this.repeated = true; }
+        }
+        if (!this.cycles.contains(block)) { return; }
+        if ((operation.opcode() == "field.write" || operation.opcode() == "field.clear") && module.types().isKind(module.types().fieldAt(operation.ref()).typeId(), "Ref")) {
+            this.blockShard("early subtree release in a loop would retain dead region storage");
+        }
+        if (operation.opcode() != "call.direct") { return; }
+        Int argument = 0;
+        while (argument < operation.operandCount()) {
+            if (operation.modeAt(argument) == "borrow_write") { this.blockShard("loop-capable mutable call can discard region subtrees"); }
+            argument = argument + 1;
+        }
+    }
+
+    public String shardBlocker() {
+        if (!this.regionSafe) { return this.blocker; }
+        if (!this.repeated && this.allocationSites < 8) { return "small acyclic graph does not justify a chunk"; }
+        return "none";
+    }
+
+    public Bool addressObserved(Int value) { return this.observed.get(value); }
+    public Bool transferred(Int value) { return this.moved.get(value); }
+    public Int shardScope() {
+        if (this.shardBlocker() != "none") { return 0; }
+        return this.region;
+    }
+}

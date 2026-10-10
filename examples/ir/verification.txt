@@ -1,16 +1,121 @@
-Sublang — migrated standalone repository verification
+Sublang — A.0/A.1 core and boundary verification (local, uncommitted)
 
-Successful bundled run: bash scripts/check-sandbox.sh all
-External toolchain: SUBLANG_EMERALD_ROOT (local sibling Emerald LLVM)
-Compiler: emerald-stable/emerald-compiler (installed binary unchanged)
+Current native Flow bundle: 2026-10-11, scripts/sublang-backend-sandbox.sh, exit 0.
+All eight strategy families have executable paths in the accepted native IR subset.
+New cases: Static UTF-8=200; Inline/owned List=199; Record List=42;
+Local-to-Inline transfer after a verified mutable call=42 (also ASan/LSan checked).
+nested dependent Shard=28; Bond cycle + exclusive Root child + owned call/return=55.
+Bond component-cache case: 64-node SCC, 100 temporary handle releases, graph-revision
+invalidation and partial reclamation preserving a live root; expected result=4242.
+Both Flow off/on pass LLVM assembly/interpreter and native execution.
+ASan/LSan cover both List layouts, dependent-region and Bond/Root cleanup.
+Invalid views after list clear/shared scope end/shared alias mutation reject before LLVM.
+Checked byte indexing rejects negative indices with SIGABRT in both variants.
+Runtime Pool: exact-layout caches, at most 8 blocks/layout and 1 MiB/module; flush on exit.
+Wire v2 read/write roundtrips all current native fixtures; v1 core reading retained.
+No Emerald source/compiler changed. No selfhost migration or performance parity claimed.
+See docs/HyperAlloc_IR.md for exact supported contracts and remaining original-runtime differences.
+
+Historical earlier checkpoints follow; statements below describe their stated dates.
+
+Bundled run: bash scripts/check-sandbox.sh all
+Run date: 2026-10-10
+External toolchain: local sibling Emerald LLVM / emerald-stable/emerald-compiler
+Installed compiler unchanged; no full selfhost bootstrap or benchmark suite.
 Sandbox: emerald-selfhost-sandbox; memory=6,000,000,000 bytes; swap=0; network=none
-Both repositories read-only; temporary compiler outputs stayed in tmpfs.
-Exit status: 0
+Both repositories read-only; temporary compiler outputs in tmpfs; exit status 0.
 
-Harness: all 5 cases passed, including Sublang-* diagnostic codes.
-Examples: all 7 modules structurally valid.
-The .sublang dumps were regenerated from the migrated SublangBuilder/SublangDump.
-Lifetime: not_checked. Codegen readiness: false.
-Target .sublang-ir examples, Optimind passes, Dynamic/EH and LLVM pipeline:
-design contracts, not claimed implemented or executed.
-No full selfhost bootstrap and no benchmark suite.
+Harness: all 28 cases passed, no FAIL.
+Includes pre-freeze retained input/output list aliases, frozen type/list mutations,
+abort signature validation, proof revision/dependency/location references and
+conservative handling of unchecked analysis metadata.
+Examples: all 7 modules structurally and semantically well formed.
+The seven committed-style builder dumps match this run (compared without terminal blank lines).
+Effects and memory/lifetime (including initialization): not_checked.
+Codegen readiness: false, including for valid modules.
+Proof references are immutable metadata, not results of an implemented effect/alias analysis.
+General Dynamic/EH and the full neutral HyperAlloc runtime remain unimplemented.
+An additive native LLVM slice with initial Optimind and Flow Local is now implemented;
+its separate verification is documented in docs/Sublang_Native_Slice.md. Foreign GC integration is archived, outside the active roadmap.
+The Pureline package layout from the preceding refactor was preserved.
+
+Native memory-plan/CFG extension: 2026-10-10, one bundled 6 GB sandbox run passed.
+Entry-allocated/initialized objects can be used across branches and loops.
+Both terminal paths are executed (combined result 89), baseline heap/free and Flow Local.
+Missing terminal cleanup, branch use-after-end and loop allocation reject with B005.
+Flow auto/on LLVM equality and matching Local/Heap explanations checked.
+No core rerun, full bootstrap, benchmark measurement or publication in this step.
+
+Flow runtime/interprocedural extension: 2026-10-10, bundled 6 GB sandbox runs.
+CFG fixed-point verification replaces the entry-only lifetime restriction.
+Nested dynamic loop scopes and branch initialization: result 36 in both variants.
+Verified mutable/read-only borrow forwarding: result 82 in both variants.
+Negative scope/initialization and borrow permission/alias cases reject with B005.
+LeakSanitizer reports no leaks in the nested-scope baseline.
+Root graphs, Bond cycles, Pool/Shard, owned transfers and Emerald selfhost remain open.
+
+Owned-transfer extension: 2026-10-10.
+Factory/transform/consume chain yields 82 in unoptimized LLVM and native base/opt.
+Five negatives reject use after move, duplicate owned args, uninitialized return,
+borrowed-to-owned return and missing call-result ownership/destination metadata.
+LeakSanitizer reports no leaks in both transfer variants, including non-head detach.
+Planner collects transfer uses linearly and excludes moved allocations from Local.
+Generic return/call encoding now admits explicit owned Ref returns; general lifetime
+and effect status stays not_checked. Core harness checked separately after this change.
+
+
+Root/Pool/native preview: 2026-10-10, supersedes the earlier open Root/Pool status.
+Full backend bundle passed in the 6 GB sandbox: Root graph result 43, iterative
+10,000-node destruction result 10000, four invalid Root ownership cases rejected.
+LeakSanitizer passed Root graph/deep-chain and owned-transfer base/opt variants.
+Pool reuses a per-site frame slot for suitable loop allocations; plans checked.
+Core harness after new Root vocabulary/class-reference fields: all 28 passed.
+Sandbox build CLI exports native Root builder result 42 plus LLVM/bitcode/plan.
+
+Direct C source: Clang -> verified LLVM -> native, no Sublang IR file required.
+Local header/struct/malloc/free example: 10000 at O2/Flow auto and O0/Flow off.
+C High-IR Optimind/effect/escape importer and Flow memory takeover remain absent;
+explicit Flow on is rejected rather than claiming an unsupported ownership proof.
+No performance benchmark or complete C/Flow compatibility claim.
+
+
+Original-Flow parity tranche: 2026-10-10, Sublang sources only.
+Folded primitive object fields, closed single-scope Shard regions and expanded
+Optimind integer folds/identities pass the bundled 6 GB sandbox runner.
+Folded mixed primitive fields = 42; Shard retained graphs/heap children = 5085;
+Root early-drop churn fallback = 5085; Pool borrowed calls = 100; numeric folds = 47.
+ASan/LSan mixed region/heap checks pass. Region backing preserves the 16-byte header.
+Fifteen exact signed multiplication boundary cases pass; overflow/division failures
+still abort in baseline/optimized code even when their results are discarded.
+The CFG cost guard prevents Shard from retaining repeatedly discarded loop subtrees.
+No new Core vocabulary/schema; no unchanged core/example regeneration.
+Remaining old-Flow capabilities are listed in docs/Flow_Parity.md. No full parity,
+benchmark improvement, stable IR-file reader or packaged binary claim in this tranche.
+
+Pureline follow-up: LLVM field lowering, plan construction and Shard fixture phases
+were split into focused methods; explicit Emerald blocks/namespaces retained.
+Touched production packages remain within the eight-file default (6/4/5/7/4).
+Size review is manual with a lexical aid, not a claimed AST style checker.
+The final refactored backend bundle passed again under the same 6 GB cap.
+2026-10-10: Versioned file transport / standalone compiler / graph borrows / graph Pool
+Implementation source edited directly with patches; no Python source generators.
+Final bundle: /tmp/sublang-pool-graphs-final.txt, exit 0.
+Command: bash scripts/sublang-backend-sandbox.sh
+All compiler/native executions: Docker, no network, readonly inputs,
+RAM and RAM+swap 6000000000 bytes, no swap, time limits.
+Every generated positive and trap fixture now roundtrips through Sublang Wire;
+stable ids, full operation attributes, raw Float bits, effect and alias provenance
+survive deterministic re-export. Invalid lengths, counts, versions, Int64 overflow,
+truncated/trailing data and forged metadata trust are covered by bounded checks.
+New results in both baseline/optimized variants: constant calls 49, folded getter 42,
+borrowed graph 42, graph Pool with inner and outer loop scopes 2100.
+Checked constant-call overflow remains SIGABRT even when multiplied by zero.
+Read-only graph mutation, expired/invalidated view use and ownership theft rejected.
+Graph view / graph Pool / mixed Shard storage checked with ASan+LSan.
+Compiled native SublangMain consumes a wire file and emits working LLVM with Flow.
+Verified compiler exported to build/sublang; generated IR inputs to build/ir/.
+No benchmark speedup, full original-Flow parity or stable ABI is claimed.
+Final native file-build: /tmp/sublang-wire-build-final.txt, exit 0, output 2100.
+Command: bash scripts/sublang-build.sh build/ir/pool-graph-outer.sublang-wire -o build/pool-graph-demo --flow=on --run
+This invocation did not mount the Emerald toolchain. Native binary and .ll/.bc/.plan
+exported to build/pool-graph-demo; actual transport examples also in examples/wire/.

@@ -1,0 +1,51 @@
+namespace sublang::backend::llvm;
+
+use sublang::ir::SublangModule;
+
+public class SublangLlvmTypes {
+    public static String type(SublangModule module, Int id) {
+        String kind = module.types().kindOf(id);
+        if (kind == "Int") { return "i64"; }
+        if (kind == "Bool") { return "i1"; }
+        if (kind == "Float") { return "double"; }
+        if (kind == "Void") { return "void"; }
+        if (kind == "Ref" || kind == "Bond") { return "ptr"; }
+        if (kind == "String") { return "{ ptr, i64 }"; }
+        return "%t" + id.toString();
+    }
+
+    public static String definitions(SublangModule module) {
+        String text = "";
+        Int id = 1;
+        while (id <= module.types().typeCount()) {
+            if (module.types().typeAt(id).isNominal()) {
+                text = text + SublangLlvmTypes.aggregate(module, id);
+            }
+            if (module.types().isKind(id, "List")) { text = text + "%t" + id.toString() + " = type { ptr, i32, i32 }\n"; }
+            id = id + 1;
+        }
+        return text;
+    }
+
+    private static String aggregate(SublangModule module, Int id) {
+        String text = "%t" + id.toString() + " = type { ";
+        Int index = 0;
+        while (index < module.types().typeAt(id).fieldCount()) {
+            if (index > 0) { text = text + ", "; }
+            Int field = module.types().typeAt(id).fieldAt(index);
+            text = text + SublangLlvmTypes.type(module, module.types().fieldAt(field).typeId());
+            index = index + 1;
+        }
+        return text + " }\n";
+    }
+
+    public static Int fieldIndex(SublangModule module, Int field) {
+        Int owner = module.types().fieldAt(field).owner();
+        Int index = 0;
+        while (index < module.types().typeAt(owner).fieldCount()) {
+            if (module.types().typeAt(owner).fieldAt(index) == field) { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+}

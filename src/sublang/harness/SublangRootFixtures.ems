@@ -1,0 +1,105 @@
+namespace sublang::harness;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+public class SublangRootFixtures {
+    private static Int node(SublangBuilder builder, Int type, Int valueField, Int nextField, Int scope, Int value, Int span) {
+        Int node = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(node, valueField, builder.ops().constInt(value, span), span);
+        builder.ops().fieldClear(node, nextField, span);
+        return node;
+    }
+
+    public static SublangModule graph(Int invalid) {
+        SublangBuilder builder = SublangBuilder("root-graph");
+        Int span = builder.syntheticSpan("root-graph");
+        Int type = builder.classType("Node", span);
+        Int valueField = builder.classField(type, "value", builder.intType(), true, span);
+        Int nextField = builder.classField(type, "next", builder.refType(type), true, span);
+        Int factory = builder.beginFunction("makeTree", builder.refType(type), 0, span);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int head = SublangRootFixtures.node(builder, type, valueField, nextField, scope, 40, span);
+        Int child = SublangRootFixtures.node(builder, type, valueField, nextField, scope, 2, span);
+        Int leaf = SublangRootFixtures.node(builder, type, valueField, nextField, scope, 1, span);
+        builder.ops().fieldWriteOwned(child, nextField, leaf, span);
+        if (invalid == 3) { builder.ops().fieldWriteOwned(head, nextField, head, span); }
+        builder.ops().fieldWriteOwned(head, nextField, child, span);
+        if (invalid == 1) { builder.ops().fieldRead(child, valueField, span); }
+        builder.ops().returnOwned(head, span);
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+        scope = builder.ops().scopeBegin(span);
+        List<Int> empty = List();
+        List<String> modes = List();
+        head = builder.ops().callDirectOwned(factory, empty, modes, scope, span);
+        Int replacement = builder.ops().classNew(type, scope, span);
+        if (invalid != 2) { builder.ops().fieldInit(replacement, valueField, builder.ops().constInt(3, span), span); }
+        builder.ops().fieldClear(replacement, nextField, span);
+        builder.ops().fieldWriteOwned(head, nextField, replacement, span);
+        child = builder.ops().fieldTake(head, nextField, scope, span);
+        if (invalid == 4) { builder.ops().fieldTake(head, nextField, scope, span); }
+        builder.ops().fieldClear(head, nextField, span);
+        Int present = builder.ops().fieldHas(head, nextField, span);
+        Int good = builder.newBlock();
+        Int bad = builder.newBlock();
+        builder.ops().condBranch(present, bad, empty, good, empty, span);
+        builder.enterBlock(good);
+        Int a = builder.ops().fieldRead(head, valueField, span);
+        Int b = builder.ops().fieldRead(child, valueField, span);
+        Int sum = builder.ops().intBinary("int.add", a, b, "wrap", 0, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(sum, span);
+        builder.enterBlock(bad);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(builder.ops().constInt(-1, span), span);
+        return builder.module();
+    }
+
+    public static SublangModule deep() {
+        SublangBuilder builder = SublangBuilder("deep-root");
+        Int span = builder.syntheticSpan("deep-root");
+        Int type = builder.classType("Node", span);
+        Int valueField = builder.classField(type, "value", builder.intType(), true, span);
+        Int nextField = builder.classField(type, "next", builder.refType(type), true, span);
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int holder = SublangRootFixtures.node(builder, type, valueField, nextField, scope, 0, span);
+        Int first = SublangRootFixtures.node(builder, type, valueField, nextField, scope, 1, span);
+        builder.ops().fieldWriteOwned(holder, nextField, first, span);
+        Int zero = builder.ops().constInt(0, span);
+        Int limit = builder.ops().constInt(10000, span);
+        Int header = builder.newBlock();
+        Int body = builder.newBlock();
+        Int done = builder.newBlock();
+        builder.ops().branchTo(header, SublangRootFixtures.one(zero), span);
+        builder.enterBlock(header);
+        Int index = builder.addBlockParam(builder.intType());
+        List<Int> empty = List();
+        builder.ops().condBranch(builder.ops().compare("lt", index, limit, span), body, empty, done, empty, span);
+        builder.enterBlock(body);
+        Int inner = builder.ops().scopeBegin(span);
+        Int node = builder.ops().classNew(type, inner, span);
+        builder.ops().fieldInit(node, valueField, builder.ops().constInt(1, span), span);
+        Int previous = builder.ops().fieldTake(holder, nextField, inner, span);
+        builder.ops().fieldInitOwned(node, nextField, previous, span);
+        builder.ops().fieldInitOwned(holder, nextField, node, span);
+        builder.ops().scopeEnd(inner, span);
+        Int increment = builder.ops().intBinary("int.add", index, builder.ops().constInt(1, span), "wrap", 0, span);
+        builder.ops().branchTo(header, SublangRootFixtures.one(increment), span);
+        builder.enterBlock(done);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(index, span);
+        return builder.module();
+    }
+
+    private static List<Int> one(Int value) {
+        List<Int> values = List();
+        values.add(value);
+        return values;
+    }
+}

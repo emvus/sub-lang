@@ -1,0 +1,37 @@
+namespace sublang::backend::llvmflow;
+
+// The low bit of the next-header word marks region backing. Payload pointers stay
+// untagged and headers stay 16 bytes. Region nodes are destroyed but never freed individually.
+public class SublangLlvmFlowRuntime {
+    public static String definitions() {
+        return SublangLlvmFlowRuntime.links() + SublangLlvmFlowRuntime.adopt() + SublangLlvmFlowRuntime.detach() + SublangLlvmFlowRuntime.allocate() + SublangLlvmFlowRuntime.enqueue() + SublangLlvmFlowRuntime.drop() + SublangLlvmFlowRuntime.end();
+    }
+
+    private static String links() {
+        return "define internal ptr @sublang.flow.next(ptr %header) {\nentry:\n  %raw = load ptr, ptr %header\n  %bits = ptrtoint ptr %raw to i64\n  %address = and i64 %bits, -2\n  %next = inttoptr i64 %address to ptr\n  ret ptr %next\n}\ndefine internal void @sublang.flow.link(ptr %header, ptr %next) {\nentry:\n  %raw = load ptr, ptr %header\n  %bits = ptrtoint ptr %raw to i64\n  %tag = and i64 %bits, 1\n  %address = ptrtoint ptr %next to i64\n  %combined = or i64 %address, %tag\n  %marked = inttoptr i64 %combined to ptr\n  store ptr %marked, ptr %header\n  ret void\n}\n";
+    }
+
+    private static String adopt() {
+        return "define internal void @sublang.flow.adopt(ptr %scope, ptr %payload) {\nentry:\n  %absent = icmp eq ptr %payload, null\n  br i1 %absent, label %bad, label %attach\nbad:\n  call void @abort()\n  unreachable\nattach:\n  %header = getelementptr i8, ptr %payload, i64 -16\n  %link = getelementptr i8, ptr %header, i64 8\n  %previous = load ptr, ptr %scope\n  call void @sublang.flow.link(ptr %header, ptr %previous)\n  store ptr %scope, ptr %link\n  store ptr %header, ptr %scope\n  %nonempty = icmp ne ptr %previous, null\n  br i1 %nonempty, label %fix, label %done\nfix:\n  %previous.link = getelementptr i8, ptr %previous, i64 8\n  store ptr %header, ptr %previous.link\n  br label %done\ndone:\n  ret void\n}\n";
+    }
+
+    private static String detach() {
+        return "define internal void @sublang.flow.detach(ptr %payload) {\nentry:\n  %header = getelementptr i8, ptr %payload, i64 -16\n  %link = getelementptr i8, ptr %header, i64 8\n  %slot = load ptr, ptr %link\n  %unlinked = icmp eq ptr %slot, null\n  br i1 %unlinked, label %done, label %unlink\nunlink:\n  %next = call ptr @sublang.flow.next(ptr %header)\n  %scope.raw = load ptr, ptr %slot\n  %scope.bits = ptrtoint ptr %scope.raw to i64\n  %scope.tag = and i64 %scope.bits, 1\n  %next.bits = ptrtoint ptr %next to i64\n  %combined = or i64 %next.bits, %scope.tag\n  %marked = inttoptr i64 %combined to ptr\n  store ptr %marked, ptr %slot\n  %nonempty = icmp ne ptr %next, null\n  br i1 %nonempty, label %fix, label %done\nfix:\n  %next.link = getelementptr i8, ptr %next, i64 8\n  store ptr %slot, ptr %next.link\n  br label %done\ndone:\n  store ptr null, ptr %link\n  call void @sublang.flow.link(ptr %header, ptr null)\n  ret void\n}\n";
+    }
+
+    private static String allocate() {
+        return "define internal ptr @sublang.flow.allocate(ptr %scope, i64 %size) {\nentry:\n  %too.large = icmp ugt i64 %size, -17\n  br i1 %too.large, label %bad, label %ok\nbad:\n  call void @abort()\n  unreachable\nok:\n  %total = add i64 %size, 16\n  %header = call ptr @sublang.allocate(i64 %total)\n  store ptr null, ptr %header\n  %payload = getelementptr i8, ptr %header, i64 16\n  call void @sublang.flow.adopt(ptr %scope, ptr %payload)\n  ret ptr %payload\n}\n";
+    }
+
+    private static String enqueue() {
+        return "define internal void @sublang.flow.enqueue(ptr %pending, ptr %payload, ptr %visitor) {\nentry:\n  %empty = icmp eq ptr %payload, null\n  br i1 %empty, label %done, label %push\npush:\n  %header = getelementptr i8, ptr %payload, i64 -16\n  %link = getelementptr i8, ptr %header, i64 8\n  %previous = load ptr, ptr %pending\n  call void @sublang.flow.link(ptr %header, ptr %previous)\n  store ptr %visitor, ptr %link\n  store ptr %header, ptr %pending\n  br label %done\ndone:\n  ret void\n}\n";
+    }
+
+    private static String drop() {
+        return "define internal void @sublang.flow.drop(ptr %payload, ptr %visitor) {\nentry:\n  %pending = alloca ptr\n  store ptr null, ptr %pending\n  call void @sublang.flow.enqueue(ptr %pending, ptr %payload, ptr %visitor)\n  br label %loop\nloop:\n  %header = load ptr, ptr %pending\n  %empty = icmp eq ptr %header, null\n  br i1 %empty, label %done, label %release\nrelease:\n  %next = call ptr @sublang.flow.next(ptr %header)\n  store ptr %next, ptr %pending\n  %raw = load ptr, ptr %header\n  %bits = ptrtoint ptr %raw to i64\n  %tag = and i64 %bits, 1\n  %region = icmp ne i64 %tag, 0\n  %link = getelementptr i8, ptr %header, i64 8\n  %callback = load ptr, ptr %link\n  %object = getelementptr i8, ptr %header, i64 16\n  call void %callback(ptr %object, ptr %pending)\n  store ptr null, ptr %link\n  br i1 %region, label %loop, label %free\nfree:\n  call void @sublang.flow.recycle(ptr %header, ptr %callback)\n  br label %loop\ndone:\n  ret void\n}\n";
+    }
+
+    private static String end() {
+        return "define internal void @sublang.flow.end(ptr %scope, ptr %visitor) {\nentry:\n  %head = load ptr, ptr %scope\n  store ptr null, ptr %scope\n  br label %loop\nloop:\n  %current = phi ptr [ %head, %entry ], [ %next, %release ]\n  %empty = icmp eq ptr %current, null\n  br i1 %empty, label %done, label %release\nrelease:\n  %next = call ptr @sublang.flow.next(ptr %current)\n  %object = getelementptr i8, ptr %current, i64 16\n  call void @sublang.flow.drop(ptr %object, ptr %visitor)\n  br label %loop\ndone:\n  ret void\n}\n";
+    }
+}

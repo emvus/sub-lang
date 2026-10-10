@@ -1,0 +1,37 @@
+# Executable Sublang IR inputs
+
+These files are emitted by the Emerald `SublangWire` serializer, roundtripped and
+compiled in the capped native bundle. They are actual compiler inputs, separate
+from the readable dumps under `examples/ir/`.
+
+```sh
+bash scripts/sublang-bootstrap.sh
+bash scripts/sublang-build.sh examples/wire/arithmetic.sublang-wire -o build/arithmetic --run
+bash scripts/sublang-build.sh examples/wire/borrowed-graph.sublang-wire -o build/borrowed-graph --flow=on --run
+bash scripts/sublang-build.sh examples/wire/pool-graph.sublang-wire -o build/pool-graph --flow=on --run
+bash scripts/sublang-build.sh examples/wire/bond-cycle.sublang-wire -o build/bond-cycle --flow=on --run
+bash scripts/sublang-build.sh examples/wire/inline-list.sublang-wire -o build/inline-list --flow=on --run
+```
+
+Expected outputs: `4000000000`, `42`, `2100`. The Pool example reuses a graph parent
+across 50 iterations in one outer scope while releasing its previous children.
+No Emerald source driver is compiled when these IR files are consumed; the native
+Sublang binary verifies and lowers them. See [transport contract](../../docs/Sublang_Wire.md).
+
+The original three files remain v1 inputs, exercising compatibility. The following
+files use v2 and its byte-preserving literal attributes and new memory contracts:
+
+| Input | Expected output | Memory behavior |
+| --- | --- | --- |
+| `static-string.sublang-wire` | 200 | UTF-8, quote/backslash/newline bytes in constant globals |
+| `inline-list.sublang-wire` | 199 | Value-inferred Point values directly in a growing list; no per-element header |
+| `inline-local.sublang-wire` | 42 | A mutable temporary is changed by a verified call, then moved from headerless Local storage into the list |
+| `owned-list.sublang-wire` | 199 | Points owning child objects retain stable ownership; clear destroys both |
+| `value-list.sublang-wire` | 42 | Contiguous Record values and checked value reads |
+| `nested-regions.sublang-wire` | 28 | Child storage promoted from an inner Shard to the parent's outer region |
+| `bond-cycle.sublang-wire` | 55 | Shared cycle, retained alias, owned call/return and exclusive Root child |
+| `bond-component.sublang-wire` | 4242 | 64-node SCC cache, temporary handle churn, invalidation and partial graph reclamation |
+
+See [HyperAlloc contracts](../../docs/HyperAlloc_IR.md) for the exact builder APIs,
+proof boundaries and supported semantics. These are correctness examples, not
+performance benchmarks or evidence of full original-runtime compatibility.

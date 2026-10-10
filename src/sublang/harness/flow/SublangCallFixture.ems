@@ -1,0 +1,47 @@
+namespace sublang::harness::flow;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+public class SublangCallFixture {
+    public static SublangModule arithmetic(Bool trap) {
+        SublangBuilder builder = SublangBuilder("constant-calls");
+        Int span = builder.syntheticSpan("constant-calls");
+        Int failure = builder.failure("call.overflow");
+        Int callee = builder.beginFunction("square", builder.intType(), 0, span);
+        Int input = builder.addParam("input", builder.intType(), "value", false);
+        builder.beginBlock();
+        Int product = builder.ops().intBinary("int.mul", input, input, "trap", failure, span);
+        builder.ops().returnValue(product, span);
+        Int entry = builder.beginFunction("entry", builder.intType(), 0, span);
+        builder.module().setEntry(entry); builder.beginBlock();
+        Int number = 7;
+        if (trap) { number = 4000000000; }
+        List<Int> args = List(); args.add(builder.ops().constInt(number, span));
+        List<String> modes = List(); modes.add("value");
+        Int result = builder.ops().callDirect(callee, args, modes, span);
+        if (trap) { result = builder.ops().intBinary("int.mul", result, builder.ops().constInt(0, span), "wrap", 0, span); }
+        builder.ops().returnValue(result, span);
+        return builder.module();
+    }
+
+    public static SublangModule getter() {
+        SublangBuilder builder = SublangBuilder("folded-getter");
+        Int span = builder.syntheticSpan("folded-getter");
+        Int type = builder.classType("Point", span);
+        Int field = builder.classField(type, "x", builder.intType(), false, span);
+        Int getter = builder.beginFunction("getX", builder.intType(), type, span);
+        Int self = builder.addParam("self", builder.refType(type), "borrow_read", false);
+        builder.beginBlock(); builder.ops().returnValue(builder.ops().fieldRead(self, field, span), span);
+        Int main = builder.beginFunction("entry", builder.intType(), 0, span);
+        builder.module().setEntry(main); builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int object = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(object, field, builder.ops().constInt(42, span), span);
+        List<Int> arguments = List(); arguments.add(object);
+        List<String> modes = List(); modes.add("borrow_read");
+        Int answer = builder.ops().callDirect(getter, arguments, modes, span);
+        builder.ops().scopeEnd(scope, span); builder.ops().returnValue(answer, span);
+        return builder.module();
+    }
+}

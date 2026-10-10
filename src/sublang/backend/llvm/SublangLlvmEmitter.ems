@@ -1,0 +1,127 @@
+namespace sublang::backend::llvm;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::optimind::SublangOptimind;
+use sublang::hyperalloc::SublangMemoryPlan;
+use sublang::optimind::SublangValueFacts;
+use sublang::optimind::SublangCallAnalysis;
+use sublang::backend::llvm::SublangLlvmTypes;
+use sublang::backend::llvm::SublangLlvmRuntime;
+use sublang::backend::llvmflow::SublangLlvmFlowRuntime;
+use sublang::backend::llvmflow::SublangLlvmDropEmitter;
+use sublang::backend::llvmflow::SublangLlvmShardRuntime;
+use sublang::backend::llvm::SublangLlvmContext;
+use sublang::backend::llvm::SublangLlvmScalar;
+use sublang::backend::llvm::SublangLlvmMemory;
+use sublang::backend::llvm::SublangLlvmControl;
+use sublang::backend::llvmdata::SublangLlvmStrings;
+use sublang::backend::llvmdata::SublangLlvmLists;
+use sublang::backend::llvmdata::SublangLlvmListRuntime;
+use sublang::backend::llvmflow::SublangLlvmBondRuntime;
+use sublang::backend::llvmflow::SublangLlvmBonds;
+use sublang::backend::llvmflow::SublangLlvmBondEmitter;
+use sublang::backend::llvmflow::SublangLlvmPoolRuntime;
+use sublang::backend::llvmbond::SublangLlvmBondTrial;
+use sublang::backend::llvmbond::SublangLlvmBondCache;
+
+// Textual LLVM is the backend boundary, not a public Sublang input format.
+public class SublangLlvmEmitter {
+    public static String emit(SublangModule module, Bool optimize, SublangMemoryPlan plan) {
+        String text = "; Sublang initial native LLVM slice\n" + SublangLlvmRuntime.definitions() + SublangLlvmFlowRuntime.definitions() + SublangLlvmShardRuntime.definitions() + SublangLlvmTypes.definitions(module) + SublangLlvmDropEmitter.definitions(module);
+        text = text + SublangLlvmStrings.definitions(module);
+        text = text + SublangLlvmListRuntime.definitions() + SublangLlvmLists.definitions(module);
+        text = text + SublangLlvmBondRuntime.definitions() + SublangLlvmBonds.definitions(module);
+        text = text + SublangLlvmBondTrial.definitions() + SublangLlvmBondCache.definitions();
+        text = text + SublangLlvmPoolRuntime.definitions(module, plan.enabled());
+        Int id = 1;
+        while (id <= module.functionCount()) {
+            SublangLlvmContext context = SublangLlvmContext(module, module.functionAt(id), plan.functionAt(id));
+            text = text + SublangLlvmEmitter.functionText(context, optimize);
+            id = id + 1;
+        }
+        if (module.entryFunction() != 0) {
+            text = text + SublangLlvmEmitter.entry(module.entryFunction());
+        }
+        return text;
+    }
+
+    private static String functionText(SublangLlvmContext context, Bool optimize) {
+        SublangFunction function = context.function;
+        SublangValueFacts facts = SublangOptimind.analyzeModule(context.module, function, optimize);
+        String text = SublangLlvmEmitter.header(context) + SublangLlvmEmitter.slots(context);
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            text = text + "b" + block.toString() + ":\n";
+            Int index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                text = text + SublangLlvmEmitter.operation(context, function.blockAt(block).operationAt(index), facts);
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        return text + "}\n";
+    }
+
+    private static String header(SublangLlvmContext context) {
+        String text = "define " + context.type(context.function.returnType()) + " @fn" + context.function.id().toString() + "(";
+        Int index = 0;
+        while (index < context.function.paramCount()) {
+            if (index > 0) { text = text + ", "; }
+            Int value = context.function.paramAt(index).value();
+            text = text + context.type(context.function.valueTypeAt(value)) + " %arg" + value.toString();
+            index = index + 1;
+        }
+        return text + ") {\nentry:\n";
+    }
+
+    private static String slots(SublangLlvmContext context) {
+        String text = context.owners().slots() + context.bonds().slots();
+        Int value = 1;
+        while (value <= context.function.valueCount()) {
+            if (context.isFolded(value)) { value = value + 1; continue; }
+            text = text + "  %v" + value.toString() + " = alloca " + context.type(context.function.valueTypeAt(value)) + "\n";
+            value = value + 1;
+        }
+        Int index = 0;
+        while (index < context.function.paramCount()) {
+            value = context.function.paramAt(index).value();
+            text = text + "  store " + context.type(context.function.valueTypeAt(value)) + " %arg" + value.toString() + ", ptr %v" + value.toString() + "\n";
+            index = index + 1;
+        }
+        return text + context.owners().adoptParameters() + context.bonds().parameters(context.module, context.function) + "  br label %b1\n";
+    }
+
+    private static String operation(SublangLlvmContext context, SublangOperation operation, SublangValueFacts facts) {
+        String opcode = operation.opcode();
+        Int field = SublangCallAnalysis.getterField(context.module, operation);
+        if (field != 0 && context.isFolded(operation.operandAt(0))) {
+            String slot = "%fold" + operation.operandAt(0).toString() + "_" + field.toString();
+            String text = "  " + context.result(operation) + " = load " + context.type(operation.resultType()) + ", ptr " + slot + "\n";
+            return text + context.store(operation, context.result(operation));
+        }
+        if (operation.hasResult() && facts.known(operation.resultValue())) {
+            return context.store(operation, facts.integer(operation.resultValue()).toString());
+        }
+        if (operation.hasResult() && facts.alias(operation.resultValue()) != 0) {
+            Int source = facts.alias(operation.resultValue());
+            String text = "  " + context.result(operation) + " = load " + context.type(operation.resultType()) + ", ptr %v" + source.toString() + "\n";
+            return text + context.store(operation, context.result(operation));
+        }
+        if (opcode == "const.string" || opcode.startsWith("string.")) { return SublangLlvmStrings.emit(context, operation); }
+        if (opcode.startsWith("list.")) { return SublangLlvmLists.emit(context, operation); }
+        if (opcode.startsWith("bond.")) { return SublangLlvmBondEmitter.emit(context, operation); }
+        if (opcode.startsWith("int.") || opcode.startsWith("float.") || opcode.startsWith("const.") || opcode == "compare") {
+            return SublangLlvmScalar.emit(context, operation);
+        }
+        if (opcode.startsWith("record.") || opcode.startsWith("field.") || opcode.startsWith("scope.") || opcode == "class.new") {
+            return SublangLlvmMemory.emit(context, operation);
+        }
+        return SublangLlvmControl.emit(context, operation);
+    }
+
+    private static String entry(Int functionId) {
+        return "define i32 @main() {\nentry:\n  %answer = call i64 @fn" + functionId.toString() + "()\n  call void @sublang.pool.flush()\n  %printed = call i32 (ptr, ...) @printf(ptr @sublang.format, i64 %answer)\n  ret i32 0\n}\n";
+    }
+}

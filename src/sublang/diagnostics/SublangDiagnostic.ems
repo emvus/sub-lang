@@ -1,16 +1,31 @@
 namespace sublang::diagnostics;
 
-// One verifier finding. The code is a stable identifier (Sublang-<family><number>),
-// the span points at the operation, declaration or table entry that caused it.
+use sublang::vocabulary::SublangVocabulary;
+
+// One verifier finding as a structured record: code, dimension (derived from the code),
+// span, entity (revision, and function, block and operation where known), severity,
+// pass, and the blockers that explain why a feature or optimization cannot proceed.
+// Text output and future wire output use this same record.
 public class SublangDiagnostic {
     private String codeText;
     private String messageText;
     private Int spanIdValue;
+    private String dimensionText;
+    private String entityText;
+    private List<String> blockerList;
 
-    public SublangDiagnostic(String code, String message, Int span) {
+    public SublangDiagnostic(String code, String message, Int span, String entity, List<String> blockers) {
         this.codeText = code + "";
         this.messageText = message + "";
         this.spanIdValue = span;
+        this.dimensionText = SublangVocabulary.dimensionOf(code + "");
+        this.entityText = entity + "";
+        this.blockerList = List();
+        Int index = 0;
+        while (index < blockers.length()) {
+            this.blockerList.add(blockers.get(index) + "");
+            index = index + 1;
+        }
     }
 
     public String code() {
@@ -23,5 +38,32 @@ public class SublangDiagnostic {
 
     public Int spanId() {
         return this.spanIdValue;
+    }
+
+    public String dimension() {
+        return this.dimensionText;
+    }
+
+    public String entity() {
+        return this.entityText;
+    }
+
+    // A fresh copy on every call: clearing it does not touch this record.
+    public List<String> blockers() {
+        List<String> copy = List();
+        Int index = 0;
+        while (index < this.blockerList.length()) {
+            copy.add(this.blockerList.get(index));
+            index = index + 1;
+        }
+        return copy;
+    }
+
+    public String severity() {
+        return "error";
+    }
+
+    public String pass() {
+        return "verifier";
     }
 }

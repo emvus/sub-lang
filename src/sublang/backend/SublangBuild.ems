@@ -1,0 +1,22 @@
+namespace sublang::backend;
+
+use sublang::ir::SublangModule;
+use sublang::backend::SublangCompiler;
+use sublang::backend::SublangCompilation;
+use Std::Native::NativeFile;
+use Std::Process::Processes;
+
+// Build driver boundary. The sandbox wrapper owns paths, toolchain and native linking.
+public class SublangBuild {
+    public static Void emit(SublangModule module, Bool optimind, String flow) {
+        module.freeze();
+        SublangCompilation compilation = SublangCompiler.compile(module, optimind, flow);
+        if (!compilation.codegenReady()) {
+            println(compilation.error());
+            Processes.exit(1);
+            return;
+        }
+        NativeFile.writeText("/tmp/sublang-build/program.ll", compilation.llvm());
+        NativeFile.writeText("/tmp/sublang-build/program.plan", compilation.explainMemory());
+    }
+}

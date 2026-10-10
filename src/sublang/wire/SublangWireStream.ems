@@ -1,0 +1,138 @@
+namespace sublang::wire;
+
+use Std::Text::StringBuilder;
+
+// Byte-counted netstrings, bounded before graph construction. One symmetric codec
+// prevents the reader and writer schemas from drifting apart.
+public class SublangWireStream {
+    private Bool reading;
+    private String input;
+    private Int offset;
+    private Int entries;
+    private String failure;
+    private StringBuilder output;
+    private Int transportVersion;
+
+    public SublangWireStream(Bool read, String text) {
+        this.reading = read;
+        this.input = text;
+        this.offset = 0;
+        this.entries = 0;
+        this.failure = "";
+        this.output = StringBuilder();
+        this.transportVersion = 2;
+        if (text.length() > 16777216) { this.reject("input exceeds 16 MiB"); }
+    }
+
+    public Bool isReading() { return this.reading; }
+    public Int version() { return this.transportVersion; }
+    public Void setVersion(Int value) { this.transportVersion = value; }
+    public Bool valid() { return this.failure == ""; }
+    public String error() { return this.failure; }
+    public String result() { return this.output.toString(); }
+
+    public Void reject(String reason) {
+        if (this.failure == "") {
+            this.failure = "SUBLANG-W001 at byte " + this.offset.toString() + ": " + reason;
+        }
+    }
+
+    public Void expect(String expected) {
+        if (this.text(expected) != expected) { this.reject("expected " + expected); }
+    }
+
+    public Void finish() {
+        this.expect("end");
+        if (this.reading && this.offset != this.input.length()) { this.reject("trailing data"); }
+    }
+
+    private Int digit(String character) {
+        Int index = 0;
+        while (index < 10) {
+            if (character == "0123456789".substring(index, index + 1)) { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    public String text(String value) {
+        if (!this.valid()) { return ""; }
+        if (!this.reading) {
+            if (value.length() > 65536) { this.reject("token exceeds 64 KiB"); return ""; }
+            this.output.appendInt(value.length()); this.output.append(":");
+            this.output.append(value); this.output.append(",");
+            if (this.output.length() > 16777216) { this.reject("output exceeds 16 MiB"); }
+            return value;
+        }
+        return this.readToken();
+    }
+
+    private String readToken() {
+        Int length = 0;
+        Int digits = 0;
+        while (this.offset < this.input.length()) {
+            String character = this.input.substring(this.offset, this.offset + 1);
+            this.offset = this.offset + 1;
+            if (character == ":") { return this.payload(length, digits); }
+            Int digit = this.digit(character);
+            if (digit < 0 || digits >= 5) { this.reject("invalid token length"); return ""; }
+            length = length * 10 + digit;
+            digits = digits + 1;
+        }
+        this.reject("truncated length"); return "";
+    }
+
+    private String payload(Int length, Int digits) {
+        if (digits == 0 || length > 65536 || length >= this.input.length() - this.offset) {
+            this.reject("invalid or truncated payload"); return "";
+        }
+        Int end = this.offset + length;
+        if (this.input.substring(end, end + 1) != ",") {
+            this.reject("missing token delimiter"); return "";
+        }
+        String value = this.input.substring(this.offset, end);
+        this.offset = end + 1;
+        return value;
+    }
+
+    // Negative accumulation also represents INT64_MIN without overflowing Emerald.
+    public Int number(Int value) {
+        String token = this.text(value.toString());
+        if (!this.reading || !this.valid()) { return value; }
+        Int index = 0;
+        Bool negative = token.startsWith("-");
+        if (negative) { index = 1; }
+        if (index == token.length()) { this.reject("empty integer"); return 0; }
+        Int result = 0;
+        while (index < token.length()) {
+            Int digit = this.digit(token.substring(index, index + 1));
+            if (digit < 0 || result < -922337203685477580 || (result == -922337203685477580 && digit > 7)) {
+                if (negative && result == -922337203685477580 && digit == 8 && index + 1 == token.length()) {
+                    return -9223372036854775807 - 1;
+                }
+                this.reject("invalid or overflowing integer"); return 0;
+            }
+            result = result * 10 - digit;
+            index = index + 1;
+        }
+        if (negative) { return result; }
+        return -result;
+    }
+
+    public Bool flag(Bool value) {
+        String token = "0";
+        if (value) { token = "1"; }
+        token = this.text(token);
+        if (token != "0" && token != "1") { this.reject("invalid boolean"); }
+        return token == "1";
+    }
+
+    public Int count(Int value, Int limit) {
+        Int result = this.number(value);
+        if (!this.valid()) { return 0; }
+        if (result < 0 || result > limit) { this.reject("count budget exceeded"); return 0; }
+        this.entries = this.entries + result;
+        if (this.entries > 262144) { this.reject("total table budget exceeded"); return 0; }
+        return result;
+    }
+}

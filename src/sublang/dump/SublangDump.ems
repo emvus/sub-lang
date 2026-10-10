@@ -1,0 +1,51 @@
+namespace sublang::dump;
+
+use sublang::ir::SublangModule;
+use sublang::model::SublangSourceSpan;
+use sublang::dump::SublangDumpFunction;
+use sublang::dump::SublangDumpTables;
+
+// Entry point of the deterministic text dump. Tables are printed in id order and the dump
+// contains no host addresses, timestamps or file names of its own, so equal modules always
+// render to equal text. Float constants appear as their raw 64-bit pattern, which keeps -0.0
+// and NaN payloads visible exactly.
+public class SublangDump {
+    public static String render(SublangModule module) {
+        String text = SublangDump.headerLine(module) + SublangDump.sourceLines(module) + SublangDump.spanLines(module);
+        text = text + SublangDumpTables.render(module);
+        Int functionId = 1;
+        while (functionId <= module.functionCount()) {
+            text = text + SublangDumpFunction.functionText(module, functionId);
+            functionId = functionId + 1;
+        }
+        return text;
+    }
+
+    public static String headerLine(SublangModule module) {
+        return "module " + module.name() + " schema=" + module.schema().toString() + " stage=" + module.stage() + " revision=" + module.revision().toString() + " entry=" + module.entryFunction().toString() + "\n";
+    }
+
+    public static String sourceLines(SublangModule module) {
+        String text = "";
+        Int index = 1;
+        while (index <= module.sourceCount()) {
+            text = text + "source " + index.toString() + " " + module.sourceNameAt(index) + "\n";
+            index = index + 1;
+        }
+        return text;
+    }
+
+    public static String spanLines(SublangModule module) {
+        String text = "";
+        Int index = 1;
+        while (index <= module.spanCount()) {
+            text = text + SublangDump.spanLine(module.spanAt(index));
+            index = index + 1;
+        }
+        return text;
+    }
+
+    public static String spanLine(SublangSourceSpan spanEntry) {
+        return "span " + spanEntry.id().toString() + " source=" + spanEntry.source().toString() + " line=" + spanEntry.line().toString() + " column=" + spanEntry.column().toString() + " origin=" + spanEntry.origin() + "\n";
+    }
+}

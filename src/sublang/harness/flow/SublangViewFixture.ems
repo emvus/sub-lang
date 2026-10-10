@@ -1,0 +1,33 @@
+namespace sublang::harness::flow;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+public class SublangViewFixture {
+    public static SublangModule graph(Int invalid) {
+        SublangBuilder builder = SublangBuilder("borrowed-graph");
+        Int span = builder.syntheticSpan("borrowed-graph");
+        Int type = builder.classType("Node", span);
+        Int ref = builder.refType(type);
+        Int x = builder.classField(type, "x", builder.intType(), true, span);
+        Int next = builder.classField(type, "next", ref, true, span);
+        Int main = builder.beginFunction("entry", builder.intType(), 0, span);
+        builder.module().setEntry(main); builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int child = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(child, x, builder.ops().constInt(42, span), span);
+        builder.ops().fieldClear(child, next, span);
+        Int parent = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(parent, x, builder.ops().constInt(0, span), span);
+        builder.ops().fieldInitOwned(parent, next, child, span);
+        Int view = builder.ops().fieldBorrow(parent, next, span);
+        if (invalid == 1) { builder.ops().fieldClear(parent, next, span); }
+        if (invalid == 2) { builder.ops().fieldWrite(view, x, builder.ops().constInt(7, span), span); }
+        if (invalid == 3) { builder.ops().scopeEnd(scope, span); }
+        if (invalid == 4) { builder.ops().fieldTake(view, next, scope, span); }
+        Int answer = builder.ops().fieldRead(view, x, span);
+        if (invalid != 3) { builder.ops().scopeEnd(scope, span); }
+        builder.ops().returnValue(answer, span);
+        return builder.module();
+    }
+}

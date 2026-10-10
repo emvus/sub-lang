@@ -1,0 +1,29 @@
+namespace sublang::hyperalloc;
+
+use sublang::ir::SublangModule;
+use sublang::hyperalloc::SublangFunctionMemoryPlan;
+
+// Compilation-local plan. The compiler constructs this after validating its frozen
+// input, then uses the same decisions for explanation and physical LLVM placement.
+public class SublangMemoryPlan {
+    private List<SublangFunctionMemoryPlan> functions;
+    private String report;
+    private Bool active;
+
+    public SublangMemoryPlan(SublangModule module, Bool enabled) {
+        this.functions = List();
+        this.report = "";
+        this.active = enabled;
+        Int id = 1;
+        while (id <= module.functionCount()) {
+            SublangFunctionMemoryPlan plan = SublangFunctionMemoryPlan(module, module.functionAt(id), enabled);
+            this.functions.add(plan);
+            this.report = this.report + plan.explain();
+            id = id + 1;
+        }
+    }
+
+    public SublangFunctionMemoryPlan functionAt(Int id) { return this.functions.get(id - 1); }
+    public String explain() { return this.report; }
+    public Bool enabled() { return this.active; }
+}

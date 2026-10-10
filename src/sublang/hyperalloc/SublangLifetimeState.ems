@@ -1,0 +1,68 @@
+namespace sublang::hyperalloc;
+
+// Forward abstract state. Scope stacks must match at joins; references are definitely
+// live only on all predecessors. Field states: 0 uninitialized, 1 initialized, 2 mixed.
+public class SublangLifetimeState {
+    private List<Int> scopes;
+    private List<Bool> live;
+    private List<Int> fields;
+
+    public SublangLifetimeState(Int values, Int pairs) {
+        this.scopes = List();
+        this.live = List();
+        this.fields = List();
+        Int index = 0;
+        while (index <= values) { this.live.add(false); index = index + 1; }
+        index = 0;
+        while (index < pairs) { this.fields.add(0); index = index + 1; }
+    }
+
+    public SublangLifetimeState copy() {
+        SublangLifetimeState result = SublangLifetimeState(this.live.length() - 1, this.fields.length());
+        Int index = 0;
+        while (index < this.scopes.length()) { result.scopes.add(this.scopes.get(index)); index = index + 1; }
+        index = 0;
+        while (index < this.live.length()) { result.live.set(index, this.live.get(index)); index = index + 1; }
+        index = 0;
+        while (index < this.fields.length()) { result.fields.set(index, this.fields.get(index)); index = index + 1; }
+        return result;
+    }
+
+    public Int merge(SublangLifetimeState incoming) {
+        if (this.scopes.length() != incoming.scopes.length()) { return -1; }
+        Int index = 0;
+        while (index < this.scopes.length()) {
+            if (this.scopes.get(index) != incoming.scopes.get(index)) { return -1; }
+            index = index + 1;
+        }
+        Int changed = 0;
+        index = 0;
+        while (index < this.live.length()) {
+            if (this.live.get(index) && !incoming.live.get(index)) {
+                this.live.set(index, false); changed = 1;
+            }
+            index = index + 1;
+        }
+        index = 0;
+        while (index < this.fields.length()) {
+            if (this.fields.get(index) != incoming.fields.get(index) && this.fields.get(index) != 2) {
+                this.fields.set(index, 2); changed = 1;
+            }
+            index = index + 1;
+        }
+        return changed;
+    }
+
+    public Bool containsScope(Int scope) { return this.scopes.contains(scope); }
+    public Bool empty() { return this.scopes.length() == 0; }
+    public Int top() {
+        if (this.empty()) { return 0; }
+        return this.scopes.get(this.scopes.length() - 1);
+    }
+    public Void begin(Int scope) { this.scopes.add(scope); }
+    public Void end() { this.scopes.removeAt(this.scopes.length() - 1); }
+    public Bool isLive(Int value) { return this.live.get(value); }
+    public Void setLive(Int value, Bool live) { this.live.set(value, live); }
+    public Int field(Int pair) { return this.fields.get(pair); }
+    public Void setField(Int pair, Int state) { this.fields.set(pair, state); }
+}

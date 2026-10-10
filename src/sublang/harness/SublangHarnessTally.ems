@@ -1,0 +1,28 @@
+namespace sublang::harness;
+
+// Counts the outcome of the harness cases. Each case returns whether it passed, so the entry
+// point can stay a flat list of cases in the order the report prints them.
+public class SublangHarnessTally {
+    private Int totalCount;
+    private Int failureCount;
+
+    public SublangHarnessTally() {
+        this.totalCount = 0;
+        this.failureCount = 0;
+    }
+
+    public Void record(Bool passed) {
+        this.totalCount = this.totalCount + 1;
+        if (!passed) {
+            this.failureCount = this.failureCount + 1;
+        }
+    }
+
+    public Int total() {
+        return this.totalCount;
+    }
+
+    public Int failures() {
+        return this.failureCount;
+    }
+}

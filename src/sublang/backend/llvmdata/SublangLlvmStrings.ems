@@ -1,0 +1,82 @@
+namespace sublang::backend::llvmdata;
+
+use Std::Text::StringBuilder;
+use sublang::ir::SublangModule;
+use sublang::body::SublangOperation;
+use sublang::backend::llvm::SublangLlvmContext;
+
+// Immutable byte strings are values referring to program-lifetime data. Their
+// representation never enters the allocator or the ownership graph.
+public class SublangLlvmStrings {
+    public static String definitions(SublangModule module) {
+        StringBuilder text = StringBuilder();
+        text.append("declare i32 @memcmp(ptr, ptr, i64)\n");
+        Int function = 1;
+        while (function <= module.functionCount()) {
+            Int block = 1;
+            while (block <= module.functionAt(function).blockCount()) {
+                Int index = 0;
+                while (index < module.functionAt(function).blockAt(block).operationCount()) {
+                    SublangOperation operation = module.functionAt(function).blockAt(block).operationAt(index);
+                    if (operation.opcode() == "const.string") { text.append(SublangLlvmStrings.global(operation)); }
+                    index = index + 1;
+                }
+                block = block + 1;
+            }
+            function = function + 1;
+        }
+        return text.toString();
+    }
+
+    private static String global(SublangOperation operation) {
+        StringBuilder bytes = StringBuilder();
+        String value = operation.constText();
+        Int index = 0;
+        while (index < value.length()) {
+            Int byte = value.charAt(index).code();
+            if (byte < 0) { byte = byte + 256; }
+            bytes.append("\\");
+            bytes.append("0123456789ABCDEF".substring(byte / 16, byte / 16 + 1));
+            bytes.append("0123456789ABCDEF".substring(byte % 16, byte % 16 + 1));
+            index = index + 1;
+        }
+        return "@sublang.str." + operation.id().toString() + " = private unnamed_addr constant [" + value.length().toString() + " x i8] c\"" + bytes.toString() + "\", align 1\n";
+    }
+
+    public static String emit(SublangLlvmContext context, SublangOperation operation) {
+        String opcode = operation.opcode();
+        if (opcode == "const.string") {
+            return context.store(operation, "{ ptr @sublang.str." + operation.id().toString() + ", i64 " + operation.constText().length().toString() + " }");
+        }
+        String text = context.loadInputs(operation);
+        String tag = "str" + operation.id().toString();
+        text = text + "  %" + tag + "len = extractvalue { ptr, i64 } " + context.input(operation, 0) + ", 1\n";
+        if (opcode == "string.length") { return text + context.store(operation, "%" + tag + "len"); }
+        text = text + "  %" + tag + "ptr = extractvalue { ptr, i64 } " + context.input(operation, 0) + ", 0\n";
+        if (opcode == "string.byte") { return text + SublangLlvmStrings.byteAt(context, operation, tag); }
+        return text + SublangLlvmStrings.equal(context, operation, tag);
+    }
+
+    private static String byteAt(SublangLlvmContext context, SublangOperation operation, String tag) {
+        String text = "  %" + tag + "valid = icmp ult i64 " + context.input(operation, 1) + ", %" + tag + "len\n";
+        text = text + "  br i1 %" + tag + "valid, label %" + tag + "ok, label %" + tag + "bad\n";
+        text = text + tag + "bad:\n  call void @abort()\n  unreachable\n" + tag + "ok:\n";
+        text = text + "  %" + tag + "address = getelementptr i8, ptr %" + tag + "ptr, i64 " + context.input(operation, 1) + "\n";
+        text = text + "  %" + tag + "byte = load i8, ptr %" + tag + "address, align 1\n";
+        return text + "  " + context.result(operation) + " = zext i8 %" + tag + "byte to i64\n" + context.store(operation, context.result(operation));
+    }
+
+    private static String equal(SublangLlvmContext context, SublangOperation operation, String tag) {
+        String text = "  %" + tag + "otherlen = extractvalue { ptr, i64 } " + context.input(operation, 1) + ", 1\n";
+        text = text + "  %" + tag + "samelen = icmp eq i64 %" + tag + "len, %" + tag + "otherlen\n";
+        text = text + "  %" + tag + "empty = icmp eq i64 %" + tag + "len, 0\n  br i1 %" + tag + "samelen, label %" + tag + "lengthok, label %" + tag + "done\n";
+        text = text + tag + "lengthok:\n  br i1 %" + tag + "empty, label %" + tag + "done, label %" + tag + "compare\n";
+        text = text + tag + "compare:\n  %" + tag + "otherptr = extractvalue { ptr, i64 } " + context.input(operation, 1) + ", 0\n";
+        text = text + "  %" + tag + "cmp = call i32 @memcmp(ptr %" + tag + "ptr, ptr %" + tag + "otherptr, i64 %" + tag + "len)\n";
+        text = text + "  %" + tag + "same = icmp eq i32 %" + tag + "cmp, 0\n  br label %" + tag + "done\n";
+        text = text + tag + "done:\n  " + context.result(operation) + " = phi i1 [ false, %" + tag + "pre ], [ true, %" + tag + "lengthok ], [ %" + tag + "same, %" + tag + "compare ]\n";
+        // A named predecessor is needed even when the operation follows another
+        // string operation's split block.
+        return "  br label %" + tag + "pre\n" + tag + "pre:\n" + text + context.store(operation, context.result(operation));
+    }
+}

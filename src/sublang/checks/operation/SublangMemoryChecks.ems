@@ -1,0 +1,312 @@
+namespace sublang::checks::operation;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+use sublang::model::SublangField;
+use sublang::model::SublangType;
+use sublang::vocabulary::SublangVocabulary;
+
+// Records are value types. Classes are objects that are reached through an owned reference,
+// and field access always goes through such a reference, so the receiver's type and access
+// mode are checked on every field operation.
+public class SublangMemoryChecks {
+    private SublangReport findings;
+    private SublangModule module;
+
+    public SublangMemoryChecks(SublangReport report, SublangModule source) {
+        this.findings = report;
+        this.module = source;
+    }
+
+    public Bool handles(String opcode) {
+        if (opcode == "field.borrow") { return true; }
+        return opcode == "record.make" || opcode == "record.get" || opcode == "record.with" || opcode == "class.new" || opcode == "field.init" || opcode == "field.clear" || opcode == "field.has" || opcode == "field.take" || opcode == "field.read" || opcode == "field.write";
+    }
+
+    public Void check(SublangFunction fnEntry, SublangOperation op) {
+        String opcode = op.opcode();
+        if (opcode == "field.borrow") { this.checkFieldBorrow(fnEntry, op); return; }
+        if (opcode == "record.make") {
+            this.checkRecordMake(fnEntry, op);
+            return;
+        }
+        if (opcode == "record.get") {
+            this.checkRecordGet(fnEntry, op);
+            return;
+        }
+        if (opcode == "record.with") {
+            this.checkRecordWith(fnEntry, op);
+            return;
+        }
+        if (opcode == "class.new") {
+            this.checkClassNew(fnEntry, op);
+            return;
+        }
+        if (opcode == "field.init") {
+            this.checkFieldInit(fnEntry, op);
+            return;
+        }
+        if (opcode == "field.clear" || opcode == "field.has") { this.checkOptionalField(fnEntry, op); return; }
+        if (opcode == "field.take") { this.checkFieldTake(fnEntry, op); return; }
+        if (opcode == "field.read") {
+            this.checkFieldRead(fnEntry, op);
+            return;
+        }
+        this.checkFieldWrite(fnEntry, op);
+    }
+
+    // Reports a wrong operand count and tells the caller whether the operands can be inspected.
+    private Bool expectOperands(SublangOperation op, Int count, String message) {
+        if (op.operandCount() == count) {
+            return true;
+        }
+        this.findings.report("SUBLANG-T001", message, op.span());
+        return false;
+    }
+
+    private Bool hasKnownField(SublangOperation op) {
+        if (this.module.types().hasField(op.ref())) {
+            return true;
+        }
+        this.findings.report("SUBLANG-S002", op.opcode() + " uses an unknown field", op.span());
+        return false;
+    }
+
+    private Bool hasRecordOwner(SublangOperation op, SublangField fieldEntry) {
+        if (this.module.types().isKind(fieldEntry.owner(), "Record")) {
+            return true;
+        }
+        this.findings.report("SUBLANG-T003", op.opcode() + " needs a field of a record type", op.span());
+        return false;
+    }
+
+    private Void checkRecordMake(SublangFunction fnEntry, SublangOperation op) {
+        Int recordId = op.ref();
+        if (!this.module.types().isKind(recordId, "Record")) {
+            this.findings.report("SUBLANG-T003", "record.make needs a record type", op.span());
+            return;
+        }
+        SublangType recordEntry = this.module.types().typeAt(recordId);
+        Bool countMatches = this.checkRecordFieldCount(op, recordEntry);
+        if (countMatches) {
+            this.checkRecordFields(fnEntry, op, recordEntry);
+        }
+        if (!op.hasResult() || op.resultType() != recordId) {
+            this.findings.report("SUBLANG-T001", "record.make must produce " + recordEntry.name(), op.span());
+        }
+    }
+
+    private Bool checkRecordFieldCount(SublangOperation op, SublangType recordEntry) {
+        if (op.operandCount() == recordEntry.fieldCount()) {
+            return true;
+        }
+        this.findings.report("SUBLANG-T001", "record.make passes " + op.operandCount().toString() + " values for " + recordEntry.fieldCount().toString() + " fields of " + recordEntry.name(), op.span());
+        return false;
+    }
+
+    private Void checkRecordFields(SublangFunction fnEntry, SublangOperation op, SublangType recordEntry) {
+        Int index = 0;
+        while (index < op.operandCount()) {
+            this.checkRecordField(fnEntry, op, recordEntry.fieldAt(index), index);
+            index = index + 1;
+        }
+    }
+
+    private Void checkRecordField(SublangFunction fnEntry, SublangOperation op, Int fieldId, Int index) {
+        if (!this.module.types().hasField(fieldId)) {
+            this.findings.report("SUBLANG-S002", "record.make refers to unknown field id " + fieldId.toString(), op.span());
+            return;
+        }
+        SublangField fieldEntry = this.module.types().fieldAt(fieldId);
+        if (fnEntry.valueTypeOrZero(op.operandAt(index)) != fieldEntry.typeId()) {
+            this.findings.report("SUBLANG-T001", "record.make operand " + index.toString() + " has the wrong type for field " + fieldEntry.name(), op.span());
+        }
+    }
+
+    private Void checkRecordGet(SublangFunction fnEntry, SublangOperation op) {
+        if (!this.hasKnownField(op)) {
+            return;
+        }
+        SublangField fieldEntry = this.module.types().fieldAt(op.ref());
+        if (!this.hasRecordOwner(op, fieldEntry)) {
+            return;
+        }
+        Bool hasOperand = this.expectOperands(op, 1, "record.get expects 1 operand");
+        if (hasOperand && fnEntry.valueTypeOrZero(op.operandAt(0)) != fieldEntry.owner()) {
+            this.findings.report("SUBLANG-T003", "record.get operand is not of type " + this.module.types().typeNameOf(fieldEntry.owner()), op.span());
+        }
+        if (!op.hasResult() || op.resultType() != fieldEntry.typeId()) {
+            this.findings.report("SUBLANG-T001", "record.get must produce the field type of " + fieldEntry.name(), op.span());
+        }
+    }
+
+    private Void checkRecordWith(SublangFunction fnEntry, SublangOperation op) {
+        if (!this.hasKnownField(op)) {
+            return;
+        }
+        SublangField fieldEntry = this.module.types().fieldAt(op.ref());
+        if (!this.hasRecordOwner(op, fieldEntry)) {
+            return;
+        }
+        Bool hasTwoOperands = this.expectOperands(op, 2, "record.with expects 2 operands");
+        if (hasTwoOperands) {
+            this.checkRecordWithOperands(fnEntry, op, fieldEntry);
+        }
+        if (!op.hasResult() || op.resultType() != fieldEntry.owner()) {
+            this.findings.report("SUBLANG-T001", "record.with must produce " + this.module.types().typeNameOf(fieldEntry.owner()), op.span());
+        }
+    }
+
+    private Void checkRecordWithOperands(SublangFunction fnEntry, SublangOperation op, SublangField fieldEntry) {
+        if (fnEntry.valueTypeOrZero(op.operandAt(0)) != fieldEntry.owner()) {
+            this.findings.report("SUBLANG-T003", "record.with operand 0 must be of type " + this.module.types().typeNameOf(fieldEntry.owner()), op.span());
+        }
+        if (fnEntry.valueTypeOrZero(op.operandAt(1)) != fieldEntry.typeId()) {
+            this.findings.report("SUBLANG-T001", "record.with replacement has the wrong type for field " + fieldEntry.name(), op.span());
+        }
+    }
+
+    // A class instance is created as an owned reference, and it is only valid inside a scope
+    // that has been begun. Without both facts the release point of the object is unknown.
+    private Void checkClassNew(SublangFunction fnEntry, SublangOperation op) {
+        Int classId = op.ref();
+        if (!this.module.types().isKind(classId, "Class")) {
+            this.findings.report("SUBLANG-T003", "class.new needs a class type", op.span());
+            return;
+        }
+        this.expectOperands(op, 0, "class.new takes no operands");
+        Int index = 0;
+        while (index < this.module.types().typeAt(classId).fieldCount()) {
+            Int field = this.module.types().typeAt(classId).fieldAt(index);
+            if (this.module.types().isKind(this.module.types().fieldAt(field).typeId(), "Bond")) { this.findings.report("SUBLANG-T003", "classes with shared edges require bond.new", op.span()); }
+            index = index + 1;
+        }
+        if (fnEntry.scopeBeginCount(op.scope()) == 0) {
+            this.findings.report("SUBLANG-S002", "class.new uses scope " + op.scope().toString() + " that is never begun", op.span());
+        }
+        if (op.resultOwnership() != "owned") {
+            this.findings.report("SUBLANG-T004", "class.new must produce an owned reference, got ownership '" + op.resultOwnership() + "'", op.span());
+        }
+        Int refId = this.module.types().refTypeOrZero(classId);
+        if (refId == 0 || !op.hasResult() || op.resultType() != refId) {
+            this.findings.report("SUBLANG-T001", "class.new must produce Ref<" + this.module.types().typeNameOf(classId) + ">", op.span());
+        }
+    }
+
+    private Void checkFieldInit(SublangFunction fnEntry, SublangOperation op) {
+        if (!this.hasKnownField(op)) {
+            return;
+        }
+        SublangField fieldEntry = this.module.types().fieldAt(op.ref());
+        if (!this.expectOperands(op, 2, "field.init expects 2 operands")) {
+            return;
+        }
+        this.checkFieldReceiver(fnEntry, op, fieldEntry, "init");
+        this.checkOwnedFieldMode(op, fieldEntry);
+        if (fnEntry.valueTypeOrZero(op.operandAt(1)) != fieldEntry.typeId()) {
+            this.findings.report("SUBLANG-T001", "field.init value has the wrong type for field " + fieldEntry.name(), op.span());
+        }
+    }
+
+    private Void checkOptionalField(SublangFunction fnEntry, SublangOperation op) {
+        if (!this.hasKnownField(op)) { return; }
+        SublangField field = this.module.types().fieldAt(op.ref());
+        if (!this.expectOperands(op, 1, "field.clear/has expects one receiver")) { return; }
+        String mode = "borrow_read";
+        if (op.opcode() == "field.clear") { mode = "borrow_write"; }
+        this.checkFieldReceiver(fnEntry, op, field, mode);
+        if (!this.module.types().isKind(field.typeId(), "Ref")) { this.findings.report("SUBLANG-T002", "field.clear/has needs an owned reference field", op.span()); }
+        if (op.opcode() == "field.clear" && !field.isMutable()) { this.findings.report("SUBLANG-T002", "field.clear needs a mutable field", op.span()); }
+        if (op.opcode() == "field.has" && (!op.hasResult() || op.resultType() != this.module.types().boolType())) {
+            this.findings.report("SUBLANG-T001", "field.has must produce Bool", op.span());
+        }
+    }
+
+    private Void checkFieldTake(SublangFunction fnEntry, SublangOperation op) {
+        if (!this.hasKnownField(op)) { return; }
+        SublangField field = this.module.types().fieldAt(op.ref());
+        if (!this.expectOperands(op, 1, "field.take expects one receiver")) { return; }
+        this.checkFieldReceiver(fnEntry, op, field, "borrow_write");
+        if (!field.isMutable() || !this.module.types().isKind(field.typeId(), "Ref")) {
+            this.findings.report("SUBLANG-T002", "field.take needs a mutable owned reference field", op.span());
+        }
+        if (!op.hasResult() || op.resultType() != field.typeId() || op.resultOwnership() != "owned") {
+            this.findings.report("SUBLANG-T004", "field.take must produce an owned reference of the field type", op.span());
+        }
+        if (fnEntry.scopeBeginCount(op.scope()) != 1) {
+            this.findings.report("SUBLANG-S002", "field.take needs a declared destination scope", op.span());
+        }
+    }
+
+    private Void checkFieldBorrow(SublangFunction fnEntry, SublangOperation op) {
+        if (!this.hasKnownField(op)) { return; }
+        SublangField field = this.module.types().fieldAt(op.ref());
+        if (!this.expectOperands(op, 1, "field.borrow expects one receiver")) { return; }
+        this.checkFieldReceiver(fnEntry, op, field, "borrow_read");
+        if (!this.module.types().isKind(field.typeId(), "Ref")) {
+            this.findings.report("SUBLANG-T002", "field.borrow needs an owned reference field", op.span());
+        }
+        if (!op.hasResult() || op.resultType() != field.typeId() || op.resultOwnership() != "borrow_read" || op.scope() != 0) {
+            this.findings.report("SUBLANG-T004", "field.borrow produces a read-only view without an owning scope", op.span());
+        }
+    }
+
+    private Void checkOwnedFieldMode(SublangOperation op, SublangField field) {
+        if (this.module.types().isKind(field.typeId(), "Bond")) { this.findings.report("SUBLANG-T004", "shared edges require bond.link/clear", op.span()); }
+        if (this.module.types().isKind(field.typeId(), "Ref") && op.modeAt(1) != "owned") {
+            this.findings.report("SUBLANG-T004", "reference field assignment must consume an owned child", op.span());
+        }
+    }
+
+    private Void checkFieldRead(SublangFunction fnEntry, SublangOperation op) {
+        if (!this.hasKnownField(op)) {
+            return;
+        }
+        SublangField fieldEntry = this.module.types().fieldAt(op.ref());
+        if (!this.expectOperands(op, 1, "field.read expects 1 operand")) {
+            return;
+        }
+        this.checkFieldReceiver(fnEntry, op, fieldEntry, "borrow_read");
+        if (!op.hasResult() || op.resultType() != fieldEntry.typeId()) {
+            this.findings.report("SUBLANG-T001", "field.read must produce the field type of " + fieldEntry.name(), op.span());
+        }
+        if (!SublangVocabulary.isPrimitiveKind(this.module.types().kindOf(fieldEntry.typeId())) && !this.module.types().isKind(fieldEntry.typeId(), "String")) {
+            this.findings.report("SUBLANG-U001", "field.read supports primitive fields only in Sublang v0.1", op.span());
+        }
+    }
+
+    private Void checkFieldWrite(SublangFunction fnEntry, SublangOperation op) {
+        if (!this.hasKnownField(op)) {
+            return;
+        }
+        SublangField fieldEntry = this.module.types().fieldAt(op.ref());
+        if (!this.expectOperands(op, 2, "field.write expects 2 operands")) {
+            return;
+        }
+        this.checkFieldReceiver(fnEntry, op, fieldEntry, "borrow_write");
+        this.checkOwnedFieldMode(op, fieldEntry);
+        if (!fieldEntry.isMutable()) {
+            this.findings.report("SUBLANG-T002", "field " + fieldEntry.name() + " is not mutable", op.span());
+        }
+        if (fnEntry.valueTypeOrZero(op.operandAt(1)) != fieldEntry.typeId()) {
+            this.findings.report("SUBLANG-T001", "field.write value has the wrong type for field " + fieldEntry.name(), op.span());
+        }
+        if (!SublangVocabulary.isPrimitiveKind(this.module.types().kindOf(fieldEntry.typeId())) && !this.module.types().isKind(fieldEntry.typeId(), "Ref") && !this.module.types().isKind(fieldEntry.typeId(), "String")) {
+            this.findings.report("SUBLANG-U001", "field.write supports primitive fields only in Sublang v0.1", op.span());
+        }
+    }
+
+    // Every field operation receives the owning class through a reference with one access mode:
+    // init for construction, borrow_read for reads and borrow_write for writes.
+    private Void checkFieldReceiver(SublangFunction fnEntry, SublangOperation op, SublangField fieldEntry, String requiredMode) {
+        Int refId = this.module.types().refTypeOrZero(fieldEntry.owner());
+        if (refId == 0 || fnEntry.valueTypeOrZero(op.operandAt(0)) != refId) {
+            this.findings.report("SUBLANG-T003", op.opcode() + " receiver must be Ref<" + this.module.types().typeNameOf(fieldEntry.owner()) + ">", op.span());
+        }
+        if (op.modeAt(0) != requiredMode) {
+            this.findings.report("SUBLANG-T002", op.opcode() + " receiver must use passing mode " + requiredMode, op.span());
+        }
+    }
+}

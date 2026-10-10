@@ -1,0 +1,77 @@
+namespace sublang::harness::flow;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+use sublang::harness::flow::SublangShardFixture;
+
+public class SublangParityFixtures {
+    private static List<Int> one(Int value) {
+        List<Int> values = List(); values.add(value); return values;
+    }
+
+    private static Int node(SublangBuilder builder, Int type, Int x, Int next, Int scope, Int value, Int span) {
+        Int object = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(object, x, value, span);
+        builder.ops().fieldClear(object, next, span);
+        return object;
+    }
+
+    public static SublangModule shard(Bool churn) {
+        return SublangShardFixture().build(churn);
+    }
+
+    public static SublangModule folded() {
+        SublangBuilder builder = SublangBuilder("folded-fields");
+        Int span = builder.syntheticSpan("folded-fields");
+        Int type = builder.classType("Mixed", span);
+        Int x = builder.classField(type, "x", builder.intType(), true, span);
+        Int flag = builder.classField(type, "flag", builder.boolType(), true, span);
+        Int real = builder.classField(type, "real", builder.floatType(), true, span);
+        Int main = builder.beginFunction("main", builder.intType(), 0, span); builder.module().setEntry(main); builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int object = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(object, x, builder.ops().constInt(40, span), span);
+        builder.ops().fieldInit(object, flag, builder.ops().constBool(true, span), span);
+        builder.ops().fieldInit(object, real, builder.ops().constFloatBits(4611686018427387904, span), span);
+        Int updated = builder.ops().intBinary("int.add", builder.ops().fieldRead(object, x, span), builder.ops().constInt(2, span), "wrap", 0, span);
+        builder.ops().fieldWrite(object, x, updated, span);
+        Int read = builder.ops().fieldRead(object, x, span);
+        Int yes = builder.newBlock(); Int no = builder.newBlock(); List<Int> empty = List();
+        Int result = builder.ops().compare("oeq", builder.ops().fieldRead(object, real, span), builder.ops().constFloatBits(4611686018427387904, span), span);
+        builder.ops().condBranch(result, yes, empty, no, empty, span);
+        builder.enterBlock(yes);
+        builder.ops().scopeEnd(scope, span); builder.ops().returnValue(read, span);
+        builder.enterBlock(no);
+        builder.ops().scopeEnd(scope, span); builder.ops().returnValue(builder.ops().constInt(-1, span), span);
+        return builder.module();
+    }
+
+    public static SublangModule pool() {
+        SublangBuilder builder = SublangBuilder("pool-borrow");
+        Int span = builder.syntheticSpan("pool-borrow");
+        Int type = builder.classType("Counter", span);
+        Int x = builder.classField(type, "x", builder.intType(), true, span);
+        Int read = builder.beginFunction("read", builder.intType(), 0, span);
+        Int parameter = builder.addParam("p", builder.refType(type), "borrow_read", false);
+        builder.beginBlock();
+        Int readValue = builder.ops().fieldRead(parameter, x, span);
+        Int unchanged = builder.ops().intBinary("int.add", readValue, builder.ops().constInt(0, span), "wrap", 0, span);
+        builder.ops().returnValue(unchanged, span);
+        Int main = builder.beginFunction("main", builder.intType(), 0, span); builder.module().setEntry(main); builder.beginBlock();
+        Int header = builder.newBlock(); Int body = builder.newBlock(); Int done = builder.newBlock();
+        Int zero = builder.ops().constInt(0, span);
+        builder.ops().branchTo(header, SublangParityFixtures.one(zero), span);
+        builder.enterBlock(header); Int index = builder.addBlockParam(builder.intType()); List<Int> empty = List();
+        builder.ops().condBranch(builder.ops().compare("lt", index, builder.ops().constInt(100, span), span), body, empty, done, empty, span);
+        builder.enterBlock(body); Int scope = builder.ops().scopeBegin(span);
+        Int object = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(object, x, index, span);
+        List<String> modes = List(); modes.add("borrow_read");
+        Int observed = builder.ops().callDirect(read, SublangParityFixtures.one(object), modes, span);
+        builder.ops().scopeEnd(scope, span);
+        Int increment = builder.ops().intBinary("int.add", observed, builder.ops().constInt(1, span), "wrap", 0, span);
+        builder.ops().branchTo(header, SublangParityFixtures.one(increment), span);
+        builder.enterBlock(done); builder.ops().returnValue(index, span);
+        return builder.module();
+    }
+}

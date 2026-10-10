@@ -1,0 +1,39 @@
+namespace sublang::checks;
+
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+use sublang::semantics::SublangEffectSummary;
+use sublang::semantics::SublangEffectFact;
+use sublang::proof::SublangProofReference;
+
+// Validates references only. Establishing an effect property needs a separate analysis.
+public class SublangEvidenceChecks {
+    private SublangReport findings;
+    private SublangModule module;
+
+    public SublangEvidenceChecks(SublangReport findings, SublangModule module) {
+        this.findings = findings;
+        this.module = module;
+    }
+
+    public Void checkEffect(SublangEffectSummary summary, SublangEffectFact fact) {
+        SublangProofReference proof = fact.proofReference();
+        if (fact.provenance() == "proven" && !this.module.aliases().proofWellFormed(proof)) {
+            this.findings.report("SUBLANG-E003", "effect evidence requires analysis id, current revision and valid dependencies", summary.span());
+        }
+        Int index = 0;
+        while (index < fact.locationCount()) {
+            this.checkLocation(summary, fact, fact.locationAt(index));
+            index = index + 1;
+        }
+    }
+
+    private Void checkLocation(SublangEffectSummary summary, SublangEffectFact fact, Int location) {
+        if (!this.module.aliases().hasLocation(location)) {
+            this.findings.report("SUBLANG-E006", "effect fact refers to an unknown logical location", summary.span());
+        }
+        if (fact.provenance() == "proven" && !fact.proofReference().dependsOn(location)) {
+            this.findings.report("SUBLANG-E003", "effect evidence omits its referenced location dependency", summary.span());
+        }
+    }
+}

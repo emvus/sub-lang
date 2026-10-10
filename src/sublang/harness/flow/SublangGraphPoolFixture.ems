@@ -1,0 +1,64 @@
+namespace sublang::harness::flow;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+public class SublangGraphPoolFixture {
+    private SublangBuilder builder;
+    private Int span;
+    private Int type;
+    private Int x;
+    private Int next;
+    private Int scope;
+
+    public SublangGraphPoolFixture() {
+        this.builder = SublangBuilder("graph-pool");
+        this.span = this.builder.syntheticSpan("graph-pool");
+        this.type = this.builder.classType("Node", this.span);
+        this.x = this.builder.classField(this.type, "x", this.builder.intType(), true, this.span);
+        this.next = this.builder.classField(this.type, "next", this.builder.refType(this.type), true, this.span);
+        this.scope = 0;
+    }
+
+    private List<Int> pair(Int first, Int second) {
+        List<Int> result = List(); result.add(first); result.add(second); return result;
+    }
+
+    private Int iteration(Int sum) {
+        Int child = this.builder.ops().classNew(this.type, this.scope, this.span);
+        this.builder.ops().fieldInit(child, this.x, this.builder.ops().constInt(42, this.span), this.span);
+        this.builder.ops().fieldClear(child, this.next, this.span);
+        Int parent = this.builder.ops().classNew(this.type, this.scope, this.span);
+        this.builder.ops().fieldInit(parent, this.x, this.builder.ops().constInt(0, this.span), this.span);
+        this.builder.ops().fieldInitOwned(parent, this.next, child, this.span);
+        Int view = this.builder.ops().fieldBorrow(parent, this.next, this.span);
+        Int read = this.builder.ops().fieldRead(view, this.x, this.span);
+        return this.builder.ops().intBinary("int.add", sum, read, "wrap", 0, this.span);
+    }
+
+    public SublangModule build(Bool outerScope) {
+        Int entry = this.builder.beginFunction("entry", this.builder.intType(), 0, this.span);
+        this.builder.module().setEntry(entry); this.builder.beginBlock();
+        if (outerScope) { this.scope = this.builder.ops().scopeBegin(this.span); }
+        Int header = this.builder.newBlock(); Int body = this.builder.newBlock(); Int done = this.builder.newBlock();
+        Int zero = this.builder.ops().constInt(0, this.span);
+        this.builder.ops().branchTo(header, this.pair(zero, zero), this.span);
+        this.builder.enterBlock(header);
+        Int index = this.builder.addBlockParam(this.builder.intType());
+        Int sum = this.builder.addBlockParam(this.builder.intType());
+        List<Int> empty = List();
+        Int limit = this.builder.ops().constInt(50, this.span);
+        Int condition = this.builder.ops().compare("lt", index, limit, this.span);
+        this.builder.ops().condBranch(condition, body, empty, done, empty, this.span);
+        this.builder.enterBlock(body);
+        if (!outerScope) { this.scope = this.builder.ops().scopeBegin(this.span); }
+        Int nextSum = this.iteration(sum);
+        if (!outerScope) { this.builder.ops().scopeEnd(this.scope, this.span); }
+        Int increment = this.builder.ops().intBinary("int.add", index, this.builder.ops().constInt(1, this.span), "wrap", 0, this.span);
+        this.builder.ops().branchTo(header, this.pair(increment, nextSum), this.span);
+        this.builder.enterBlock(done);
+        if (outerScope) { this.builder.ops().scopeEnd(this.scope, this.span); }
+        this.builder.ops().returnValue(sum, this.span);
+        return this.builder.module();
+    }
+}

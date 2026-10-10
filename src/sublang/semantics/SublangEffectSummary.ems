@@ -1,0 +1,85 @@
+namespace sublang::semantics;
+
+use sublang::proof::SublangProofReference;
+
+// Effect summary: typed facts per effect area with per-fact provenance. A summary is
+// referenced by functions and operations. Its span names the declaration that
+// introduced it. Once frozen it refuses new facts.
+public class SublangEffectSummary {
+    private Int effectIdValue;
+    private String nameText;
+    private Int spanIdValue;
+    private Bool frozenFlag;
+    private Int refusalCounter;
+    private List<SublangEffectFact> factList;
+
+    public SublangEffectSummary(Int id, String name, Int span) {
+        this.effectIdValue = id;
+        this.nameText = name + "";
+        this.spanIdValue = span;
+        this.frozenFlag = false;
+        this.refusalCounter = 0;
+        this.factList = List();
+    }
+
+    public Int id() {
+        return this.effectIdValue;
+    }
+
+    public String name() {
+        return this.nameText;
+    }
+
+    public Int span() {
+        return this.spanIdValue;
+    }
+
+    public List<SublangEffectFact> facts() {
+        List<SublangEffectFact> copy = List();
+        Int index = 0;
+        while (index < this.factList.length()) {
+            copy.add(this.factList.get(index));
+            index = index + 1;
+        }
+        return copy;
+    }
+
+    public Int factCount() {
+        return this.factList.length();
+    }
+
+    public SublangEffectFact factAt(Int index) {
+        return this.factList.get(index);
+    }
+
+    public Int refusalCount() {
+        return this.refusalCounter;
+    }
+
+    public Void freeze() {
+        this.frozenFlag = true;
+    }
+
+    // Location ids share the alias/borrow/invalidation domain; inputs are copied by the fact.
+    public Void addLocatedFact(String area, String value, String provenance, String detail, SublangProofReference proof, List<Int> locations) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.factList.add(SublangEffectFact.located(area, value, provenance, detail, proof, locations));
+    }
+
+    public Void addFact(String area, String value, String provenance, String detail, String proof) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        SublangEffectFact fact = SublangEffectFact(area, value, provenance, detail, proof);
+        this.factList.add(fact);
+    }
+
+    public Void importFact(String area, String value, String provenance, String detail, String label, SublangProofReference proof, List<Int> locations) {
+        if (this.frozenFlag) { this.refusalCounter = this.refusalCounter + 1; return; }
+        this.factList.add(SublangEffectFact.imported(area, value, provenance, detail, label, proof, locations));
+    }
+}

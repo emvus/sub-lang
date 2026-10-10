@@ -1,0 +1,130 @@
+namespace sublang::model;
+
+// Type table entry. Records are values; classes are identity-carrying objects
+// reached only through Ref<Class>. A Ref points at its class via targetId.
+public class SublangType {
+    private Int typeIdValue;
+    private String kindName;
+    private String nameText;
+    private Int widthBits;
+    private Bool signedFlag;
+    private Int targetId;
+    private Bool nullableFlag;
+    private Bool frozenFlag;
+    private Int refusalCounter;
+    private Int spanIdValue;
+    private List<Int> fieldIds;
+
+    public SublangType(Int id, String kind, String name, Int width, Bool signed, Int target, Int span) {
+        this.typeIdValue = id;
+        this.kindName = kind + "";
+        this.nameText = name + "";
+        this.widthBits = width;
+        this.signedFlag = signed;
+        this.targetId = target;
+        this.nullableFlag = false;
+        this.frozenFlag = false;
+        this.refusalCounter = 0;
+        this.spanIdValue = span;
+        this.fieldIds = List();
+    }
+
+    public Int id() {
+        return this.typeIdValue;
+    }
+
+    public String kind() {
+        return this.kindName;
+    }
+
+    public String name() {
+        return this.nameText;
+    }
+
+    public Int width() {
+        return this.widthBits;
+    }
+
+    public Bool isSigned() {
+        return this.signedFlag;
+    }
+
+    public Int target() {
+        return this.targetId;
+    }
+
+    public Bool nullable() {
+        return this.nullableFlag;
+    }
+
+    public Void setNullable(Bool value) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.nullableFlag = value;
+    }
+
+    public Int span() {
+        return this.spanIdValue;
+    }
+
+    public List<Int> fields() {
+        List<Int> copy = List();
+        Int index = 0;
+        while (index < this.fieldIds.length()) {
+            copy.add(this.fieldIds.get(index));
+            index = index + 1;
+        }
+        return copy;
+    }
+
+    public Int fieldCount() {
+        return this.fieldIds.length();
+    }
+
+    public Void addField(Int fieldId) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.fieldIds.add(fieldId);
+    }
+
+    public Void freeze() {
+        this.frozenFlag = true;
+    }
+
+    public Int refusalCount() {
+        return this.refusalCounter;
+    }
+
+    public Int fieldAt(Int index) {
+        return this.fieldIds.get(index);
+    }
+
+    // Controlled draft repair; no mutable field-list alias escapes the descriptor.
+    public Void removeField(Int fieldId) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.fieldIds.remove(fieldId);
+    }
+
+    public Bool isClass() {
+        return this.kindName == "Class";
+    }
+
+    public Bool isRecord() {
+        return this.kindName == "Record";
+    }
+
+    public Bool isRef() {
+        return this.kindName == "Ref";
+    }
+
+    public Bool isNominal() {
+        return this.isClass() || this.isRecord();
+    }
+}

@@ -1,0 +1,154 @@
+namespace sublang::backend::llvmflow;
+
+use sublang::ir::SublangModule;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::hyperalloc::SublangFunctionMemoryPlan;
+use sublang::backend::llvm::SublangLlvmTypes;
+use sublang::hyperalloc::SublangRegionOrigins;
+
+// Sparse type-specific owner heads supply destruction types without enlarging the
+// 16-byte allocation header. A scope only gets heads actually used by its IR.
+public class SublangLlvmOwnership {
+    private SublangModule module;
+    private SublangFunction function;
+    private List<Int> heads;
+    private String poolSlots;
+    private Int shardOwner;
+    private List<Int> regions;
+    private SublangRegionOrigins origins;
+
+    public SublangLlvmOwnership(SublangModule module, SublangFunction function, SublangFunctionMemoryPlan plan) {
+        this.module = module;
+        this.function = function;
+        this.heads = List();
+        this.poolSlots = "";
+        this.shardOwner = plan.shardScope();
+        this.regions = List(); this.origins = SublangRegionOrigins(function);
+        Int index = 0;
+        while (index < function.paramCount()) {
+            if (function.paramAt(index).passing() == "owned" && module.types().isKind(function.paramAt(index).typeId(), "Ref")) { this.add(0, this.target(function.paramAt(index).typeId())); }
+            index = index + 1;
+        }
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                SublangOperation operation = function.blockAt(block).operationAt(index);
+                if (operation.opcode() == "scope.begin" && this.shardOwner > 0 && !this.regions.contains(operation.ref())) { this.regions.add(operation.ref()); }
+                if (operation.opcode() == "class.new" && plan.isFolded(operation.resultValue())) {
+                    this.scalarSlots(operation);
+                }
+                if (operation.opcode() == "class.new" && plan.isPool(operation.resultValue())) {
+                    this.addPoolSlot(operation, plan.isGraphPool(operation.resultValue()));
+                }
+                if (operation.hasResult() && module.types().isKind(operation.resultType(), "Ref") && operation.scope() > 0) {
+                    this.add(operation.scope(), this.target(operation.resultType()));
+                }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+    }
+
+    private Void scalarSlots(SublangOperation operation) {
+        Int index = 0;
+        while (index < this.module.types().typeAt(operation.ref()).fieldCount()) {
+            Int field = this.module.types().typeAt(operation.ref()).fieldAt(index);
+            String type = SublangLlvmTypes.type(this.module, this.module.types().fieldAt(field).typeId());
+            this.poolSlots = this.poolSlots + "  %fold" + operation.resultValue().toString() + "_" + field.toString() + " = alloca " + type + "\n";
+            index = index + 1;
+        }
+    }
+
+    private Void addPoolSlot(SublangOperation operation, Bool graph) {
+        String value = operation.resultValue().toString();
+        String type = "%t" + operation.ref().toString();
+        if (!graph) {
+            this.poolSlots = this.poolSlots + "  %pool" + value + " = alloca " + type + "\n"; return;
+        }
+        String layout = "{ ptr, ptr, " + type + " }";
+        this.poolSlots = this.poolSlots + "  %pool.header" + value + " = alloca " + layout + ", align 16\n";
+        this.poolSlots = this.poolSlots + "  store " + layout + " zeroinitializer, ptr %pool.header" + value + "\n";
+        this.poolSlots = this.poolSlots + "  store ptr inttoptr (i64 1 to ptr), ptr %pool.header" + value + "\n";
+        this.poolSlots = this.poolSlots + "  %pool" + value + " = getelementptr " + layout + ", ptr %pool.header" + value + ", i32 0, i32 2\n";
+    }
+
+    private Void add(Int scope, Int type) {
+        Int key = scope * (this.module.types().typeCount() + 1) + type;
+        if (!this.heads.contains(key)) { this.heads.add(key); }
+    }
+
+    public Int target(Int reference) { return this.module.types().typeAt(reference).target(); }
+    public String head(Int scope, Int type) { return "%scope" + scope.toString() + "_t" + type.toString(); }
+    public String visitor(Int type) { return "@sublang.drop.t" + type.toString(); }
+
+    public String slots() {
+        String text = this.poolSlots;
+        if (this.shardOwner > 0) { text = text + "  %shard.depth = alloca i64\n  store i64 0, ptr %shard.depth\n"; }
+        Int region = 0;
+        while (region < this.regions.length()) {
+            String frame = this.region(this.regions.get(region));
+            text = text + "  " + frame + " = alloca %sublang.shard\n  store %sublang.shard zeroinitializer, ptr " + frame + "\n";
+            region = region + 1;
+        }
+        Int index = 0;
+        while (index < this.heads.length()) {
+            Int key = this.heads.get(index);
+            String name = this.head(key / (this.module.types().typeCount() + 1), key % (this.module.types().typeCount() + 1));
+            text = text + "  " + name + " = alloca ptr\n  store ptr null, ptr " + name + "\n";
+            index = index + 1;
+        }
+        return text;
+    }
+
+    public String adoptParameters() {
+        String text = "";
+        Int index = 0;
+        while (index < this.function.paramCount()) {
+            if (this.function.paramAt(index).passing() == "owned" && this.module.types().isKind(this.function.paramAt(index).typeId(), "Ref")) {
+                Int type = this.target(this.function.paramAt(index).typeId());
+                text = text + "  call void @sublang.flow.adopt(ptr " + this.head(0, type) + ", ptr %arg" + this.function.paramAt(index).value().toString() + ")\n";
+            }
+            index = index + 1;
+        }
+        return text;
+    }
+
+    public String end(Int scope, Bool all) {
+        String text = "";
+        Int index = 0;
+        while (index < this.heads.length()) {
+            Int key = this.heads.get(index);
+            Int owner = key / (this.module.types().typeCount() + 1);
+            Int type = key % (this.module.types().typeCount() + 1);
+            if (all || owner == scope) {
+                text = text + "  call void @sublang.flow.end(ptr " + this.head(owner, type) + ", ptr " + this.visitor(type) + ")\n";
+            }
+            index = index + 1;
+        }
+        Int region = 0;
+        while (region < this.regions.length()) {
+            Int owner = this.regions.get(region);
+            if (all || scope == owner) { text = text + "  call void @sublang.shard.end(ptr " + this.region(owner) + ")\n"; }
+            region = region + 1;
+        }
+        if (this.shardOwner > 0 && !all) { text = text + "  call void @sublang.shard.leave(ptr %shard.depth)\n"; }
+        return text;
+    }
+
+    public String region(Int scope) { return "%shard" + scope.toString(); }
+
+    public String begin(Int scope) {
+        if (this.shardOwner == 0) { return ""; }
+        return "  call void @sublang.shard.begin(ptr " + this.region(scope) + ", ptr %shard.depth)\n";
+    }
+
+    public String join(SublangOperation operation) {
+        if (this.shardOwner == 0) { return ""; }
+        Int parent = this.origins.scopeOf(operation.operandAt(0));
+        Int child = this.origins.scopeOf(operation.operandAt(1));
+        if (parent == 0 || child == 0 || parent == child) { return ""; }
+        return "  call void @sublang.shard.join(ptr " + this.region(parent) + ", ptr " + this.region(child) + ")\n";
+    }
+}

@@ -1,0 +1,160 @@
+namespace sublang::backend::llvm;
+
+use sublang::body::SublangOperation;
+use sublang::backend::llvm::SublangLlvmContext;
+use sublang::backend::llvm::SublangLlvmTypes;
+
+public class SublangLlvmMemory {
+    public static String emit(SublangLlvmContext context, SublangOperation operation) {
+        String opcode = operation.opcode();
+        if (opcode == "scope.begin") { return context.owners().begin(operation.ref()); }
+        if (opcode == "scope.end") { return SublangLlvmMemory.release(context, operation); }
+        if (opcode == "class.new") { return SublangLlvmMemory.allocate(context, operation); }
+        if (opcode.startsWith("field.")) { return SublangLlvmMemory.field(context, operation); }
+        if (opcode == "record.make") { return SublangLlvmMemory.record(context, operation); }
+        String text = context.loadInputs(operation);
+        Int fieldIndex = SublangLlvmTypes.fieldIndex(context.module, operation.ref());
+        Int sourceType = context.function.valueTypeAt(operation.operandAt(0));
+        String expression = "extractvalue " + context.type(sourceType) + " " + context.input(operation, 0) + ", " + fieldIndex.toString();
+        if (opcode == "record.with") {
+            Int fieldType = context.module.types().fieldAt(operation.ref()).typeId();
+            expression = "insertvalue " + context.type(sourceType) + " " + context.input(operation, 0) + ", " + context.type(fieldType) + " " + context.input(operation, 1) + ", " + fieldIndex.toString();
+        }
+        return text + "  " + context.result(operation) + " = " + expression + "\n" + context.store(operation, context.result(operation));
+    }
+
+    private static String allocate(SublangLlvmContext context, SublangOperation operation) {
+        String layout = "%t" + operation.ref().toString();
+        String result = context.result(operation);
+        if (context.isFolded(operation.resultValue())) { return ""; }
+        if (context.isPool(operation.resultValue())) { return SublangLlvmMemory.pool(context, operation); }
+        if (context.isLocal(operation.resultValue())) {
+            return "  " + result + " = alloca " + layout + "\n" + context.store(operation, result) + SublangLlvmMemory.zeroReferences(context, operation);
+        }
+        String text = "  %end" + operation.id().toString() + " = getelementptr " + layout + ", ptr null, i32 1\n";
+        text = text + "  %size" + operation.id().toString() + " = ptrtoint ptr %end" + operation.id().toString() + " to i64\n";
+        if (context.isShard(operation.resultValue())) {
+            text = text + "  %region" + operation.id().toString() + " = call ptr @sublang.shard.root(ptr " + context.owners().region(operation.scope()) + ")\n";
+            text = text + "  " + result + " = call ptr @sublang.shard.allocate(ptr %region" + operation.id().toString() + ", ptr " + context.owners().head(operation.scope(), operation.ref()) + ", i64 %size" + operation.id().toString() + ")\n";
+            return text + context.store(operation, result) + SublangLlvmMemory.zeroReferences(context, operation);
+        }
+        text = text + "  " + result + " = call ptr @sublang.flow.allocate.t" + operation.ref().toString() + "(ptr " + context.owners().head(operation.scope(), operation.ref()) + ", i64 %size" + operation.id().toString() + ")\n";
+        return text + context.store(operation, result) + SublangLlvmMemory.zeroReferences(context, operation);
+    }
+
+    private static String zeroReferences(SublangLlvmContext context, SublangOperation operation) {
+        String text = "";
+        Int index = 0;
+        while (index < context.module.types().typeAt(operation.ref()).fieldCount()) {
+            Int field = context.module.types().typeAt(operation.ref()).fieldAt(index);
+            if (context.module.types().isKind(context.module.types().fieldAt(field).typeId(), "Ref")) {
+                String slot = "%zero" + operation.id().toString() + "_" + index.toString();
+                text = text + "  " + slot + " = getelementptr %t" + operation.ref().toString() + ", ptr " + context.result(operation) + ", i32 0, i32 " + index.toString() + "\n";
+                text = text + "  store ptr null, ptr " + slot + "\n";
+            }
+            index = index + 1;
+        }
+        return text;
+    }
+
+    private static String pool(SublangLlvmContext context, SublangOperation operation) {
+        String payload = "%pool" + operation.resultValue().toString();
+        String text = context.store(operation, payload);
+        Int index = 0; Bool graph = false;
+        while (index < context.module.types().typeAt(operation.ref()).fieldCount()) {
+            Int field = context.module.types().typeAt(operation.ref()).fieldAt(index);
+            if (context.module.types().isKind(context.module.types().fieldAt(field).typeId(), "Ref")) { graph = true; }
+            index = index + 1;
+        }
+        if (!graph) { return text; }
+        text = text + "  call void @sublang.flow.detach(ptr " + payload + ")\n";
+        text = text + "  call void @sublang.flow.drop(ptr " + payload + ", ptr " + context.owners().visitor(operation.ref()) + ")\n";
+        text = text + "  call void @sublang.flow.adopt(ptr " + context.owners().head(operation.scope(), operation.ref()) + ", ptr " + payload + ")\n";
+        return text;
+    }
+
+    private static String field(SublangLlvmContext context, SublangOperation operation) {
+        if (context.isFolded(operation.operandAt(0))) { return SublangLlvmMemory.scalarField(context, operation); }
+        String text = context.loadInputs(operation);
+        Int field = operation.ref();
+        Int owner = context.module.types().fieldAt(field).owner();
+        String address = "%field" + operation.id().toString();
+        text = text + "  " + address + " = getelementptr %t" + owner.toString() + ", ptr " + context.input(operation, 0) + ", i32 0, i32 " + SublangLlvmTypes.fieldIndex(context.module, field).toString() + "\n";
+        String type = context.type(context.module.types().fieldAt(field).typeId());
+        if (operation.opcode() == "field.clear" || operation.opcode() == "field.has") {
+            return text + SublangLlvmMemory.optionalField(context, operation, address);
+        }
+        if (operation.opcode() == "field.take") { return text + SublangLlvmMemory.takeField(context, operation, address); }
+        if (operation.opcode() == "field.read" || operation.opcode() == "field.borrow") {
+            text = text + "  " + context.result(operation) + " = load " + type + ", ptr " + address + "\n";
+            if (operation.opcode() == "field.borrow") {
+                String label = "borrow" + operation.id().toString();
+                text = text + "  %" + label + "null = icmp eq ptr " + context.result(operation) + ", null\n";
+                text = text + "  br i1 %" + label + "null, label %" + label + "fail, label %" + label + "ok\n";
+                text = text + label + "fail:\n  call void @abort()\n  unreachable\n" + label + "ok:\n";
+            }
+            return text + context.store(operation, context.result(operation));
+        }
+        return text + SublangLlvmMemory.writeField(context, operation, address, type);
+    }
+
+    private static String optionalField(SublangLlvmContext context, SublangOperation operation, String address) {
+        String previous = "%optional" + operation.id().toString();
+        String text = "  " + previous + " = load ptr, ptr " + address + "\n";
+        if (operation.opcode() == "field.has") {
+            text = text + "  " + context.result(operation) + " = icmp ne ptr " + previous + ", null\n";
+            return text + context.store(operation, context.result(operation));
+        }
+        Int child = context.owners().target(context.module.types().fieldAt(operation.ref()).typeId());
+        text = text + "  call void @sublang.flow.drop(ptr " + previous + ", ptr " + context.owners().visitor(child) + ")\n";
+        return text + "  store ptr null, ptr " + address + "\n";
+    }
+
+    private static String takeField(SublangLlvmContext context, SublangOperation operation, String address) {
+        String text = "  " + context.result(operation) + " = load ptr, ptr " + address + "\n  store ptr null, ptr " + address + "\n";
+        text = text + "  call void @sublang.flow.adopt(ptr " + context.owners().head(operation.scope(), context.owners().target(operation.resultType())) + ", ptr " + context.result(operation) + ")\n";
+        return text + context.store(operation, context.result(operation));
+    }
+
+    private static String writeField(SublangLlvmContext context, SublangOperation operation, String address, String type) {
+        String text = "";
+        if (type == "ptr") {
+            text = context.owners().join(operation) + "  call void @sublang.flow.detach(ptr " + context.input(operation, 1) + ")\n";
+            if (operation.opcode() == "field.write") {
+                String old = "%old" + operation.id().toString();
+                text = text + "  " + old + " = load ptr, ptr " + address + "\n";
+                Int childType = context.owners().target(context.module.types().fieldAt(operation.ref()).typeId());
+                text = text + "  call void @sublang.flow.drop(ptr " + old + ", ptr " + context.owners().visitor(childType) + ")\n";
+            }
+        }
+        return text + "  store " + type + " " + context.input(operation, 1) + ", ptr " + address + "\n";
+    }
+
+    private static String scalarField(SublangLlvmContext context, SublangOperation operation) {
+        String slot = "%fold" + operation.operandAt(0).toString() + "_" + operation.ref().toString();
+        String type = context.type(context.module.types().fieldAt(operation.ref()).typeId());
+        if (operation.opcode() == "field.read") {
+            return "  " + context.result(operation) + " = load " + type + ", ptr " + slot + "\n" + context.store(operation, context.result(operation));
+        }
+        String input = context.input(operation, 1);
+        return "  " + input + " = load " + type + ", ptr %v" + operation.operandAt(1).toString() + "\n  store " + type + " " + input + ", ptr " + slot + "\n";
+    }
+
+    private static String record(SublangLlvmContext context, SublangOperation operation) {
+        String text = context.loadInputs(operation);
+        String aggregate = "zeroinitializer";
+        Int index = 0;
+        while (index < operation.operandCount()) {
+            String result = "%record" + operation.id().toString() + "_" + index.toString();
+            Int field = context.module.types().typeAt(operation.resultType()).fieldAt(index);
+            text = text + "  " + result + " = insertvalue " + context.type(operation.resultType()) + " " + aggregate + ", " + context.type(context.module.types().fieldAt(field).typeId()) + " " + context.input(operation, index) + ", " + index.toString() + "\n";
+            aggregate = result;
+            index = index + 1;
+        }
+        return text + context.store(operation, aggregate);
+    }
+
+    private static String release(SublangLlvmContext context, SublangOperation end) {
+        return context.owners().end(end.ref(), false) + context.bonds().end(end.ref(), false);
+    }
+}

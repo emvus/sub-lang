@@ -1,0 +1,186 @@
+namespace sublang::harness;
+
+use sublang::analysis::SublangVerification;
+use sublang::analysis::SublangVerifier;
+use sublang::diagnostics::SublangDiagnostic;
+use sublang::dump::SublangDump;
+use sublang::harness::SublangHarnessFixtures;
+use sublang::harness::SublangHarnessSupport;
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+use sublang::semantics::SublangOptions;
+use sublang::proof::SublangProofReference;
+
+public class SublangHarnessAccepted {
+    public static Bool validModuleAccepted() {
+        println("== valid module: free function, record, class with receiver call ==");
+        SublangBuilder builder = SublangHarnessFixtures.buildValid();
+        SublangModule module = builder.module();
+        String firstDump = SublangDump.render(module);
+        String secondDump = SublangDump.render(module);
+        SublangBuilder rebuiltBuilder = SublangHarnessFixtures.buildValid();
+        String rebuiltDump = SublangDump.render(rebuiltBuilder.module());
+        println(firstDump);
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        SublangHarnessSupport.printDiagnostics(module, verdict.diagnostics());
+        Bool structural = verdict.structurallyValid();
+        Bool semantic = verdict.semanticsStatus() == "valid";
+        Bool deterministic = firstDump == secondDump && firstDump == rebuiltDump;
+        Bool owned = firstDump.indexOf("class.new scope=1 result=owned") >= 0;
+        Bool effectsUnproven = verdict.effectStatus() == "not_checked";
+        Bool gated = !verdict.codegenReady();
+        println("structure=" + verdict.structureStatus() + " semantics=" + verdict.semanticsStatus() + " effects=" + verdict.effectStatus() + " memory=" + verdict.memoryStatus() + " codegenReady=" + SublangHarnessSupport.yesNo(verdict.codegenReady()) + " deterministicDump=" + SublangHarnessSupport.yesNo(deterministic));
+        return SublangHarnessSupport.report("valid-module", structural && semantic && deterministic && owned && effectsUnproven && gated);
+    }
+
+    // A.1: raw bits of -0.0 and of a NaN with payload 0x123 survive into the dump;
+    // float compares use explicit ordered predicates and are accepted.
+    public static Bool floatBitsAndPredicatesAccepted() {
+        println("== float constants: raw bits survive, explicit ordered predicate ==");
+        SublangBuilder builder = SublangBuilder("float-bits");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int floatType = builder.floatType();
+        Int boolType = builder.boolType();
+        builder.beginFunction("order", boolType, 0, builder.span(sourceId, 200, 5));
+        Int orderA = builder.addParam("a", floatType, "value", false);
+        Int orderB = builder.addParam("b", floatType, "value", false);
+        builder.beginBlock();
+        Int orderedLess = builder.ops().compare("olt", orderA, orderB, builder.span(sourceId, 202, 9));
+        builder.ops().returnValue(orderedLess, builder.span(sourceId, 203, 9));
+        builder.beginFunction("main", floatType, 0, builder.span(sourceId, 205, 5));
+        builder.beginBlock();
+        Int minusZeroBits = -9223372036854775807 - 1;
+        Int nanBits = 9221120237041090851;
+        Int minusZero = builder.ops().constFloatBits(minusZeroBits, builder.span(sourceId, 207, 9));
+        Int notANumber = builder.ops().constFloatBits(nanBits, builder.span(sourceId, 208, 9));
+        builder.ops().floatBinary("float.add", minusZero, notANumber, "rne", builder.span(sourceId, 209, 9));
+        builder.ops().returnValue(notANumber, builder.span(sourceId, 210, 9));
+        SublangModule module = builder.module();
+        String dump = SublangDump.render(module);
+        println(dump);
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        SublangHarnessSupport.printDiagnostics(module, verdict.diagnostics());
+        Bool bitsKept = dump.indexOf("value=0x8000000000000000") >= 0 && dump.indexOf("value=0x7ff8000000000123") >= 0;
+        Bool accepted = verdict.structureStatus() == "valid" && verdict.semanticsStatus() == "valid";
+        return SublangHarnessSupport.report("float-bits-and-predicates", bitsKept && accepted);
+    }
+
+    // A.1: after freeze() the module and its functions refuse every mutation, and the
+    // refusals are counted. A frozen valid module stays valid.
+    public static Bool freezeRefusesMutation() {
+        println("== freeze: frozen module refuses mutation ==");
+        SublangBuilder builder = SublangHarnessFixtures.buildValid();
+        SublangModule module = builder.module();
+        Int sourcesBefore = module.sourceCount();
+        Int failuresBefore = module.semantics().failureCount();
+        Int paramsBefore = module.functionAt(1).paramCount();
+        builder.freeze();
+        Int refusedSource = module.addSource("late-source");
+        Int refusedFailure = module.semantics().failureId("late.failure");
+        Int refusedFunction = module.addFunction("late", module.types().intType(), 0, 0);
+        Int refusedParam = module.functionAt(1).addParam("late", module.types().intType(), "value", false);
+        Bool unchanged = module.sourceCount() == sourcesBefore && module.semantics().failureCount() == failuresBefore && module.functionAt(1).paramCount() == paramsBefore;
+        Bool refused = refusedSource == 0 && refusedFailure == 0 && refusedFunction == 0 && refusedParam == 0;
+        Bool counted = module.refusalCount() >= 3 && module.functionAt(1).refusalCount() >= 1;
+        Int opRefBefore = module.functionAt(1).blockAt(1).operationAt(0).ref();
+        module.functionAt(1).blockAt(1).operationAt(0).setRef(77);
+        Bool opKept = module.functionAt(1).blockAt(1).operationAt(0).ref() == opRefBefore;
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        println("frozen=" + SublangHarnessSupport.yesNo(module.isFrozen()) + " refusals=" + module.refusalCount().toString() + " operationKept=" + SublangHarnessSupport.yesNo(opKept) + " structure=" + verdict.structureStatus());
+        return SublangHarnessSupport.report("freeze-refuses-mutation", unchanged && refused && counted && opKept && verdict.structurallyValid());
+    }
+
+    // A.1: alias answers. Missing information gives MayAlias, identity gives MustAlias, and unchecked
+    // proof metadata cannot grant NoAlias.
+    public static Bool aliasFactsAnswerConservatively() {
+        println("== alias: default MayAlias, identity MustAlias, proof metadata stays conservative until checked, declared NoAlias only as data ==");
+        SublangBuilder builder = SublangBuilder("alias-positive");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int locA = builder.addLocation("global", "a", builder.span(sourceId, 430, 5));
+        Int locB = builder.addLocation("allocation", "b", builder.span(sourceId, 431, 5));
+        Int locC = builder.addLocation("argument-region", "c", builder.span(sourceId, 432, 5));
+        Int locD = builder.addLocation("allocation", "d", builder.span(sourceId, 435, 5));
+        builder.aliasFact(locA, locB, "MayAlias", "assumed-conservative", "", builder.span(sourceId, 433, 5));
+        List<Int> dependencies = List();
+        dependencies.add(locA);
+        dependencies.add(locC);
+        SublangProofReference evidence = SublangProofReference("alias-analysis-harness", builder.module().revision(), dependencies);
+        builder.module().aliases().addProvenAliasFact(locA, locC, "NoAlias", evidence, builder.span(sourceId, 434, 5));
+        builder.aliasFact(locA, locD, "NoAlias", "declared", "", builder.span(sourceId, 436, 5));
+        SublangModule module = builder.module();
+        Bool mayByDefault = module.aliases().aliasAnswer(locB, locC) == "MayAlias";
+        Bool conservativeFact = module.aliases().aliasAnswer(locA, locB) == "MayAlias";
+        Bool evidenceUnproven = module.aliases().aliasAnswer(locC, locA) == "MayAlias";
+        Bool declaredStaysMay = module.aliases().aliasAnswer(locA, locD) == "MayAlias";
+        Bool identity = module.aliases().aliasAnswer(locA, locA) == "MustAlias";
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        SublangHarnessSupport.printDiagnostics(module, verdict.diagnostics());
+        Bool accepted = verdict.structureStatus() == "valid" && verdict.semanticsStatus() == "valid";
+        return SublangHarnessSupport.report("alias-answers", mayByDefault && conservativeFact && evidenceUnproven && declaredStaysMay && identity && accepted);
+    }
+
+    // A.0: after a repair of the module, the same verifier instance accepts it again, and
+    // the earlier result is unchanged by the later run.
+    public static Bool reverifyAfterRepair() {
+        println("== A.0: re-verify after repair with the same verifier ==");
+        SublangBuilder builder = SublangBuilder("a0-repair");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int pairType = builder.recordType("Pair", builder.span(sourceId, 370, 5));
+        builder.recordField(pairType, "x", intType, builder.span(sourceId, 371, 5));
+        builder.recordField(pairType, "y", intType, builder.span(sourceId, 372, 5));
+        builder.module().types().typeAt(pairType).addField(9999);
+        builder.beginFunction("make", pairType, 0, builder.span(sourceId, 374, 5));
+        builder.beginBlock();
+        Int left = builder.ops().constInt(1, builder.span(sourceId, 376, 9));
+        Int right = builder.ops().constInt(2, builder.span(sourceId, 377, 9));
+        List<Int> values = List();
+        values.add(left);
+        values.add(right);
+        Int made = builder.ops().recordMake(pairType, values, builder.span(sourceId, 379, 9));
+        builder.ops().returnValue(made, builder.span(sourceId, 380, 9));
+        SublangModule module = builder.module();
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification first = verifier.verify();
+        SublangHarnessSupport.printDiagnostics(module, first.diagnostics());
+        Int firstCount = first.diagnostics().length();
+        Bool wasInvalid = first.structureStatus() == "invalid";
+        module.types().typeAt(pairType).removeField(9999);
+        SublangVerification second = verifier.verify();
+        Bool nowValid = second.structureStatus() == "valid" && second.semanticsStatus() == "valid";
+        Bool firstKept = first.structureStatus() == "invalid" && first.diagnostics().length() == firstCount;
+        return SublangHarnessSupport.report("a0-reverify-after-repair", wasInvalid && nowValid && firstKept);
+    }
+
+    // A.0: clearing a list returned by diagnostics() does not change the verdict.
+    public static Bool resultIsolatedFromListChanges() {
+        println("== A.0: verification result is isolated from external list changes ==");
+        SublangBuilder builder = SublangBuilder("a0-isolation");
+        Int sourceId = builder.source("SublangHarness.ems");
+        Int intType = builder.intType();
+        Int counterType = builder.classType("Counter", builder.span(sourceId, 390, 5));
+        builder.beginFunction("take", intType, 0, builder.span(sourceId, 391, 5));
+        builder.addParam("c", counterType, "value", false);
+        builder.beginBlock();
+        Int zero = builder.ops().constInt(0, builder.span(sourceId, 393, 9));
+        builder.ops().returnValue(zero, builder.span(sourceId, 394, 9));
+        SublangVerification verdict = SublangVerifier(builder.module()).verify();
+        Int before = verdict.diagnostics().length();
+        List<SublangDiagnostic> copy = verdict.diagnostics();
+        copy.clear();
+        Bool stillInvalid = verdict.structureStatus() == "invalid" && verdict.diagnostics().length() == before && before > 0;
+        return SublangHarnessSupport.report("a0-result-isolated", stillInvalid);
+    }
+
+    public static Bool optionsValidated() {
+        println("== options ==");
+        Bool defaultsValid = SublangOptions.defaults().isValid();
+        Bool unknownRejected = !SublangOptions("maybe").isValid();
+        println("default flowMode=" + SublangOptions.defaults().flowMode());
+        return SublangHarnessSupport.report("options", defaultsValid && unknownRejected);
+    }
+}

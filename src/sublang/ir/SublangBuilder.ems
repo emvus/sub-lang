@@ -1,42 +1,66 @@
 namespace sublang::ir;
 
-use sublang::ir::SublangBlock;
-use sublang::ir::SublangFunction;
+use sublang::body::SublangFunction;
+use sublang::ir::SublangCursor;
 use sublang::ir::SublangModule;
-use sublang::ir::SublangOperation;
+use sublang::ir::SublangOperationBuilder;
+use sublang::vocabulary::SublangVocabulary;
+use sublang::ir::data::SublangCollectionBuilder;
+use sublang::ir::data::SublangBondBuilder;
 
-// Constructs High IR. The builder keeps a current function and block and
-// appends operations there. It records what it is told; it does not reject
-// bad input, so the verifier stays the single place that judges the module.
+// Builds High IR for one module: it declares the module's entities and starts functions and
+// blocks. Operations are appended through ops(), at the block the cursor points at. The builder
+// records what it is told and refuses mutation after freeze(); the verifier judges the module.
+// Every function it begins gets the startup profile and the conservative effect summary unless
+// the caller names another profile explicitly.
 public class SublangBuilder {
     private SublangModule module;
-    private Int currentFunctionId;
-    private Int currentBlockId;
+    private SublangCursor cursor;
+    private SublangOperationBuilder operations;
+    private Int defaultProfileId;
 
     public SublangBuilder(String moduleName) {
         this.module = SublangModule(moduleName);
-        this.currentFunctionId = 0;
-        this.currentBlockId = 0;
+        this.cursor = SublangCursor(this.module);
+        this.operations = SublangOperationBuilder(this.cursor);
+        this.defaultProfileId = this.module.semantics().addProfile(SublangVocabulary.startupProfileName(), SublangVocabulary.startupProfileVersion(), SublangVocabulary.startupIntegerRules(), SublangVocabulary.startupFloatRules(), SublangVocabulary.startupFailureModel(), SublangVocabulary.startupUnwindingModel());
     }
 
     public SublangModule module() {
         return this.module;
     }
 
+    public SublangOperationBuilder ops() {
+        return this.operations;
+    }
+
+    public SublangCollectionBuilder collections() { return SublangCollectionBuilder(this.cursor); }
+    public SublangBondBuilder bonds() { return SublangBondBuilder(this.cursor); }
+    public Int bondType(Int type) { return this.module.types().bondTypeFor(type); }
+    public Int listType(Int element, Int span) { return this.module.types().addType("List", "List<" + this.module.types().typeNameOf(element) + ">", 0, false, element, span); }
+
+    public Int startupProfile() {
+        return this.defaultProfileId;
+    }
+
+    public Void freeze() {
+        this.module.freeze();
+    }
+
     public Int voidType() {
-        return this.module.voidType();
+        return this.module.types().voidType();
     }
 
     public Int boolType() {
-        return this.module.boolType();
+        return this.module.types().boolType();
     }
 
     public Int intType() {
-        return this.module.intType();
+        return this.module.types().intType();
     }
 
     public Int floatType() {
-        return this.module.floatType();
+        return this.module.types().floatType();
     }
 
     public Int source(String name) {
@@ -52,45 +76,113 @@ public class SublangBuilder {
     }
 
     public Int recordType(String name, Int span) {
-        return this.module.addType("Record", name, 0, false, 0, span);
+        return this.module.types().addType("Record", name, 0, false, 0, span);
     }
 
     public Int classType(String name, Int span) {
-        return this.module.addType("Class", name, 0, false, 0, span);
+        return this.module.types().addType("Class", name, 0, false, 0, span);
     }
 
     public Int refType(Int classTypeId) {
-        return this.module.refTypeFor(classTypeId);
+        return this.module.types().refTypeFor(classTypeId);
     }
 
     public Int recordField(Int recordTypeId, String name, Int typeId, Int span) {
-        return this.module.addField(recordTypeId, name, typeId, false, span);
+        return this.module.types().addField(recordTypeId, name, typeId, false, span);
     }
 
     public Int classField(Int classTypeId, String name, Int typeId, Bool mutable, Int span) {
-        return this.module.addField(classTypeId, name, typeId, mutable, span);
+        return this.module.types().addField(classTypeId, name, typeId, mutable, span);
     }
 
+    // Default abort record by name; see SublangSemanticTable.failureId.
     public Int failure(String name) {
-        return this.module.failureId(name);
+        return this.module.semantics().failureId(name);
+    }
+
+    // Explicit FailureAction record with its behavior, binding, signature and unwinding.
+    public Int failureAction(String name, String behavior, String binding, String signature, Bool continues, String unwinding, Int span) {
+        return this.module.semantics().addFailureAction(name, behavior, binding, signature, continues, unwinding, span);
+    }
+
+    public Int addLocation(String kind, String name, Int span) {
+        return this.module.aliases().addLocation(kind, name, span);
+    }
+
+    // Recorded alias answer between two locations; see SublangAliasTable.aliasAnswer.
+    public Int aliasFact(Int left, Int right, String answer, String origin, String proof, Int span) {
+        return this.module.aliases().addAliasFact(left, right, answer, origin, proof, span);
+    }
+
+    // Explicit semantic profile, for callers that do not use the startup profile.
+    public Int addProfile(String name, Int version, String integerRules, String floatRules, String failureModel, String unwindingModel) {
+        return this.module.semantics().addProfile(name, version, integerRules, floatRules, failureModel, unwindingModel);
     }
 
     public Int beginFunction(String name, Int returnTypeId, Int methodOfId, Int span) {
-        this.currentFunctionId = this.module.addFunction(name, returnTypeId, methodOfId, span);
-        this.currentBlockId = 0;
-        return this.currentFunctionId;
+        return this.beginFunctionWithProfile(name, returnTypeId, methodOfId, span, this.defaultProfileId);
+    }
+
+    public Int beginFunctionWithProfile(String name, Int returnTypeId, Int methodOfId, Int span, Int profileId) {
+        if (this.module.isFrozen()) {
+            this.module.refuse();
+            return 0;
+        }
+        Int functionId = this.module.addFunction(name, returnTypeId, methodOfId, span);
+        if (functionId == 0) {
+            return 0;
+        }
+        this.cursor.enterFunction(functionId);
+        SublangFunction fnEntry = this.cursor.currentFunction();
+        fnEntry.setProfile(profileId);
+        fnEntry.setEffectSummary(this.module.semantics().conservativeEffectSummary());
+        return functionId;
+    }
+
+    // External function: no body, linkage external, a contract instead of blocks.
+    // Calls to it are rejected by the verifier until a provider contract supports them.
+    public Int declareExternal(String name, Int returnTypeId, Int span) {
+        if (this.module.isFrozen()) {
+            this.module.refuse();
+            return 0;
+        }
+        Int functionId = this.module.addFunction(name, returnTypeId, 0, span);
+        if (functionId == 0) {
+            return 0;
+        }
+        this.cursor.enterFunction(functionId);
+        SublangFunction fnEntry = this.cursor.currentFunction();
+        fnEntry.setProfile(this.defaultProfileId);
+        fnEntry.setEffectSummary(this.module.semantics().conservativeEffectSummary());
+        fnEntry.setLinkage("external");
+        fnEntry.setDefinition("contract");
+        return functionId;
+    }
+
+    public Void setFunctionProfile(Int functionId, Int profileId) {
+        if (this.module.hasFunction(functionId)) {
+            this.module.functionAt(functionId).setProfile(profileId);
+        }
     }
 
     public Int addParam(String name, Int typeId, String passing, Bool noEscape) {
-        return this.currentFunction().addParam(name, typeId, passing, noEscape);
+        if (!this.cursor.functionReady()) {
+            this.module.refuse();
+            return 0;
+        }
+        return this.cursor.currentFunction().addParam(name, typeId, passing, noEscape);
     }
 
     public Int newBlock() {
-        return this.currentFunction().addBlock();
+        if (!this.cursor.functionReady()) {
+            this.module.refuse();
+            return 0;
+        }
+        return this.cursor.currentFunction().addBlock();
     }
 
     public Void enterBlock(Int blockId) {
-        this.currentBlockId = blockId;
+        this.cursor.enterBlock(blockId);
     }
 
     public Int beginBlock() {
@@ -100,268 +192,10 @@ public class SublangBuilder {
     }
 
     public Int addBlockParam(Int typeId) {
-        return this.currentFunction().addBlockParam(this.currentBlockId, typeId);
-    }
-
-    public Int constBool(Bool value, Int span) {
-        SublangOperation op = this.newOperation("const.bool", span);
-        op.setConstBool(value);
-        return this.emitValue(op, this.module.boolType());
-    }
-
-    public Int constInt(Int value, Int span) {
-        SublangOperation op = this.newOperation("const.int", span);
-        op.setConstInt(value);
-        return this.emitValue(op, this.module.intType());
-    }
-
-    public Int constFloat(Float value, Int span) {
-        SublangOperation op = this.newOperation("const.float", span);
-        op.setConstFloat(value);
-        return this.emitValue(op, this.module.floatType());
-    }
-
-    public Int intBinary(String opcode, Int left, Int right, String overflow, Int failureId, Int span) {
-        SublangOperation op = this.newOperation(opcode, span);
-        List<Int> operands = List();
-        operands.add(left);
-        operands.add(right);
-        op.setOperands(operands, this.valueModes(2));
-        op.setOverflow(overflow);
-        op.setRef(failureId);
-        return this.emitValue(op, this.module.intType());
-    }
-
-    public Int intNeg(Int operand, String overflow, Int failureId, Int span) {
-        SublangOperation op = this.newOperation("int.neg", span);
-        List<Int> operands = List();
-        operands.add(operand);
-        op.setOperands(operands, this.valueModes(1));
-        op.setOverflow(overflow);
-        op.setRef(failureId);
-        return this.emitValue(op, this.module.intType());
-    }
-
-    public Int floatBinary(String opcode, Int left, Int right, String fpMode, Int span) {
-        SublangOperation op = this.newOperation(opcode, span);
-        List<Int> operands = List();
-        operands.add(left);
-        operands.add(right);
-        op.setOperands(operands, this.valueModes(2));
-        op.setFpMode(fpMode);
-        return this.emitValue(op, this.module.floatType());
-    }
-
-    public Int compare(String predicate, Int left, Int right, Int span) {
-        SublangOperation op = this.newOperation("compare", span);
-        List<Int> operands = List();
-        operands.add(left);
-        operands.add(right);
-        op.setOperands(operands, this.valueModes(2));
-        op.setPredicate(predicate);
-        return this.emitValue(op, this.module.boolType());
-    }
-
-    public Int recordMake(Int recordTypeId, List<Int> values, Int span) {
-        SublangOperation op = this.newOperation("record.make", span);
-        Int valueCount = values.length();
-        op.setOperands(values, this.valueModes(valueCount));
-        op.setRef(recordTypeId);
-        return this.emitValue(op, recordTypeId);
-    }
-
-    public Int recordGet(Int recordValue, Int fieldId, Int span) {
-        SublangOperation op = this.newOperation("record.get", span);
-        List<Int> operands = List();
-        operands.add(recordValue);
-        op.setOperands(operands, this.valueModes(1));
-        op.setRef(fieldId);
-        return this.emitValue(op, this.fieldTypeOf(fieldId));
-    }
-
-    public Int recordWith(Int recordValue, Int fieldId, Int newValue, Int span) {
-        SublangOperation op = this.newOperation("record.with", span);
-        List<Int> operands = List();
-        operands.add(recordValue);
-        operands.add(newValue);
-        op.setOperands(operands, this.valueModes(2));
-        op.setRef(fieldId);
-        return this.emitValue(op, this.valueTypeOf(recordValue));
-    }
-
-    public Int classNew(Int classTypeId, Int scopeId, Int span) {
-        SublangOperation op = this.newOperation("class.new", span);
-        op.setRef(classTypeId);
-        op.setScope(scopeId);
-        return this.emitValue(op, this.module.refTypeFor(classTypeId));
-    }
-
-    public Void fieldInit(Int objectValue, Int fieldId, Int value, Int span) {
-        SublangOperation op = this.newOperation("field.init", span);
-        List<Int> operands = List();
-        operands.add(objectValue);
-        operands.add(value);
-        List<String> modes = List();
-        modes.add("init");
-        modes.add("value");
-        op.setOperands(operands, modes);
-        op.setRef(fieldId);
-        this.emitEffect(op);
-    }
-
-    public Int fieldRead(Int objectValue, Int fieldId, Int span) {
-        SublangOperation op = this.newOperation("field.read", span);
-        List<Int> operands = List();
-        operands.add(objectValue);
-        List<String> modes = List();
-        modes.add("borrow_read");
-        op.setOperands(operands, modes);
-        op.setRef(fieldId);
-        return this.emitValue(op, this.fieldTypeOf(fieldId));
-    }
-
-    public Void fieldWrite(Int objectValue, Int fieldId, Int value, Int span) {
-        SublangOperation op = this.newOperation("field.write", span);
-        List<Int> operands = List();
-        operands.add(objectValue);
-        operands.add(value);
-        List<String> modes = List();
-        modes.add("borrow_write");
-        modes.add("value");
-        op.setOperands(operands, modes);
-        op.setRef(fieldId);
-        this.emitEffect(op);
-    }
-
-    public Int callDirect(Int functionId, List<Int> args, List<String> modes, Int span) {
-        SublangOperation op = this.newOperation("call.direct", span);
-        op.setOperands(args, modes);
-        op.setRef(functionId);
-        Int returnTypeId = this.returnTypeOf(functionId);
-        if (returnTypeId == this.module.voidType()) {
-            this.emitEffect(op);
+        if (!this.cursor.blockReady()) {
+            this.module.refuse();
             return 0;
         }
-        return this.emitValue(op, returnTypeId);
-    }
-
-    public Int scopeBegin(Int span) {
-        Int scopeId = this.currentFunction().newScope();
-        SublangOperation op = this.newOperation("scope.begin", span);
-        op.setRef(scopeId);
-        this.emitEffect(op);
-        return scopeId;
-    }
-
-    public Void scopeEnd(Int scopeId, Int span) {
-        SublangOperation op = this.newOperation("scope.end", span);
-        op.setRef(scopeId);
-        this.emitEffect(op);
-    }
-
-    // value 0 means a Void return.
-    public Void returnValue(Int value, Int span) {
-        SublangOperation op = this.newOperation("return", span);
-        List<Int> operands = List();
-        if (value != 0) {
-            operands.add(value);
-        }
-        Int operandCount = operands.length();
-        op.setOperands(operands, this.valueModes(operandCount));
-        this.emitEffect(op);
-    }
-
-    public Void branchTo(Int target, List<Int> args, Int span) {
-        SublangOperation op = this.newOperation("branch", span);
-        Int argCount = args.length();
-        op.setOperands(args, this.valueModes(argCount));
-        List<Int> targets = List();
-        targets.add(target);
-        op.setTargets(targets, 0);
-        this.emitEffect(op);
-    }
-
-    public Void condBranch(Int cond, Int trueTarget, List<Int> trueArgs, Int falseTarget, List<Int> falseArgs, Int span) {
-        SublangOperation op = this.newOperation("cond_branch", span);
-        List<Int> operands = List();
-        operands.add(cond);
-        Int index = 0;
-        while (index < trueArgs.length()) {
-            operands.add(trueArgs.get(index));
-            index = index + 1;
-        }
-        index = 0;
-        while (index < falseArgs.length()) {
-            operands.add(falseArgs.get(index));
-            index = index + 1;
-        }
-        Int operandCount = operands.length();
-        op.setOperands(operands, this.valueModes(operandCount));
-        List<Int> targets = List();
-        targets.add(trueTarget);
-        targets.add(falseTarget);
-        op.setTargets(targets, trueArgs.length());
-        this.emitEffect(op);
-    }
-
-    public Void failWith(Int failureId, Int span) {
-        SublangOperation op = this.newOperation("fail", span);
-        op.setRef(failureId);
-        this.emitEffect(op);
-    }
-
-    private SublangFunction currentFunction() {
-        return this.module.functionAt(this.currentFunctionId);
-    }
-
-    private SublangBlock currentBlock() {
-        return this.currentFunction().blockAt(this.currentBlockId);
-    }
-
-    private SublangOperation newOperation(String opcode, Int span) {
-        return SublangOperation(this.module.nextOperationId(), opcode, span);
-    }
-
-    private List<String> valueModes(Int count) {
-        List<String> modes = List();
-        Int index = 0;
-        while (index < count) {
-            modes.add("value");
-            index = index + 1;
-        }
-        return modes;
-    }
-
-    private Int emitValue(SublangOperation op, Int typeId) {
-        Int valueId = this.currentFunction().newValue(typeId);
-        op.setResult(valueId, typeId);
-        this.currentBlock().addOperation(op);
-        return valueId;
-    }
-
-    private Void emitEffect(SublangOperation op) {
-        this.currentBlock().addOperation(op);
-    }
-
-    private Int valueTypeOf(Int valueId) {
-        SublangFunction fnEntry = this.currentFunction();
-        if (fnEntry.hasValue(valueId)) {
-            return fnEntry.valueTypeAt(valueId);
-        }
-        return 0;
-    }
-
-    private Int fieldTypeOf(Int fieldId) {
-        if (this.module.hasField(fieldId)) {
-            return this.module.fieldAt(fieldId).typeId();
-        }
-        return 0;
-    }
-
-    private Int returnTypeOf(Int functionId) {
-        if (this.module.hasFunction(functionId)) {
-            return this.module.functionAt(functionId).returnType();
-        }
-        return 0;
+        return this.cursor.currentFunction().addBlockParam(this.cursor.currentBlockId(), typeId);
     }
 }

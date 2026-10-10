@@ -1,0 +1,59 @@
+namespace sublang::harness::flow;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+// A retained 64-node SCC establishes the component cache. Temporary handles
+// release against that cache, then an edge mutation invalidates it and leaves
+// 63 unreachable nodes while the surviving root remains usable.
+public class SublangBondComponentFixture {
+    private SublangBuilder builder;
+    private Int span;
+    private Int type;
+    private Int x;
+    private Int next;
+
+    public SublangBondComponentFixture() {
+        this.builder = SublangBuilder("bond-component"); this.span = this.builder.syntheticSpan("flow:component");
+        this.type = this.builder.classType("Node", this.span);
+        this.x = this.builder.classField(this.type, "x", this.builder.intType(), true, this.span);
+        this.next = this.builder.classField(this.type, "next", this.builder.bondType(this.type), true, this.span);
+    }
+    private Int node(Int scope) {
+        Int value = this.builder.bonds().create(this.type, scope, this.span);
+        this.builder.bonds().write(value, this.x, this.builder.ops().constInt(42, this.span), this.span); return value;
+    }
+    private List<Int> pair(Int first, Int second) { List<Int> args = List(); args.add(first); args.add(second); return args; }
+
+    public SublangModule build() {
+        Int entry = this.builder.beginFunction("entry", this.builder.intType(), 0, this.span);
+        this.builder.module().setEntry(entry); this.builder.beginBlock();
+        Int outer = this.builder.ops().scopeBegin(this.span); Int root = this.node(outer);
+        Int inner = this.builder.ops().scopeBegin(this.span); List<Int> nodes = List(); nodes.add(root); Int index = 1;
+        while (index < 64) { nodes.add(this.node(inner)); index = index + 1; }
+        index = 0;
+        while (index < 64) { this.builder.bonds().link(nodes.get(index), this.next, nodes.get((index + 1) % 64), this.span); index = index + 1; }
+        this.builder.ops().scopeEnd(inner, this.span);
+        Int sum = this.aliasLoop(root);
+        this.builder.bonds().link(root, this.next, root, this.span);
+        Int alive = this.builder.ops().fieldRead(this.builder.bonds().borrow(root, this.span), this.x, this.span);
+        Int result = this.builder.ops().intBinary("int.add", sum, alive, "wrap", 0, this.span);
+        this.builder.ops().scopeEnd(outer, this.span); this.builder.ops().returnValue(result, this.span);
+        return this.builder.module();
+    }
+
+    private Int aliasLoop(Int root) {
+        Int header = this.builder.newBlock(); Int body = this.builder.newBlock(); Int done = this.builder.newBlock();
+        Int zero = this.builder.ops().constInt(0, this.span); this.builder.ops().branchTo(header, this.pair(zero, zero), this.span);
+        this.builder.enterBlock(header); Int index = this.builder.addBlockParam(this.builder.intType()); Int sum = this.builder.addBlockParam(this.builder.intType());
+        List<Int> empty = List(); Int limit = this.builder.ops().constInt(100, this.span);
+        this.builder.ops().condBranch(this.builder.ops().compare("lt", index, limit, this.span), body, empty, done, empty, this.span);
+        this.builder.enterBlock(body); Int scope = this.builder.ops().scopeBegin(this.span);
+        Int alias = this.builder.bonds().get(root, this.next, scope, this.span);
+        Int value = this.builder.ops().fieldRead(this.builder.bonds().borrow(alias, this.span), this.x, this.span);
+        Int total = this.builder.ops().intBinary("int.add", sum, value, "wrap", 0, this.span);
+        this.builder.ops().scopeEnd(scope, this.span);
+        Int increment = this.builder.ops().intBinary("int.add", index, this.builder.ops().constInt(1, this.span), "wrap", 0, this.span);
+        this.builder.ops().branchTo(header, this.pair(increment, total), this.span); this.builder.enterBlock(done); return sum;
+    }
+}

@@ -1,0 +1,69 @@
+namespace sublang::optimind;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::optimind::SublangValueFacts;
+use sublang::optimind::SublangConstantFold;
+use sublang::optimind::SublangCallAnalysis;
+use sublang::ir::SublangModule;
+
+// Two conservative passes over SSA definitions: safe constant folding followed by
+// integer identities. Operands' defining computations are retained, preserving effects.
+public class SublangOptimind {
+    public static SublangValueFacts analyzeModule(SublangModule module, SublangFunction function, Bool enabled) {
+        SublangValueFacts facts = SublangOptimind.analyze(function, enabled);
+        if (!enabled) { return facts; }
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                SublangOperation operation = function.blockAt(block).operationAt(index);
+                if (operation.opcode() == "call.direct") { SublangCallAnalysis.fold(module, operation, facts); }
+                SublangConstantFold.visit(operation, facts);
+                SublangOptimind.identities(operation, facts);
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        return facts;
+    }
+
+    public static SublangValueFacts analyze(SublangFunction function, Bool enabled) {
+        SublangValueFacts facts = SublangValueFacts(function.valueCount());
+        if (!enabled) { return facts; }
+        Int blockId = 1;
+        while (blockId <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(blockId).operationCount()) {
+                SublangOperation operation = function.blockAt(blockId).operationAt(index);
+                SublangConstantFold.visit(operation, facts);
+                SublangOptimind.identities(operation, facts);
+                index = index + 1;
+            }
+            blockId = blockId + 1;
+        }
+        return facts;
+    }
+
+    private static Void identities(SublangOperation operation, SublangValueFacts facts) {
+        String opcode = operation.opcode();
+        if (opcode != "int.add" && opcode != "int.sub" && opcode != "int.mul" && opcode != "int.div" && opcode != "int.rem") { return; }
+        Int result = operation.resultValue();
+        if (facts.known(result)) { return; }
+        Int left = operation.operandAt(0);
+        Int right = operation.operandAt(1);
+        if (opcode == "int.sub" && left == right) { facts.constant(result, 0, true); return; }
+        if ((opcode == "int.add" || opcode == "int.mul") && facts.known(left)) {
+            SublangOptimind.rightIdentity(result, right, facts.integer(left), opcode, facts);
+        }
+        if (facts.known(result) || facts.alias(result) != 0 || !facts.known(right)) { return; }
+        SublangOptimind.rightIdentity(result, left, facts.integer(right), opcode, facts);
+    }
+
+    private static Void rightIdentity(Int result, Int source, Int number, String opcode, SublangValueFacts facts) {
+        if ((opcode == "int.add" || opcode == "int.sub") && number == 0) { facts.replace(result, source); }
+        if ((opcode == "int.mul" || opcode == "int.div") && number == 1) { facts.replace(result, source); }
+        if (opcode == "int.mul" && number == 0) { facts.constant(result, 0, true); }
+        if (opcode == "int.rem" && number == 1) { facts.constant(result, 0, true); }
+    }
+}

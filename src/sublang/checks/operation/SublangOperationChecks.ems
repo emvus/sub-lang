@@ -1,0 +1,112 @@
+namespace sublang::checks::operation;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+use sublang::vocabulary::SublangVocabulary;
+use sublang::checks::operation::SublangArithmeticChecks;
+use sublang::checks::operation::SublangControlChecks;
+use sublang::checks::operation::SublangMemoryChecks;
+use sublang::checks::data::SublangStringChecks;
+use sublang::checks::data::SublangCollectionChecks;
+use sublang::checks::data::SublangBondChecks;
+
+// Rules that apply to every operation: a known opcode, a valid span, passing modes that fit the
+// operand kinds, and a result that matches the value it defines. Opcode-specific rules live in
+// the group checks, which checkByOpcode selects.
+public class SublangOperationChecks {
+    private SublangReport findings;
+    private SublangModule module;
+    private SublangArithmeticChecks arithmetic;
+    private SublangMemoryChecks memory;
+    private SublangControlChecks control;
+
+    public SublangOperationChecks(SublangReport report, SublangModule source) {
+        this.findings = report;
+        this.module = source;
+        this.arithmetic = SublangArithmeticChecks(report, source);
+        this.memory = SublangMemoryChecks(report, source);
+        this.control = SublangControlChecks(report, source);
+    }
+
+    // Returns false when the operation is too malformed for the remaining checks to mean anything.
+    public Bool checkShape(SublangOperation op) {
+        String opcode = op.opcode();
+        Int span = op.span();
+        if (!SublangVocabulary.isKnownOpcode(opcode)) {
+            this.findings.report("SUBLANG-S001", "unknown opcode " + opcode, span);
+            return false;
+        }
+        if (!this.module.hasSpan(span)) {
+            this.findings.report("SUBLANG-S002", opcode + " has no valid source span", 0);
+        }
+        if (op.effectSummary() != 0 && !this.module.semantics().hasEffectSummary(op.effectSummary())) {
+            this.findings.report("SUBLANG-E001", opcode + " refers to effect summary " + op.effectSummary().toString() + ", which does not exist", span);
+        }
+        if (op.modeCount() != op.operandCount()) {
+            this.findings.report("SUBLANG-S005", opcode + " has " + op.operandCount().toString() + " operands but " + op.modeCount().toString() + " passing modes", span);
+            return false;
+        }
+        if (op.hasResult() && !SublangVocabulary.producesValue(opcode) && opcode != "call.direct") {
+            this.findings.report("SUBLANG-T001", opcode + " must not produce a value", span);
+        }
+        return true;
+    }
+
+    // Passing modes must be known. Primitives and records are value types, so a borrow would
+    // promise shared storage that they do not have.
+    public Void checkModes(SublangFunction fnEntry, SublangOperation op) {
+        Int modeIndex = 0;
+        while (modeIndex < op.operandCount()) {
+            this.checkMode(fnEntry, op, modeIndex);
+            modeIndex = modeIndex + 1;
+        }
+    }
+
+    private Void checkMode(SublangFunction fnEntry, SublangOperation op, Int modeIndex) {
+        String mode = op.modeAt(modeIndex);
+        if (!SublangVocabulary.isKnownPassing(mode)) {
+            this.findings.report("SUBLANG-S001", op.opcode() + " operand " + modeIndex.toString() + " has unknown passing mode " + mode, op.span());
+            return;
+        }
+        Int operandId = op.operandAt(modeIndex);
+        if (!fnEntry.hasValue(operandId)) {
+            return;
+        }
+        String operandKind = this.module.types().kindOf(fnEntry.valueTypeAt(operandId));
+        Bool valueOnly = SublangVocabulary.isPrimitiveKind(operandKind) || operandKind == "Record" || operandKind == "String";
+        if (valueOnly && mode != "value") {
+            this.findings.report("SUBLANG-T002", op.opcode() + " operand " + modeIndex.toString() + " is a " + operandKind + " value and cannot use passing mode " + mode, op.span());
+        }
+    }
+
+    // A result must have the type of the value it defines. A reference result must also say
+    // who owns it, because ownership decides when the object is released.
+    public Void checkResult(SublangFunction fnEntry, SublangOperation op) {
+        if (!op.hasResult()) {
+            return;
+        }
+        if (fnEntry.hasValue(op.resultValue()) && fnEntry.valueTypeAt(op.resultValue()) != op.resultType()) {
+            this.findings.report("SUBLANG-T001", "result type of " + op.opcode() + " does not match the type of its value", op.span());
+        }
+        if ((this.module.types().isKind(op.resultType(), "Ref") || this.module.types().isKind(op.resultType(), "Bond")) && op.resultOwnership() == "") {
+            this.findings.report("SUBLANG-T004", op.opcode() + " produces a reference without ownership information", op.span());
+        }
+    }
+
+    public Void checkByOpcode(SublangFunction fnEntry, SublangOperation op) {
+        if (op.opcode().startsWith("bond.")) { SublangBondChecks.check(this.findings, this.module, fnEntry, op); return; }
+        if (op.opcode().startsWith("list.")) { SublangCollectionChecks.check(this.findings, this.module, fnEntry, op); return; }
+        if (SublangStringChecks.handles(op.opcode())) { SublangStringChecks.check(this.findings, this.module, fnEntry, op); return; }
+        if (this.arithmetic.handles(op.opcode())) {
+            this.arithmetic.check(fnEntry, op);
+            return;
+        }
+        if (this.memory.handles(op.opcode())) {
+            this.memory.check(fnEntry, op);
+            return;
+        }
+        this.control.check(fnEntry, op);
+    }
+}

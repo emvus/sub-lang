@@ -1,0 +1,86 @@
+namespace sublang::diagnostics;
+
+use sublang::diagnostics::SublangDiagnostic;
+
+// Collects the findings of one verification run. Each finding records the entity it
+// belongs to, so a reader can go from a diagnostic to the function, block or operation
+// that caused it. The verifier creates a new report for every run, which keeps the
+// findings of earlier runs unchanged.
+public class SublangReport {
+    private Int revisionNumber;
+    private List<SublangDiagnostic> findingList;
+    private Int functionPosition;
+    private Int blockPosition;
+    private Int operationPosition;
+
+    public SublangReport(Int revision) {
+        this.revisionNumber = revision;
+        this.findingList = List();
+        this.functionPosition = 0;
+        this.blockPosition = 0;
+        this.operationPosition = 0;
+    }
+
+    public List<SublangDiagnostic> diagnostics() {
+        return this.findingList;
+    }
+
+    public Void enterFunction(Int functionId) {
+        this.functionPosition = functionId;
+        this.blockPosition = 0;
+        this.operationPosition = 0;
+    }
+
+    // Zero means "module level": findings after this point name the module, not a function.
+    public Void leaveFunction() {
+        this.enterFunction(0);
+    }
+
+    public Void enterBlock(Int blockId) {
+        this.blockPosition = blockId;
+        this.operationPosition = 0;
+    }
+
+    public Void leaveBlock() {
+        this.enterBlock(0);
+    }
+
+    public Void enterOperation(Int operationId) {
+        this.operationPosition = operationId;
+    }
+
+    public Void leaveOperation() {
+        this.operationPosition = 0;
+    }
+
+    public Void report(String code, String message, Int span) {
+        List<String> noBlockers = List();
+        this.append(code, message, span, noBlockers);
+    }
+
+    // A blocked finding names the missing capability, so an explanation can point at it.
+    public Void reportBlocked(String code, String message, Int span, String blocker) {
+        List<String> blockers = List();
+        blockers.add(blocker + "");
+        this.append(code, message, span, blockers);
+    }
+
+    private Void append(String code, String message, Int span, List<String> blockers) {
+        String entity = "rev" + this.revisionNumber.toString() + "/" + this.entityPosition();
+        this.findingList.add(SublangDiagnostic(code, message, span, entity, blockers));
+    }
+
+    private String entityPosition() {
+        if (this.functionPosition == 0) {
+            return "module";
+        }
+        String text = "fn" + this.functionPosition.toString();
+        if (this.blockPosition != 0) {
+            text = text + "/b" + this.blockPosition.toString();
+        }
+        if (this.operationPosition != 0) {
+            text = text + "/op" + this.operationPosition.toString();
+        }
+        return text;
+    }
+}

@@ -4,14 +4,25 @@ type 1 Void Void
 type 2 Bool Bool width=1 signed=false
 type 3 Int Int width=64 signed=true
 type 4 Float Float width=64 signed=false
-failure 1 example.integer_failure
-func 1 add(v1 x:Int@value, v2 y:Int@value) -> Int methodOf=0 span=1
+profile 1 sublang.startup version=1 integer=i64-signed float=f64-ieee-rne failure=abort unwinding=none startup=true
+effect 1 conservative facts=9 span=0
+  fact allocation unknown provenance=assumed-conservative detail= proof=
+  fact escape unknown provenance=assumed-conservative detail= proof=
+  fact failure unknown provenance=assumed-conservative detail= proof=
+  fact exceptions unknown provenance=assumed-conservative detail= proof=
+  fact memory-read unknown provenance=assumed-conservative detail= proof=
+  fact memory-write unknown provenance=assumed-conservative detail= proof=
+  fact synchronization unknown provenance=assumed-conservative detail= proof=
+  fact observable unknown provenance=assumed-conservative detail= proof=
+  fact control unknown provenance=assumed-conservative detail= proof=
+failure 1 example.integer_failure behavior=abort binding=unbound signature=noreturn_void() continues=false unwinding=none span=0
+func 1 add(v1 x:Int@value, v2 y:Int@value) -> Int methodOf=0 profile=1 effects=1 linkage=internal definition=body span=1
   block 1 params=[]
     v3:Int = int.add v1@value, v2@value overflow=trap failure=example.integer_failure span=1
     return v3@value span=1
-func 2 main() -> Int methodOf=0 span=1
+func 2 main() -> Int methodOf=0 profile=1 effects=1 linkage=internal definition=body span=1
   block 1 params=[]
     v1:Int = const.int value=20 span=1
     v2:Int = const.int value=22 span=1
-    v3:Int = call.direct v1@value, v2@value callee=add span=1
+    v3:Int = call.direct v1@value, v2@value effects=1 callee=add span=1
     return v3@value span=1

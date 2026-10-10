@@ -1,0 +1,480 @@
+namespace sublang::hyperalloc;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::hyperalloc::SublangLifetimeState;
+use sublang::hyperalloc::SublangBorrowViews;
+
+// Fixed-point ownership/lifetime verification for direct scoped references. The old
+// class name is retained internally; placement is decided separately by MemoryPlan.
+public class SublangLocalLifetime {
+    private SublangModule module;
+    private SublangFunction function;
+    private List<Int> owners;
+    private List<Int> pairs;
+    private List<Int> borrowed;
+    private List<SublangLifetimeState> inputs;
+    private List<Bool> reached;
+    private Bool changed;
+    private SublangBorrowViews views;
+
+    public SublangLocalLifetime(SublangModule module, SublangFunction function) {
+        this.module = module;
+        this.function = function;
+        this.owners = List();
+        this.pairs = List();
+        this.borrowed = List();
+        this.inputs = List();
+        this.reached = List();
+        this.changed = false;
+        this.views = SublangBorrowViews(function);
+        Int value = 0;
+        while (value <= function.valueCount()) { this.owners.add(0); this.borrowed.add(0); value = value + 1; }
+    }
+
+    public String check() {
+        this.collect();
+        if (this.pairs.length() > 512) { return "lifetime field-pair budget exceeded (512)"; }
+        Int block = 1;
+        while (block <= this.function.blockCount()) {
+            this.inputs.add(SublangLifetimeState(this.function.valueCount(), this.pairs.length()));
+            this.reached.add(block == 1);
+            block = block + 1;
+        }
+        this.seedBorrowed(this.inputs.get(0));
+        this.changed = true;
+        Int rounds = 0;
+        while (this.changed) {
+            if (rounds >= 16384) { return "lifetime fixed-point budget exceeded"; }
+            this.changed = false;
+            block = 1;
+            while (block <= this.function.blockCount()) {
+                if (this.reached.get(block - 1)) {
+                    String error = this.visitBlock(block);
+                    if (error != "") { return "block " + block.toString() + ": " + error; }
+                }
+                block = block + 1;
+            }
+            rounds = rounds + 1;
+        }
+        return "";
+    }
+
+    private Void collect() {
+        Int parameter = 0;
+        while (parameter < this.function.paramCount()) {
+            Int value = this.function.paramAt(parameter).value();
+            if (this.reference(this.function.valueTypeAt(value))) {
+                Int mode = 1;
+                if (this.function.paramAt(parameter).passing() == "borrow_write") { mode = 2; }
+                if (this.function.paramAt(parameter).passing() == "owned") { mode = 3; }
+                this.borrowed.set(value, mode);
+                this.collectFields(value);
+            }
+            parameter = parameter + 1;
+        }
+        Int block = 1;
+        while (block <= this.function.blockCount()) {
+            Int index = 0;
+            while (index < this.function.blockAt(block).operationCount()) {
+                SublangOperation operation = this.function.blockAt(block).operationAt(index);
+                if (operation.opcode() == "class.new" || operation.opcode() == "list.new") { this.owners.set(operation.resultValue(), operation.scope()); }
+                if (operation.opcode() == "list.borrow") {
+                    this.borrowed.set(operation.resultValue(), 1); this.collectFields(operation.resultValue());
+                }
+                if (operation.opcode() == "list.push") { this.collectFields(operation.operandAt(1)); }
+                if (operation.opcode() == "bond.own") { this.collectFields(operation.operandAt(1)); }
+                if (operation.opcode() == "bond.new" || operation.opcode() == "bond.retain" || operation.opcode() == "bond.get") {
+                    this.owners.set(operation.resultValue(), operation.scope()); this.collectFields(operation.resultValue());
+                }
+                if (operation.opcode() == "bond.borrow") { this.borrowed.set(operation.resultValue(), 1); this.collectFields(operation.resultValue()); }
+                if (operation.opcode() == "return" && operation.operandCount() == 1) { this.collectFields(operation.operandAt(0)); }
+                if (operation.opcode() == "call.direct") {
+                    if (operation.hasResult() && this.reference(operation.resultType())) {
+                        this.owners.set(operation.resultValue(), operation.scope());
+                        this.collectFields(operation.resultValue());
+                    }
+                    Int argument = 0;
+                    while (argument < operation.operandCount()) {
+                        this.collectFields(operation.operandAt(argument));
+                        argument = argument + 1;
+                    }
+                }
+                if (operation.opcode().startsWith("field.")) {
+                    if (operation.opcode() == "field.borrow") {
+                        this.borrowed.set(operation.resultValue(), 1);
+                        this.collectFields(operation.resultValue());
+                    }
+                    if (operation.opcode() == "field.take") {
+                        this.owners.set(operation.resultValue(), operation.scope());
+                        this.collectFields(operation.resultValue());
+                    }
+                    if (operation.operandCount() == 2) { this.collectFields(operation.operandAt(1)); }
+                    Int key = this.key(operation);
+                    if (!this.pairs.contains(key)) { this.pairs.add(key); }
+                }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+    }
+
+    private String visitBlock(Int block) {
+        SublangLifetimeState state = this.inputs.get(block - 1).copy();
+        Int count = this.function.blockAt(block).operationCount();
+        Int index = 0;
+        while (index < count) {
+            String error = this.operation(state, this.function.blockAt(block).operationAt(index));
+            if (error != "") { return error; }
+            index = index + 1;
+        }
+        SublangOperation terminal = this.function.blockAt(block).operationAt(count - 1);
+        index = 0;
+        while (index < terminal.targetCount()) {
+            String error = this.edge(state, terminal.targetAt(index));
+            if (error != "") { return error; }
+            index = index + 1;
+        }
+        return "";
+    }
+
+    private String edge(SublangLifetimeState state, Int target) {
+        if (!this.reached.get(target - 1)) {
+            this.inputs.set(target - 1, state.copy());
+            this.reached.set(target - 1, true);
+            this.changed = true;
+            return "";
+        }
+        Int merged = this.inputs.get(target - 1).merge(state);
+        if (merged < 0) { return "owner scope stacks differ at CFG join " + target.toString(); }
+        if (merged > 0) { this.changed = true; }
+        return "";
+    }
+
+    private String operation(SublangLifetimeState state, SublangOperation operation) {
+        String opcode = operation.opcode();
+        if (opcode == "scope.begin") {
+            if (state.containsScope(operation.ref())) { return "scope begins while already active"; }
+            state.begin(operation.ref());
+            this.clearScope(state, operation.ref());
+            return "";
+        }
+        if (opcode == "scope.end") {
+            if (state.top() != operation.ref()) { return "scope.end is not the innermost active scope"; }
+            this.clearScope(state, operation.ref());
+            state.end();
+            return "";
+        }
+        if (opcode == "class.new" || opcode == "list.new") {
+            if (state.top() != operation.scope()) { return "allocation requires its active innermost scope"; }
+            this.clearValue(state, operation.resultValue());
+            state.setLive(operation.resultValue(), true);
+            return "";
+        }
+        if (opcode.startsWith("field.")) { return this.field(state, operation); }
+        if (opcode.startsWith("list.")) { return this.collection(state, operation); }
+        if (opcode.startsWith("bond.")) { return this.bond(state, operation); }
+        if (opcode == "call.direct") { return this.call(state, operation); }
+        if (opcode == "return" && this.reference(this.function.returnType())) {
+            return this.returnOwned(state, operation);
+        }
+        if (opcode == "return" && !state.empty()) { return "owner scope still active at return"; }
+        return this.checkReferences(operation);
+    }
+
+    private String checkReferences(SublangOperation operation) {
+        Int index = 0;
+        while (index < operation.operandCount()) {
+            Int type = this.function.valueTypeAt(operation.operandAt(index));
+            if (this.reference(type)) {
+                return "reference escape/alias requires an ownership transfer or borrow proof";
+            }
+            index = index + 1;
+        }
+        return "";
+    }
+
+    private String collection(SublangLifetimeState state, SublangOperation operation) {
+        Int owner = operation.operandAt(0);
+        if (!this.alive(state, owner)) { return "List access is outside its definite lifetime"; }
+        String opcode = operation.opcode();
+        if (opcode == "list.borrow") {
+            this.clearValue(state, operation.resultValue()); state.setLive(operation.resultValue(), true);
+            this.initializeFields(state, operation.resultValue()); return "";
+        }
+        if (opcode != "list.push" && opcode != "list.clear") { return ""; }
+        if (this.borrowed.get(owner) == 1) { return "read-only List borrow cannot be mutated"; }
+        this.invalidateViews(state, owner);
+        if (opcode == "list.push" && operation.modeAt(1) == "owned") { return this.adoptChild(state, operation); }
+        return "";
+    }
+
+    private Bool reference(Int type) { return this.module.types().isKind(type, "Ref") || this.module.types().isKind(type, "Bond"); }
+
+    private String bond(SublangLifetimeState state, SublangOperation operation) {
+        if (operation.opcode() != "bond.new") {
+            Int index = 0;
+            while (index < operation.operandCount()) {
+                Int value = operation.operandAt(index);
+                if (this.reference(this.function.valueTypeAt(value)) && !this.alive(state, value)) { return "Bond handle is moved or outside its lifetime"; }
+                index = index + 1;
+            }
+            if (operation.opcode() == "bond.link" || operation.opcode() == "bond.clear" || operation.opcode() == "bond.write" || operation.opcode() == "bond.own") {
+                if (this.borrowed.get(operation.operandAt(0)) == 1) { return "read-only Bond parameter cannot be mutated"; }
+                this.invalidateSharedViews(state);
+            }
+            if (operation.opcode() == "bond.own") { return this.adoptChild(state, operation); }
+        }
+        if (operation.hasResult()) {
+            if (operation.opcode() != "bond.borrow" && state.top() != operation.scope()) { return "Bond root requires an active innermost scope"; }
+            this.clearValue(state, operation.resultValue()); state.setLive(operation.resultValue(), true);
+            this.initializeFields(state, operation.resultValue());
+        }
+        return "";
+    }
+
+    private String field(SublangLifetimeState state, SublangOperation operation) {
+        Int owner = operation.operandAt(0);
+        if (!this.alive(state, owner)) {
+            return "field access is outside its definite allocation lifetime";
+        }
+        if ((this.borrowed.get(owner) == 1 || this.borrowed.get(owner) == 2) && operation.opcode() == "field.init") {
+            return "borrowed parameters cannot be initialized";
+        }
+        if (this.borrowed.get(owner) == 1 && (operation.opcode() == "field.write" || operation.opcode() == "field.clear")) {
+            return "borrow_read parameter cannot be mutated";
+        }
+        Int pair = 0;
+        while (this.pairs.get(pair) != this.key(operation)) { pair = pair + 1; }
+        if (operation.opcode() == "field.borrow") {
+            if (state.field(pair) != 1) { return "field.borrow requires an initialized child"; }
+            this.clearValue(state, operation.resultValue());
+            state.setLive(operation.resultValue(), true);
+            this.initializeFields(state, operation.resultValue());
+            return "";
+        }
+        if (operation.opcode() == "field.write" || operation.opcode() == "field.clear" || operation.opcode() == "field.take") {
+            this.invalidateViews(state, owner);
+        }
+        if (operation.opcode() == "field.take") { return this.takeChild(state, operation, pair); }
+        if (operation.opcode() == "field.clear") { state.setField(pair, 1); return ""; }
+        Bool referenceField = this.module.types().isKind(this.module.types().fieldAt(operation.ref()).typeId(), "Ref");
+        if (operation.opcode() == "field.init") {
+            if (state.field(pair) != 0) { return "field may already be initialized"; }
+            if (referenceField) {
+                String error = this.adoptChild(state, operation);
+                if (error != "") { return error; }
+            }
+            state.setField(pair, 1);
+            return "";
+        }
+        if (state.field(pair) != 1) { return "field is not initialized on every incoming path"; }
+        if (referenceField && operation.opcode() == "field.write") { return this.adoptChild(state, operation); }
+        return "";
+    }
+
+    private String takeChild(SublangLifetimeState state, SublangOperation operation, Int pair) {
+        Int owner = operation.operandAt(0);
+        if (this.borrowed.get(owner) == 1 || this.borrowed.get(owner) == 2) { return "borrowed parent cannot transfer ownership of a child"; }
+        if (state.field(pair) != 1) { return "field.take requires an initialized owned child"; }
+        if (operation.scope() == 0 || state.top() != operation.scope()) { return "field.take requires an active destination scope"; }
+        state.setField(pair, 0);
+        this.clearValue(state, operation.resultValue());
+        state.setLive(operation.resultValue(), true);
+        this.initializeFields(state, operation.resultValue());
+        return "";
+    }
+
+    private String adoptChild(SublangLifetimeState state, SublangOperation operation) {
+        Int child = operation.operandAt(1);
+        if (child == operation.operandAt(0)) { return "an object cannot own itself"; }
+        if (!this.alive(state, child)) { return "child adoption uses a moved or expired reference"; }
+        if (this.borrowed.get(child) == 1 || this.borrowed.get(child) == 2) { return "borrowed child cannot become owned"; }
+        Int pair = 0;
+        while (pair < this.pairs.length()) {
+            Int owner = this.pairs.get(pair) / (this.module.types().fieldCount() + 1);
+            if (owner == child && state.field(pair) != 1) { return "adopted child must be fully initialized"; }
+            pair = pair + 1;
+        }
+        this.clearValue(state, child);
+        return "";
+    }
+
+    private Bool alive(SublangLifetimeState state, Int value) {
+        Int rounds = 0;
+        while (this.views.isView(value) && rounds < this.function.valueCount()) {
+            if (!state.isLive(value)) { return false; }
+            value = this.views.source(value); rounds = rounds + 1;
+        }
+        return state.isLive(value) && (this.borrowed.get(value) != 0 || state.containsScope(this.owners.get(value)));
+    }
+
+    private Void collectFields(Int value) {
+        Int type = this.function.valueTypeAt(value);
+        if (!this.reference(type)) { return; }
+        Int target = this.module.types().typeAt(type).target();
+        Int index = 0;
+        while (index < this.module.types().typeAt(target).fieldCount()) {
+            Int field = this.module.types().typeAt(target).fieldAt(index);
+            Int key = value * (this.module.types().fieldCount() + 1) + field;
+            if (!this.pairs.contains(key)) { this.pairs.add(key); }
+            index = index + 1;
+        }
+    }
+
+    private Void seedBorrowed(SublangLifetimeState state) {
+        Int value = 1;
+        while (value < this.borrowed.length()) {
+            if (this.borrowed.get(value) != 0 && !this.views.isView(value)) { state.setLive(value, true); }
+            value = value + 1;
+        }
+        Int index = 0;
+        while (index < this.pairs.length()) {
+            value = this.pairs.get(index) / (this.module.types().fieldCount() + 1);
+            if (this.borrowed.get(value) != 0 && !this.views.isView(value)) { state.setField(index, 1); }
+            index = index + 1;
+        }
+    }
+
+    private String call(SublangLifetimeState state, SublangOperation operation) {
+        if (operation.hasResult() && !this.reference(operation.resultType())) {
+            if (operation.scope() != 0 || operation.resultOwnership() != "") { return "value call result cannot carry owned-reference metadata"; }
+        }
+        String aliasError = this.callAliases(operation);
+        if (aliasError != "") { return aliasError; }
+        Int argument = 0;
+        while (argument < operation.operandCount()) {
+            Int value = operation.operandAt(argument);
+            Int type = this.function.valueTypeAt(value);
+            if (this.reference(type)) {
+                if (!this.alive(state, value)) { return "call borrows a reference outside its lifetime"; }
+                String mode = this.module.functionAt(operation.ref()).paramAt(argument).passing();
+                if (mode != "borrow_read" && mode != "borrow_write" && mode != "owned") { return "call needs a supported ownership contract"; }
+                if (mode == "owned" && (this.borrowed.get(value) == 1 || this.borrowed.get(value) == 2)) { return "borrowed reference cannot be moved"; }
+                if (this.borrowed.get(value) == 1 && mode != "borrow_read") { return "read-only borrow forwarded to mutable call"; }
+                Int pair = 0;
+                while (pair < this.pairs.length()) {
+                    Int owner = this.pairs.get(pair) / (this.module.types().fieldCount() + 1);
+                    if (owner == value && state.field(pair) != 1) { return "call requires fully initialized borrowed object"; }
+                    pair = pair + 1;
+                }
+            }
+            argument = argument + 1;
+        }
+        if (operation.hasResult() && this.reference(operation.resultType())) {
+            if (operation.resultOwnership() != "owned" || operation.scope() == 0 || state.top() != operation.scope()) {
+                return "owned call result requires its active destination scope";
+            }
+        }
+        argument = 0;
+        while (argument < operation.operandCount()) {
+            Int type = this.function.valueTypeAt(operation.operandAt(argument));
+            if (this.module.types().isKind(type, "Bond") && operation.modeAt(argument) != "borrow_read") { this.invalidateSharedViews(state); }
+            if (operation.modeAt(argument) == "borrow_write") { this.invalidateViews(state, operation.operandAt(argument)); }
+            if (operation.modeAt(argument) == "owned") { this.clearValue(state, operation.operandAt(argument)); }
+            argument = argument + 1;
+        }
+        if (operation.hasResult() && this.reference(operation.resultType())) {
+            this.clearValue(state, operation.resultValue());
+            state.setLive(operation.resultValue(), true);
+            this.initializeFields(state, operation.resultValue());
+        }
+        return "";
+    }
+
+    private String returnOwned(SublangLifetimeState state, SublangOperation operation) {
+        Int value = operation.operandAt(0);
+        if (operation.modeAt(0) != "owned") { return "reference return must explicitly transfer ownership"; }
+        if (!this.alive(state, value)) { return "owned return uses a moved or expired reference"; }
+        if (this.borrowed.get(value) == 1 || this.borrowed.get(value) == 2) { return "borrowed reference cannot be returned as owned"; }
+        Int pair = 0;
+        while (pair < this.pairs.length()) {
+            Int owner = this.pairs.get(pair) / (this.module.types().fieldCount() + 1);
+            if (owner == value && state.field(pair) != 1) { return "owned return requires fully initialized fields"; }
+            pair = pair + 1;
+        }
+        return "";
+    }
+
+    private Void initializeFields(SublangLifetimeState state, Int value) {
+        Int pair = 0;
+        while (pair < this.pairs.length()) {
+            Int owner = this.pairs.get(pair) / (this.module.types().fieldCount() + 1);
+            if (owner == value) { state.setField(pair, 1); }
+            pair = pair + 1;
+        }
+    }
+
+    private String callAliases(SublangOperation operation) {
+        Int argument = 0;
+        while (argument < operation.operandCount()) {
+            Int type = this.function.valueTypeAt(operation.operandAt(argument));
+            if (this.module.types().isKind(type, "Bond") && operation.modeAt(argument) != "borrow_read") {
+                Int other = 0;
+                while (other < operation.operandCount()) {
+                    if (this.module.types().isKind(this.function.valueTypeAt(operation.operandAt(other)), "Ref")) { return "mutable/owned Bond call and Ref argument need a disjoint shared-graph proof"; }
+                    other = other + 1;
+                }
+            }
+            argument = argument + 1;
+        }
+        Int left = 0;
+        while (left < operation.operandCount()) {
+            Int value = operation.operandAt(left);
+            Int type = this.function.valueTypeAt(value);
+            if (this.reference(type)) {
+                Int right = left + 1;
+                while (right < operation.operandCount()) {
+                    if (this.views.root(operation.operandAt(right)) == this.views.root(value)) {
+                        if (operation.modeAt(left) == "borrow_write" || operation.modeAt(right) == "borrow_write" || operation.modeAt(left) == "owned" || operation.modeAt(right) == "owned") {
+                            return "mutable or owned call argument aliases another argument";
+                        }
+                    }
+                    right = right + 1;
+                }
+            }
+            left = left + 1;
+        }
+        return "";
+    }
+
+    private Int key(SublangOperation operation) {
+        return operation.operandAt(0) * (this.module.types().fieldCount() + 1) + operation.ref();
+    }
+
+    private Void clearScope(SublangLifetimeState state, Int scope) {
+        Int value = 1;
+        while (value < this.owners.length()) {
+            if (this.owners.get(value) == scope) { this.clearValue(state, value); }
+            value = value + 1;
+        }
+    }
+
+    private Void clearValue(SublangLifetimeState state, Int value) {
+        this.invalidateViews(state, value);
+        state.setLive(value, false);
+        Int index = 0;
+        while (index < this.pairs.length()) {
+            Int owner = this.pairs.get(index) / (this.module.types().fieldCount() + 1);
+            if (owner == value) { state.setField(index, 0); }
+            index = index + 1;
+        }
+    }
+
+    private Void invalidateViews(SublangLifetimeState state, Int owner) {
+        Int value = 1;
+        while (value <= this.function.valueCount()) {
+            if (this.views.dependsOn(value, owner)) { state.setLive(value, false); }
+            value = value + 1;
+        }
+    }
+
+    private Void invalidateSharedViews(SublangLifetimeState state) {
+        Int value = 1;
+        while (value <= this.function.valueCount()) {
+            if (this.views.isView(value) && this.module.types().isKind(this.function.valueTypeAt(this.views.root(value)), "Bond")) { state.setLive(value, false); }
+            value = value + 1;
+        }
+    }
+}

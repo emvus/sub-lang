@@ -1,0 +1,79 @@
+namespace sublang::semantics;
+
+use sublang::proof::SublangProofReference;
+
+// Recorded answer about two logical locations, with its origin, the revision it was made
+// for and the span that introduced it. Only a proven fact can answer NoAlias or MustAlias
+// (see SublangModule.aliasAnswer). A declared fact is kept as data; an assumed-conservative
+// fact can only state MayAlias.
+public class SublangAliasFact {
+    private Int factIdValue;
+    private Int leftLocation;
+    private Int rightLocation;
+    private String answerText;
+    private String originText;
+    private String proofText;
+    private Int revisionNumber;
+    private Int spanIdValue;
+    private SublangProofReference evidence;
+
+    public SublangAliasFact(Int id, Int left, Int right, String answer, String origin, String proof, Int revision, Int span) {
+        this.factIdValue = id;
+        this.leftLocation = left;
+        this.rightLocation = right;
+        this.answerText = answer + "";
+        this.originText = origin + "";
+        this.proofText = proof + "";
+        this.revisionNumber = revision;
+        this.spanIdValue = span;
+        this.evidence = SublangProofReference.missing();
+    }
+
+    public static SublangAliasFact withProof(Int id, Int left, Int right, String answer, SublangProofReference proof, Int revision, Int span) {
+        SublangAliasFact fact = SublangAliasFact(id, left, right, answer, "proven", proof.analysis(), revision, span);
+        fact.evidence = proof;
+        return fact;
+    }
+
+    public Int id() {
+        return this.factIdValue;
+    }
+
+    public static SublangAliasFact imported(Int id, Int left, Int right, String answer, String origin, String label, SublangProofReference proof, Int revision, Int span) {
+        SublangAliasFact fact = SublangAliasFact(id, left, right, answer, origin, label, revision, span);
+        fact.evidence = proof;
+        return fact;
+    }
+
+    public Int left() {
+        return this.leftLocation;
+    }
+
+    public Int right() {
+        return this.rightLocation;
+    }
+
+    public String answer() {
+        return this.answerText;
+    }
+
+    public String origin() {
+        return this.originText;
+    }
+
+    public SublangProofReference proofReference() {
+        return this.evidence;
+    }
+
+    public String proof() {
+        return this.proofText;
+    }
+
+    public Int revision() {
+        return this.revisionNumber;
+    }
+
+    public Int span() {
+        return this.spanIdValue;
+    }
+}

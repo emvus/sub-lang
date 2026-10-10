@@ -1,0 +1,67 @@
+namespace sublang::cli;
+
+use Std::Native::NativeFile;
+use Std::Process::Processes;
+use sublang::wire::SublangWire;
+use sublang::wire::SublangWireResult;
+use sublang::backend::SublangCompiler;
+use sublang::backend::SublangCompilation;
+use sublang::dump::SublangDump;
+
+// Compiled executable, independent of Emerald at invocation. LLVM emission is
+// explicit; the capped launcher owns LLVM optimization, linking and execution.
+public class SublangCommand {
+    public static Int run(List<String> arguments) {
+        if (arguments.length() == 1 && arguments.get(0) == "--version") {
+            println("Sublang 0.1-dev; wire=2 (reads 1/2); core.native64.v2"); return 0;
+        }
+        if (arguments.length() == 1 && arguments.get(0) == "capabilities") {
+            // Deterministic key=value discovery; every entry mirrors a checked contract.
+            println("capabilities-format=1");
+            println("compiler=Sublang 0.1-dev");
+            println("wire.read=1,2");
+            println("wire.write=2");
+            println("ir.schema=1");
+            println("ir.stage=High");
+            println("feature=core.native64.v1");
+            println("feature=core.native64.v2");
+            println("target=native64-host-libc");
+            println("provider=none");
+            println("flow=auto,on,off");
+            println("optimind=on,off");
+            println("input.max-bytes=16777216");
+            println("output=llvm-ir,memory-plan");
+            return 0;
+        }
+        if (arguments.length() == 2 && arguments.get(0) == "dump") {
+            // Read-only inspection of a decoded module; no verification or codegen is implied.
+            String dumpInput = arguments.get(1);
+            if (!NativeFile.isFile(dumpInput) || NativeFile.size(dumpInput) > 16777216) {
+                println("SUBLANG-CLI002: input must be a regular file of at most 16 MiB"); return 2;
+            }
+            SublangWireResult dumped = SublangWire.read(NativeFile.readText(dumpInput));
+            if (!dumped.valid()) { println(dumped.error()); return 1; }
+            println(SublangDump.render(dumped.module()));
+            return 0;
+        }
+        if (arguments.length() != 5 || arguments.get(0) != "emit-llvm") {
+            println("Usage: sublang emit-llvm input.sublang-wire output.ll auto|on|off on|off | sublang dump input.sublang-wire | sublang capabilities | sublang --version"); return 2;
+        }
+        String input = arguments.get(1); String output = arguments.get(2);
+        String flow = arguments.get(3); String optimind = arguments.get(4);
+        if (optimind != "on" && optimind != "off") { println("SUBLANG-CLI001: invalid Optimind mode"); return 2; }
+        if (!NativeFile.isFile(input) || NativeFile.size(input) > 16777216) {
+            println("SUBLANG-CLI002: input must be a regular file of at most 16 MiB"); return 2;
+        }
+        SublangWireResult decoded = SublangWire.read(NativeFile.readText(input));
+        if (!decoded.valid()) { println(decoded.error()); return 1; }
+        SublangCompilation compilation = SublangCompiler.compile(decoded.module(), optimind == "on", flow);
+        if (!compilation.codegenReady()) { println(compilation.error()); return 1; }
+        NativeFile.writeText(output, compilation.llvm());
+        NativeFile.writeText(output + ".plan", compilation.explainMemory());
+        if (!NativeFile.isFile(output) || NativeFile.size(output) != compilation.llvm().length() || !NativeFile.isFile(output + ".plan") || NativeFile.size(output + ".plan") != compilation.explainMemory().length()) {
+            println("SUBLANG-CLI003: cannot write output"); return 1;
+        }
+        return 0;
+    }
+}

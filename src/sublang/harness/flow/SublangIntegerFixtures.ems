@@ -1,0 +1,75 @@
+namespace sublang::harness::flow;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+use sublang::optimind::SublangOptimind;
+use sublang::optimind::SublangValueFacts;
+
+public class SublangIntegerFixtures {
+    private static Bool product(Int first, Int second, Bool known, Int expected) {
+        SublangBuilder builder = SublangBuilder("mul-bounds");
+        Int span = builder.syntheticSpan("mul-bounds");
+        builder.beginFunction("test", builder.intType(), 0, span); builder.beginBlock();
+        Int result = builder.ops().intBinary("int.mul", builder.ops().constInt(first, span), builder.ops().constInt(second, span), "trap", builder.failure("abort"), span);
+        builder.ops().returnValue(result, span); builder.freeze();
+        SublangValueFacts facts = SublangOptimind.analyze(builder.module().functionAt(1), true);
+        if (facts.known(result) != known) { return false; }
+        if (!known) { return true; }
+        return facts.integer(result) == expected;
+    }
+
+    // Expected products use an independent arbitrary-precision integer oracle.
+    public static Bool bounds() {
+        if (!SublangIntegerFixtures.product(0, (-9223372036854775807 - 1), true, 0)) { return false; }
+        if (!SublangIntegerFixtures.product(1, (-9223372036854775807 - 1), true, (-9223372036854775807 - 1))) { return false; }
+        if (!SublangIntegerFixtures.product(-1, (-9223372036854775807 - 1), false, 0)) { return false; }
+        if (!SublangIntegerFixtures.product((-9223372036854775807 - 1), 1, true, (-9223372036854775807 - 1))) { return false; }
+        if (!SublangIntegerFixtures.product((-9223372036854775807 - 1), 2, false, 0)) { return false; }
+        if (!SublangIntegerFixtures.product((-9223372036854775807 - 1), -2, false, 0)) { return false; }
+        if (!SublangIntegerFixtures.product(-4611686018427387904, 2, true, (-9223372036854775807 - 1))) { return false; }
+        if (!SublangIntegerFixtures.product(2, -4611686018427387904, true, (-9223372036854775807 - 1))) { return false; }
+        if (!SublangIntegerFixtures.product(-4611686018427387904, -2, false, 0)) { return false; }
+        if (!SublangIntegerFixtures.product(-3037000499, -3037000499, true, 9223372030926249001)) { return false; }
+        if (!SublangIntegerFixtures.product(3037000499, 3037000499, true, 9223372030926249001)) { return false; }
+        if (!SublangIntegerFixtures.product(3037000500, 3037000500, false, 0)) { return false; }
+        if (!SublangIntegerFixtures.product(9223372036854775807, -1, true, -9223372036854775807)) { return false; }
+        if (!SublangIntegerFixtures.product(9223372036854775807, 2, false, 0)) { return false; }
+        if (!SublangIntegerFixtures.product(-1, -9223372036854775807, true, 9223372036854775807)) { return false; }
+        return true;
+    }
+
+    public static SublangModule arithmetic(Int error) {
+        SublangBuilder builder = SublangBuilder("integer-parity");
+        Int span = builder.syntheticSpan("integer-parity");
+        Int failure = builder.failure("abort");
+        Int main = builder.beginFunction("main", builder.intType(), 0, span); builder.module().setEntry(main); builder.beginBlock();
+        Int minimum = builder.ops().constInt(-9223372036854775807 - 1, span);
+        Int negative = builder.ops().constInt(-1, span);
+        if (error > 0) {
+            String opcode = "int.mul";
+            Int right = negative;
+            if (error == 2) { opcode = "int.div"; right = builder.ops().constInt(0, span); }
+            if (error == 3) { opcode = "int.div"; }
+            Int failed = builder.ops().intBinary(opcode, minimum, right, "trap", failure, span);
+            Int zero = builder.ops().intBinary("int.mul", failed, builder.ops().constInt(0, span), "trap", failure, span);
+            builder.ops().returnValue(zero, span);
+            return builder.module();
+        }
+        Int six = builder.ops().intBinary("int.mul", builder.ops().constInt(-2, span), builder.ops().constInt(-3, span), "trap", failure, span);
+        Int quotient = builder.ops().intBinary("int.div", builder.ops().constInt(-85, span), builder.ops().constInt(2, span), "trap", failure, span);
+        Int remainder = builder.ops().intBinary("int.rem", builder.ops().constInt(-85, span), builder.ops().constInt(2, span), "trap", failure, span);
+        Int positive = builder.ops().intNeg(quotient, "trap", failure, span);
+        Int remZero = builder.ops().intBinary("int.rem", minimum, negative, "zero", failure, span);
+        Int wrapped = builder.ops().intBinary("int.div", minimum, negative, "wrap", failure, span);
+        Int balance = builder.ops().intBinary("int.sub", wrapped, minimum, "trap", failure, span);
+        Int sum = builder.ops().intBinary("int.add", positive, six, "trap", failure, span);
+        sum = builder.ops().intBinary("int.add", sum, remainder, "trap", failure, span);
+        sum = builder.ops().intBinary("int.add", sum, remZero, "trap", failure, span);
+        sum = builder.ops().intBinary("int.add", sum, balance, "trap", failure, span);
+        Int yes = builder.newBlock(); Int no = builder.newBlock(); List<Int> empty = List();
+        builder.ops().condBranch(builder.ops().compare("eq", sum, builder.ops().constInt(47, span), span), yes, empty, no, empty, span);
+        builder.enterBlock(yes); builder.ops().returnValue(sum, span);
+        builder.enterBlock(no); builder.ops().returnValue(builder.ops().constInt(-1, span), span);
+        return builder.module();
+    }
+}

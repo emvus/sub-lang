@@ -1,0 +1,70 @@
+namespace sublang::wire;
+
+use sublang::wire::SublangWireStream;
+use sublang::ir::SublangModule;
+use sublang::body::SublangFunction;
+use sublang::body::SublangBlock;
+use sublang::body::SublangOperation;
+use sublang::body::SublangParam;
+use sublang::model::SublangSourceSpan;
+use sublang::model::SublangType;
+use sublang::model::SublangField;
+use sublang::semantics::SublangSemanticProfile;
+use sublang::semantics::SublangFailureAction;
+use sublang::semantics::SublangLocation;
+use sublang::semantics::SublangAliasFact;
+use sublang::semantics::SublangEffectSummary;
+use sublang::semantics::SublangEffectFact;
+
+// Select an export descriptor or an import placeholder without rebinding owned
+// Emerald locals. Placeholders never escape into the imported IR tables.
+public class SublangWireSelection {
+    public static SublangSourceSpan span(SublangWireStream stream, SublangModule module, Int index) {
+        if (stream.isReading()) { return SublangSourceSpan(0, 0, 0, 0, ""); }
+        return module.spanAt(index);
+    }
+    public static SublangType type(SublangWireStream stream, SublangModule module, Int index) {
+        if (stream.isReading()) { return SublangType(0, "", "", 0, false, 0, 0); }
+        return module.types().typeAt(index);
+    }
+    public static SublangField field(SublangWireStream stream, SublangModule module, Int index) {
+        if (stream.isReading()) { return SublangField(0, 0, "", 0, false, 0); }
+        return module.types().fieldAt(index);
+    }
+    public static SublangSemanticProfile profile(SublangWireStream stream, SublangModule module, Int index) {
+        if (stream.isReading()) { return SublangSemanticProfile(0, "", 0, "", "", "", ""); }
+        return module.semantics().profileAt(index);
+    }
+    public static SublangFailureAction failure(SublangWireStream stream, SublangModule module, Int index) {
+        if (stream.isReading()) { return SublangFailureAction(0, "", "", "", "", false, "", 0); }
+        return module.semantics().failureActionAt(index);
+    }
+    public static SublangLocation location(SublangWireStream stream, SublangModule module, Int index) {
+        if (stream.isReading()) { return SublangLocation(0, "", "", 0); }
+        return module.aliases().locationAt(index);
+    }
+    public static SublangAliasFact alias(SublangWireStream stream, SublangModule module, Int index) {
+        if (stream.isReading()) { return SublangAliasFact(0, 0, 0, "", "", "", 1, 0); }
+        return module.aliases().aliasFactAt(index);
+    }
+    public static SublangEffectSummary summary(SublangWireStream stream, SublangModule module, Int index) {
+        if (stream.isReading()) { return SublangEffectSummary(0, "", 0); }
+        return module.semantics().effectSummaryAt(index);
+    }
+    public static SublangEffectFact fact(SublangWireStream stream, SublangEffectSummary summary, Int index) {
+        if (stream.isReading()) { return SublangEffectFact("", "", "", "", ""); }
+        return summary.factAt(index);
+    }
+    public static SublangFunction function(SublangWireStream stream, SublangModule module, Int index) {
+        if (stream.isReading()) { return SublangFunction(0, "", 0, 0, 0); }
+        return module.functionAt(index);
+    }
+    public static SublangParam param(SublangWireStream stream, SublangFunction function, Int index) {
+        if (stream.isReading()) { return SublangParam(0, "", 0, "", false); }
+        return function.paramAt(index);
+    }
+    public static SublangOperation operation(SublangWireStream stream, SublangBlock block, Int index) {
+        if (stream.isReading()) { return SublangOperation(0, "", 0); }
+        return block.operationAt(index);
+    }
+}

@@ -1,0 +1,73 @@
+namespace sublang::optimind;
+
+use sublang::body::SublangOperation;
+use sublang::optimind::SublangValueFacts;
+use sublang::optimind::SublangIntegerBounds;
+
+// Fold only arithmetic proved not to overflow. Unknown or overflowing operations
+// retain their original runtime checks, including in wrap mode.
+public class SublangConstantFold {
+    public static Void visit(SublangOperation operation, SublangValueFacts facts) {
+        String opcode = operation.opcode();
+        if (opcode == "const.int") {
+            facts.constant(operation.resultValue(), operation.constInt(), false);
+            return;
+        }
+        if (opcode == "const.bool") {
+            Int number = 0;
+            if (operation.constBool()) { number = 1; }
+            facts.constant(operation.resultValue(), number, false);
+            return;
+        }
+        if (opcode == "int.neg") { SublangConstantFold.negate(operation, facts); return; }
+        if (opcode != "int.add" && opcode != "int.sub" && opcode != "int.mul" && opcode != "int.div" && opcode != "int.rem" && opcode != "compare") { return; }
+        Int left = operation.operandAt(0);
+        Int right = operation.operandAt(1);
+        if (!facts.known(left) || !facts.known(right)) { return; }
+        Int first = facts.integer(left);
+        Int second = facts.integer(right);
+        if (opcode == "compare") { SublangConstantFold.compare(operation, facts, first, second); return; }
+        if (opcode == "int.div" || opcode == "int.rem") { SublangConstantFold.divide(operation, facts, first, second); return; }
+        if (!SublangIntegerBounds.safe(first, second, opcode)) { return; }
+        if (opcode == "int.mul") { facts.constant(operation.resultValue(), first * second, true); return; }
+        if (opcode == "int.sub") {
+            facts.constant(operation.resultValue(), first - second, true);
+            return;
+        }
+        facts.constant(operation.resultValue(), first + second, true);
+    }
+
+    private static Void negate(SublangOperation operation, SublangValueFacts facts) {
+        Int value = operation.operandAt(0);
+        if (!facts.known(value)) { return; }
+        Int number = facts.integer(value);
+        if (number == -9223372036854775807 - 1) { return; }
+        facts.constant(operation.resultValue(), -number, true);
+    }
+
+    private static Void divide(SublangOperation operation, SublangValueFacts facts, Int first, Int second) {
+        if (second == 0) { return; }
+        Int minimum = -9223372036854775807 - 1;
+        if (first == minimum && second == -1) {
+            if (operation.opcode() == "int.div" && operation.overflow() == "wrap") { facts.constant(operation.resultValue(), minimum, true); }
+            if (operation.opcode() == "int.rem" && operation.overflow() == "zero") { facts.constant(operation.resultValue(), 0, true); }
+            return;
+        }
+        if (operation.opcode() == "int.div") { facts.constant(operation.resultValue(), first / second, true); return; }
+        facts.constant(operation.resultValue(), first % second, true);
+    }
+
+    private static Void compare(SublangOperation operation, SublangValueFacts facts, Int first, Int second) {
+        String predicate = operation.predicate();
+        Bool result = false;
+        if (predicate == "eq") { result = first == second; }
+        if (predicate == "ne") { result = first != second; }
+        if (predicate == "lt") { result = first < second; }
+        if (predicate == "le") { result = first <= second; }
+        if (predicate == "gt") { result = first > second; }
+        if (predicate == "ge") { result = first >= second; }
+        Int number = 0;
+        if (result) { number = 1; }
+        facts.constant(operation.resultValue(), number, true);
+    }
+}

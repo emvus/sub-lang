@@ -1,0 +1,35 @@
+namespace sublang::backend::llvmflow;
+
+use sublang::ir::SublangModule;
+use sublang::backend::llvm::SublangLlvmTypes;
+
+// Visitors enqueue immediate children; the runtime frees a tree iteratively.
+public class SublangLlvmDropEmitter {
+    public static String definitions(SublangModule module) {
+        String text = "";
+        Int type = 1;
+        while (type <= module.types().typeCount()) {
+            if (module.types().isKind(type, "Class")) { text = text + SublangLlvmDropEmitter.visitor(module, type); }
+            type = type + 1;
+        }
+        return text;
+    }
+
+    private static String visitor(SublangModule module, Int type) {
+        String text = "define internal void @sublang.drop.t" + type.toString() + "(ptr %payload, ptr %pending) {\nentry:\n";
+        Int index = 0;
+        while (index < module.types().typeAt(type).fieldCount()) {
+            Int field = module.types().typeAt(type).fieldAt(index);
+            Int fieldType = module.types().fieldAt(field).typeId();
+            if (module.types().isKind(fieldType, "Ref")) {
+                text = text + "  %slot" + index.toString() + " = getelementptr %t" + type.toString() + ", ptr %payload, i32 0, i32 " + index.toString() + "\n";
+                text = text + "  %child" + index.toString() + " = load ptr, ptr %slot" + index.toString() + "\n";
+                Int childType = module.types().typeAt(fieldType).target();
+                text = text + "  call void @sublang.flow.enqueue(ptr %pending, ptr %child" + index.toString() + ", ptr @sublang.drop.t" + childType.toString() + ")\n";
+                text = text + "  store ptr null, ptr %slot" + index.toString() + "\n";
+            }
+            index = index + 1;
+        }
+        return text + "  ret void\n}\n";
+    }
+}

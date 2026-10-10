@@ -1,0 +1,60 @@
+namespace sublang::wire;
+
+use sublang::ir::SublangModule;
+use sublang::wire::SublangWireStream;
+use sublang::wire::SublangWireResult;
+use sublang::wire::SublangWireTables;
+use sublang::wire::SublangWireEffects;
+use sublang::wire::SublangWireBody;
+
+// Transport validity is separate from semantic/lifetime validity. Deserialization
+// freezes the snapshot but never certifies frontend effects or ownership claims.
+public class SublangWire {
+    public static SublangWireResult read(String text) {
+        SublangWireStream stream = SublangWireStream(true, text);
+        SublangModule module = SublangWire.transfer(stream, SublangModule(""));
+        module.freeze();
+        return SublangWireResult(module, "", stream.error());
+    }
+
+    public static SublangWireResult write(SublangModule module) {
+        SublangWireStream stream = SublangWireStream(false, "");
+        if (!module.isFrozen()) { stream.reject("writer requires a frozen snapshot"); }
+        SublangWire.transfer(stream, module);
+        return SublangWireResult(module, stream.result(), stream.error());
+    }
+
+    private static SublangModule transfer(SublangWireStream stream, SublangModule module) {
+        stream.expect("SUBLANG-WIRE");
+        Int transport = stream.number(2);
+        if (transport != 1 && transport != 2) { stream.reject("unsupported transport version"); }
+        stream.setVersion(transport);
+        Int schema = stream.number(module.schema());
+        String stage = stream.text(module.stage()); Int revision = stream.number(module.revision());
+        if (schema != module.schema() || stage != "High" || revision != 1) {
+            stream.reject("unsupported IR schema, stage or revision");
+        }
+        SublangWire.features(stream);
+        String name = stream.text(module.name());
+        Int entry = stream.number(module.entryFunction());
+        if (stream.isReading()) { module = SublangModule(name); module.setEntry(entry); }
+        SublangWireTables.sources(stream, module); SublangWireTables.types(stream, module);
+        SublangWireTables.profiles(stream, module); SublangWireTables.failures(stream, module);
+        SublangWireEffects.locations(stream, module); SublangWireEffects.summaries(stream, module);
+        SublangWireBody.functions(stream, module); stream.finish();
+        return module;
+    }
+
+    private static Void features(SublangWireStream stream) {
+        Int count = stream.count(1, 32); Int index = 0;
+        Bool core = false;
+        while (index < count && stream.valid()) {
+            String expected = "core.native64.v1";
+            if (stream.version() == 2) { expected = "core.native64.v2"; }
+            String feature = stream.text(expected);
+            if (feature != expected || core) { stream.reject("unknown or duplicate required feature"); }
+            core = true; index = index + 1;
+        }
+        if (!core) { stream.reject("missing core.native64 feature"); }
+    }
+}

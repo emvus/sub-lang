@@ -1,0 +1,57 @@
+namespace sublang::ir;
+
+use sublang::body::SublangBlock;
+use sublang::body::SublangFunction;
+
+// The function and block the builder is currently filling. Declarations and operations both ask
+// the cursor whether they may write, so the answer comes from one place. A frozen module never
+// accepts writes, whatever the cursor points at.
+public class SublangCursor {
+    private SublangModule module;
+    private Int functionPosition;
+    private Int blockPosition;
+
+    public SublangCursor(SublangModule target) {
+        this.module = target;
+        this.functionPosition = 0;
+        this.blockPosition = 0;
+    }
+
+    public SublangModule module() {
+        return this.module;
+    }
+
+    public Int currentFunctionId() {
+        return this.functionPosition;
+    }
+
+    public Int currentBlockId() {
+        return this.blockPosition;
+    }
+
+    // Entering a function resets the block, because a block id is only meaningful inside its function.
+    public Void enterFunction(Int functionId) {
+        this.functionPosition = functionId;
+        this.blockPosition = 0;
+    }
+
+    public Void enterBlock(Int blockId) {
+        this.blockPosition = blockId;
+    }
+
+    public Bool functionReady() {
+        return this.functionPosition != 0 && !this.module.isFrozen();
+    }
+
+    public Bool blockReady() {
+        return this.functionReady() && this.blockPosition != 0;
+    }
+
+    public SublangFunction currentFunction() {
+        return this.module.functionAt(this.functionPosition);
+    }
+
+    public SublangBlock currentBlock() {
+        return this.currentFunction().blockAt(this.blockPosition);
+    }
+}

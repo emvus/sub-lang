@@ -1,0 +1,20 @@
+namespace sublang::ir::data;
+
+use sublang::ir::SublangModule;
+
+// The accepted collection contract exposes only read-only class views and consumes
+// the source owner. No owned edge, retained mutable alias or identity operation
+// may distinguish the copy. Field declarations alone do not prove observability.
+public class SublangCollectionLayout {
+    public static Bool inlineClass(SublangModule module, Int type) {
+        if (!module.types().isKind(type, "Class")) { return false; }
+        Int index = 0;
+        while (index < module.types().typeAt(type).fieldCount()) {
+            Int field = module.types().typeAt(type).fieldAt(index);
+            String kind = module.types().kindOf(module.types().fieldAt(field).typeId());
+            if (kind != "Int" && kind != "Bool" && kind != "Float" && kind != "String") { return false; }
+            index = index + 1;
+        }
+        return true;
+    }
+}

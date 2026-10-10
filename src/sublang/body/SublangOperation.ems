@@ -1,0 +1,313 @@
+namespace sublang::body;
+
+use sublang::vocabulary::SublangVocabulary;
+
+// One High IR operation. Only the attributes relevant to its opcode are set:
+// ref() is a type, field, function, scope or failure id depending on the
+// opcode (see SublangVocabulary.refMeaning). Operand passing modes are parallel to
+// the operand list. A float constant carries its raw IEEE-754 bit pattern in an
+// Int64 (constFloatBits), so -0.0 and NaN payloads survive unchanged. effectSummary()
+// names the effect summary of the operation (0 means none recorded). A frozen
+// operation refuses and counts every attempted setter mutation.
+public class SublangOperation {
+    private Int opIdValue;
+    private String opcodeName;
+    private Int spanIdValue;
+    private Bool frozenFlag;
+    private Int refusalCounter;
+    private List<Int> operandIds;
+    private List<String> operandModes;
+    private Int resultValueId;
+    private Int resultTypeId;
+    private String resultOwnershipText;
+    private Int refId;
+    private Int scopeIdValue;
+    private String overflowMode;
+    private String predicateName;
+    private String fpModeName;
+    private List<Int> targetBlockIds;
+    private Int trueArgCount;
+    private Int constIntValue;
+    private Bool constBoolValue;
+    private Int constFloatBitsValue;
+    private Int effectSummaryIdValue;
+    private String constTextValue;
+
+    public SublangOperation(Int id, String opcode, Int span) {
+        this.opIdValue = id;
+        this.opcodeName = opcode + "";
+        this.spanIdValue = span;
+        this.frozenFlag = false;
+        this.refusalCounter = 0;
+        this.operandIds = List();
+        this.operandModes = List();
+        this.resultValueId = 0;
+        this.resultTypeId = 0;
+        this.resultOwnershipText = "";
+        this.refId = 0;
+        this.scopeIdValue = 0;
+        this.overflowMode = "";
+        this.predicateName = "";
+        this.fpModeName = "";
+        this.targetBlockIds = List();
+        this.trueArgCount = 0;
+        this.constIntValue = 0;
+        this.constBoolValue = false;
+        this.constFloatBitsValue = 0;
+        this.effectSummaryIdValue = 0;
+        this.constTextValue = "";
+    }
+
+    public Int id() {
+        return this.opIdValue;
+    }
+
+    public String opcode() {
+        return this.opcodeName;
+    }
+
+    public Int span() {
+        return this.spanIdValue;
+    }
+
+    public List<Int> operands() {
+        List<Int> copy = List();
+        Int index = 0;
+        while (index < this.operandIds.length()) {
+            copy.add(this.operandIds.get(index));
+            index = index + 1;
+        }
+        return copy;
+    }
+
+    public Int operandCount() {
+        return this.operandIds.length();
+    }
+
+    public Int operandAt(Int index) {
+        return this.operandIds.get(index);
+    }
+
+    public Int modeCount() {
+        return this.operandModes.length();
+    }
+
+    public String modeAt(Int index) {
+        return this.operandModes.get(index);
+    }
+
+    public Bool hasResult() {
+        return this.resultValueId != 0;
+    }
+
+    public Int resultValue() {
+        return this.resultValueId;
+    }
+
+    public Int resultType() {
+        return this.resultTypeId;
+    }
+
+    public String resultOwnership() {
+        return this.resultOwnershipText;
+    }
+
+    public Int ref() {
+        return this.refId;
+    }
+
+    public Int scope() {
+        return this.scopeIdValue;
+    }
+
+    public String overflow() {
+        return this.overflowMode;
+    }
+
+    public String predicate() {
+        return this.predicateName;
+    }
+
+    public String fpMode() {
+        return this.fpModeName;
+    }
+
+    public List<Int> targets() {
+        List<Int> copy = List();
+        Int index = 0;
+        while (index < this.targetBlockIds.length()) {
+            copy.add(this.targetBlockIds.get(index));
+            index = index + 1;
+        }
+        return copy;
+    }
+
+    public Int targetCount() {
+        return this.targetBlockIds.length();
+    }
+
+    public Int targetAt(Int index) {
+        return this.targetBlockIds.get(index);
+    }
+
+    public Int refusalCount() {
+        return this.refusalCounter;
+    }
+
+    public Int trueArgs() {
+        return this.trueArgCount;
+    }
+
+    public Int constInt() {
+        return this.constIntValue;
+    }
+
+    public Bool constBool() {
+        return this.constBoolValue;
+    }
+
+    public Int constFloatBits() {
+        return this.constFloatBitsValue;
+    }
+
+    public Int effectSummary() {
+        return this.effectSummaryIdValue;
+    }
+
+    public String constText() { return this.constTextValue; }
+
+    public Void setConstText(String value) {
+        if (this.frozenFlag) { this.refusalCounter = this.refusalCounter + 1; return; }
+        this.constTextValue = value + "";
+    }
+
+    public Bool isTerminator() {
+        return SublangVocabulary.isTerminator(this.opcodeName);
+    }
+
+    public Void freeze() {
+        this.frozenFlag = true;
+    }
+
+    public Void setOperands(List<Int> ids, List<String> modes) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.operandIds = List();
+        this.operandModes = List();
+        Int index = 0;
+        while (index < ids.length()) {
+            this.operandIds.add(ids.get(index));
+            index = index + 1;
+        }
+        index = 0;
+        while (index < modes.length()) {
+            this.operandModes.add(modes.get(index) + "");
+            index = index + 1;
+        }
+    }
+
+    public Void setResult(Int valueId, Int typeId) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.resultValueId = valueId;
+        this.resultTypeId = typeId;
+    }
+
+    public Void setResultOwnership(String ownership) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.resultOwnershipText = ownership + "";
+    }
+
+    public Void setRef(Int value) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.refId = value;
+    }
+
+    public Void setScope(Int value) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.scopeIdValue = value;
+    }
+
+    public Void setOverflow(String mode) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.overflowMode = mode + "";
+    }
+
+    public Void setPredicate(String predicate) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.predicateName = predicate + "";
+    }
+
+    public Void setFpMode(String mode) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.fpModeName = mode + "";
+    }
+
+    public Void setTargets(List<Int> blocks, Int argCount) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.targetBlockIds = List();
+        Int index = 0;
+        while (index < blocks.length()) {
+            this.targetBlockIds.add(blocks.get(index));
+            index = index + 1;
+        }
+        this.trueArgCount = argCount;
+    }
+
+    public Void setConstInt(Int value) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.constIntValue = value;
+    }
+
+    public Void setConstBool(Bool value) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.constBoolValue = value;
+    }
+
+    public Void setConstFloatBits(Int bits) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.constFloatBitsValue = bits;
+    }
+
+    public Void setEffectSummary(Int effectId) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.effectSummaryIdValue = effectId;
+    }
+}

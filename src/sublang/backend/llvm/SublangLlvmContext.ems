@@ -1,0 +1,56 @@
+namespace sublang::backend::llvm;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::backend::llvm::SublangLlvmTypes;
+use sublang::hyperalloc::SublangFunctionMemoryPlan;
+use sublang::backend::llvmflow::SublangLlvmOwnership;
+use sublang::backend::llvmflow::SublangLlvmBonds;
+
+// SSA values lower first through slots. LLVM's mem2reg reconstructs phis, while edge
+// copies below preserve parallel block-argument semantics even for loop backedges.
+public class SublangLlvmContext {
+    public SublangModule module;
+    public SublangFunction function;
+    private SublangFunctionMemoryPlan memoryPlan;
+    private SublangLlvmOwnership ownership;
+    private SublangLlvmBonds bondOwnership;
+
+    public SublangLlvmContext(SublangModule module, SublangFunction function, SublangFunctionMemoryPlan plan) {
+        this.module = module;
+        this.function = function;
+        this.memoryPlan = plan;
+        this.ownership = SublangLlvmOwnership(module, function, plan);
+        this.bondOwnership = SublangLlvmBonds(module, function);
+    }
+
+    public SublangLlvmOwnership owners() { return this.ownership; }
+    public SublangLlvmBonds bonds() { return this.bondOwnership; }
+
+    public Bool isFolded(Int value) { return this.memoryPlan.isFolded(value); }
+    public Bool isShard(Int value) { return this.memoryPlan.isShard(value); }
+    public Bool isPool(Int value) { return this.memoryPlan.isPool(value); }
+    public Bool isLocal(Int value) { return this.memoryPlan.isLocal(value); }
+
+    public String type(Int id) { return SublangLlvmTypes.type(this.module, id); }
+    public String result(SublangOperation operation) { return "%r" + operation.id().toString(); }
+    public String input(SublangOperation operation, Int index) {
+        return "%i" + operation.id().toString() + "_" + index.toString();
+    }
+
+    public String loadInputs(SublangOperation operation) {
+        String text = "";
+        Int index = 0;
+        while (index < operation.operandCount()) {
+            Int value = operation.operandAt(index);
+            text = text + "  " + this.input(operation, index) + " = load " + this.type(this.function.valueTypeAt(value)) + ", ptr %v" + value.toString() + "\n";
+            index = index + 1;
+        }
+        return text;
+    }
+
+    public String store(SublangOperation operation, String expression) {
+        return "  store " + this.type(operation.resultType()) + " " + expression + ", ptr %v" + operation.resultValue().toString() + "\n";
+    }
+}

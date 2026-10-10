@@ -1,0 +1,67 @@
+namespace sublang::ir::data;
+
+use sublang::ir::SublangCursor;
+use sublang::body::SublangOperation;
+
+public class SublangCollectionBuilder {
+    private SublangCursor cursor;
+    public SublangCollectionBuilder(SublangCursor cursor) { this.cursor = cursor; }
+
+    public Int listNew(Int type, Int scope, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("list.new", span);
+        op.setRef(type); op.setScope(scope); op.setResultOwnership("owned");
+        return this.value(op, this.cursor.module().types().refTypeFor(type));
+    }
+
+    public Void push(Int list, Int element, Int span) {
+        if (!this.ready()) { return; }
+        SublangOperation op = this.operation("list.push", span);
+        List<Int> args = List(); args.add(list); args.add(element);
+        List<String> modes = List(); modes.add("borrow_write");
+        String mode = "value";
+        Int type = this.cursor.currentFunction().valueTypeOrZero(element);
+        if (this.cursor.module().types().isKind(type, "Ref")) { mode = "owned"; }
+        modes.add(mode); op.setOperands(args, modes);
+        this.cursor.currentBlock().addOperation(op);
+    }
+
+    public Int length(Int list, Int span) { return this.read("list.length", list, 0, span); }
+    public Int get(Int list, Int index, Int span) { return this.read("list.get", list, index, span); }
+    public Int borrow(Int list, Int index, Int span) { return this.read("list.borrow", list, index, span); }
+
+    public Void clear(Int list, Int span) {
+        if (!this.ready()) { return; }
+        SublangOperation op = this.operation("list.clear", span);
+        List<Int> args = List(); args.add(list);
+        List<String> modes = List(); modes.add("borrow_write"); op.setOperands(args, modes);
+        this.cursor.currentBlock().addOperation(op);
+    }
+
+    private Int read(String opcode, Int list, Int index, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation(opcode, span);
+        List<Int> args = List(); args.add(list);
+        List<String> modes = List(); modes.add("borrow_read");
+        if (opcode != "list.length") { args.add(index); modes.add("value"); }
+        op.setOperands(args, modes);
+        Int result = this.cursor.module().types().intType();
+        if (opcode != "list.length") {
+            Int reference = this.cursor.currentFunction().valueTypeOrZero(list);
+            Int type = this.cursor.module().types().typeAt(reference).target();
+            result = this.cursor.module().types().typeAt(type).target();
+        }
+        if (opcode == "list.borrow") { result = this.cursor.module().types().refTypeFor(result); op.setResultOwnership("borrow_read"); }
+        return this.value(op, result);
+    }
+
+    private Bool ready() {
+        if (this.cursor.blockReady()) { return true; }
+        this.cursor.module().refuse(); return false;
+    }
+    private SublangOperation operation(String opcode, Int span) { return SublangOperation(this.cursor.module().nextOperationId(), opcode, span); }
+    private Int value(SublangOperation op, Int type) {
+        Int value = this.cursor.currentFunction().newValue(type); op.setResult(value, type);
+        this.cursor.currentBlock().addOperation(op); return value;
+    }
+}

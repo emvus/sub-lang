@@ -1,0 +1,29 @@
+namespace sublang::backend::llvmflow;
+
+// Per-invocation region frames and bounded-size aligned chunks. The memory plan
+// proves the region cannot escape; all graph drops precede bulk chunk release.
+public class SublangLlvmShardRuntime {
+    public static String definitions() {
+        return SublangLlvmShardRuntime.layout() + SublangLlvmShardRuntime.dependencies() + SublangLlvmShardRuntime.allocate() + SublangLlvmShardRuntime.end();
+    }
+
+    private static String layout() {
+        return "%sublang.shard = type { ptr, i64, i64, i64, ptr }\n";
+    }
+
+    private static String dependencies() {
+        String text = "define internal ptr @sublang.shard.root(ptr %frame) {\nentry:\n  br label %walk\nwalk:\n  %node = phi ptr [ %frame, %entry ], [ %parent, %more ]\n  %slot = getelementptr %sublang.shard, ptr %node, i32 0, i32 4\n  %parent = load ptr, ptr %slot\n  %done = icmp eq ptr %parent, null\n  br i1 %done, label %exit, label %more\nmore:\n  br label %walk\nexit:\n  ret ptr %node\n}\n";
+        text = text + "define internal void @sublang.shard.begin(ptr %frame, ptr %depth) {\nentry:\n  %old = load i64, ptr %depth\n  %next = add i64 %old, 1\n  store i64 %next, ptr %depth\n  store %sublang.shard zeroinitializer, ptr %frame\n  %slot = getelementptr %sublang.shard, ptr %frame, i32 0, i32 3\n  store i64 %next, ptr %slot\n  ret void\n}\n";
+        text = text + "define internal void @sublang.shard.leave(ptr %depth) {\nentry:\n  %old = load i64, ptr %depth\n  %next = sub i64 %old, 1\n  store i64 %next, ptr %depth\n  ret void\n}\n";
+        text = text + "define internal void @sublang.shard.join(ptr %a, ptr %b) {\nentry:\n  %ar = call ptr @sublang.shard.root(ptr %a)\n  %br = call ptr @sublang.shard.root(ptr %b)\n  %same = icmp eq ptr %ar, %br\n  br i1 %same, label %done, label %choose\nchoose:\n  %as = getelementptr %sublang.shard, ptr %ar, i32 0, i32 3\n  %bs = getelementptr %sublang.shard, ptr %br, i32 0, i32 3\n  %ad = load i64, ptr %as\n  %bd = load i64, ptr %bs\n  %aolder = icmp ult i64 %ad, %bd\n  %outer = select i1 %aolder, ptr %ar, ptr %br\n  %inner = select i1 %aolder, ptr %br, ptr %ar\n  %head = load ptr, ptr %inner\n  %empty = icmp eq ptr %head, null\n  br i1 %empty, label %forward, label %scan\nscan:\n  %chunk = phi ptr [ %head, %choose ], [ %next, %more ]\n  %next = load ptr, ptr %chunk\n  %last = icmp eq ptr %next, null\n  br i1 %last, label %merge, label %more\nmore:\n  br label %scan\nmerge:\n  %old = load ptr, ptr %outer\n  store ptr %old, ptr %chunk\n  store ptr %head, ptr %outer\n  %iu = getelementptr %sublang.shard, ptr %inner, i32 0, i32 1\n  %ic = getelementptr %sublang.shard, ptr %inner, i32 0, i32 2\n  %ou = getelementptr %sublang.shard, ptr %outer, i32 0, i32 1\n  %oc = getelementptr %sublang.shard, ptr %outer, i32 0, i32 2\n  %used = load i64, ptr %iu\n  %capacity = load i64, ptr %ic\n  store i64 %used, ptr %ou\n  store i64 %capacity, ptr %oc\n  br label %forward\nforward:\n  store %sublang.shard zeroinitializer, ptr %inner\n  %parent = getelementptr %sublang.shard, ptr %inner, i32 0, i32 4\n  store ptr %outer, ptr %parent\n  br label %done\ndone:\n  ret void\n}\n";
+        return text;
+    }
+
+    private static String allocate() {
+        return "define internal ptr @sublang.shard.allocate(ptr %frame, ptr %scope, i64 %size) {\nentry:\n  %too.large = icmp ugt i64 %size, -48\n  br i1 %too.large, label %bad, label %prepare\nbad:\n  call void @abort()\n  unreachable\nprepare:\n  %padded = add i64 %size, 31\n  %needed = and i64 %padded, -16\n  %used.slot = getelementptr %sublang.shard, ptr %frame, i32 0, i32 1\n  %capacity.slot = getelementptr %sublang.shard, ptr %frame, i32 0, i32 2\n  %used = load i64, ptr %used.slot\n  %capacity = load i64, ptr %capacity.slot\n  %available = sub i64 %capacity, %used\n  %fits = icmp ule i64 %needed, %available\n  br i1 %fits, label %place, label %grow\ngrow:\n  %large = icmp ugt i64 %needed, 4096\n  %capacity.new = select i1 %large, i64 %needed, i64 4096\n  %total = add i64 %capacity.new, 16\n  %chunk.new = call ptr @sublang.allocate(i64 %total)\n  %previous = load ptr, ptr %frame\n  store ptr %previous, ptr %chunk.new\n  store ptr %chunk.new, ptr %frame\n  store i64 %capacity.new, ptr %capacity.slot\n  br label %place\nplace:\n  %offset = phi i64 [ %used, %prepare ], [ 0, %grow ]\n  %chunk = load ptr, ptr %frame\n  %body = getelementptr i8, ptr %chunk, i64 16\n  %header = getelementptr i8, ptr %body, i64 %offset\n  %new.used = add i64 %offset, %needed\n  store i64 %new.used, ptr %used.slot\n  store ptr inttoptr (i64 1 to ptr), ptr %header\n  %payload = getelementptr i8, ptr %header, i64 16\n  call void @sublang.flow.adopt(ptr %scope, ptr %payload)\n  ret ptr %payload\n}\n";
+    }
+
+    private static String end() {
+        return "define internal void @sublang.shard.end(ptr %frame) {\nentry:\n  %head = load ptr, ptr %frame\n  store %sublang.shard zeroinitializer, ptr %frame\n  br label %loop\nloop:\n  %chunk = phi ptr [ %head, %entry ], [ %next, %release ]\n  %empty = icmp eq ptr %chunk, null\n  br i1 %empty, label %done, label %release\nrelease:\n  %next = load ptr, ptr %chunk\n  call void @free(ptr %chunk)\n  br label %loop\ndone:\n  ret void\n}\n";
+    }
+}

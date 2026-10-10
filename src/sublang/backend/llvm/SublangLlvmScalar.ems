@@ -1,0 +1,48 @@
+namespace sublang::backend::llvm;
+
+use sublang::body::SublangOperation;
+use sublang::backend::llvm::SublangLlvmContext;
+use sublang::dump::SublangDumpText;
+
+public class SublangLlvmScalar {
+    public static String emit(SublangLlvmContext context, SublangOperation operation) {
+        String opcode = operation.opcode();
+        if (opcode == "const.int") { return context.store(operation, operation.constInt().toString()); }
+        if (opcode == "const.bool") { return context.store(operation, SublangDumpText.boolText(operation.constBool())); }
+        if (opcode == "const.float") { return context.store(operation, SublangDumpText.hex64(operation.constFloatBits())); }
+        String text = context.loadInputs(operation);
+        String expression = SublangLlvmScalar.expression(context, operation);
+        return text + "  " + context.result(operation) + " = " + expression + "\n" + context.store(operation, context.result(operation));
+    }
+
+    private static String expression(SublangLlvmContext context, SublangOperation operation) {
+        String opcode = operation.opcode();
+        String left = context.input(operation, 0);
+        String right = context.input(operation, 1);
+        if (opcode == "compare") {
+            return SublangLlvmScalar.compare(context, operation);
+        }
+        if (opcode.startsWith("float.")) {
+            return "call double @llvm.experimental.constrained.f" + opcode.substring(6, opcode.length()) + ".f64(double " + left + ", double " + right + ", metadata !\"round.tonearest\", metadata !\"fpexcept.ignore\")";
+        }
+        if (opcode == "int.neg") {
+            if (operation.overflow() == "wrap") { return "sub i64 0, " + left; }
+            return "call i64 @sublang.sub(i64 0, i64 " + left + ")";
+        }
+        String arithmetic = opcode.substring(4, opcode.length());
+        if (arithmetic == "div" || arithmetic == "rem") {
+            return "call i64 @sublang." + arithmetic + "." + operation.overflow() + "(i64 " + left + ", i64 " + right + ")";
+        }
+        if (operation.overflow() == "wrap") { return arithmetic + " i64 " + left + ", " + right; }
+        return "call i64 @sublang." + arithmetic + "(i64 " + left + ", i64 " + right + ")";
+    }
+
+    private static String compare(SublangLlvmContext context, SublangOperation operation) {
+        Int typeId = context.function.valueTypeAt(operation.operandAt(0));
+        String predicate = operation.predicate();
+        String instruction = "icmp";
+        if (context.type(typeId) == "double") { instruction = "fcmp"; }
+        if (instruction == "icmp" && predicate != "eq" && predicate != "ne") { predicate = "s" + predicate; }
+        return instruction + " " + predicate + " " + context.type(typeId) + " " + context.input(operation, 0) + ", " + context.input(operation, 1);
+    }
+}

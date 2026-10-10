@@ -1,21 +1,22 @@
-# Sublang v0.4 — überarbeitete Zielbeispiele
+# Sublang v0.4 architecture examples
 
-Diese Dateien sind **vollständige illustrative Zielmodule**, keine heute einlesbare IR. Das öffentliche binäre Encoding und die native ABI sind damit nicht implementiert. Details und gemeinsam definierte Notation stehen in [extended-ir.md](../extended-ir.md). Effekte, Verifikation und Beweise in diesen Dateien sind erwartete Entwurfsresultate, keine tatsächlichen Analyseläufe.
+These are **complete illustrative proposed modules**, not currently readable compiler inputs. Their notation, effects and validation reports express design requirements rather than executed analysis. See [extended-ir.md](../extended-ir.md).
 
-| Datei | Inhalt |
+| File | Topic |
 | --- | --- |
-| [01-procedural.sublang-ir](01-procedural.sublang-ir) | checked i64, freie Funktionen, Effektsummaries |
-| [02-objects.sublang-ir](02-objects.sublang-ir) | OO-Interface, offene Zielmenge, deklarierte und bewiesene Effekte |
-| [03-managed-high.sublang-ir](03-managed-high.sublang-ir) | Flow Managed mit gesonderten Lifetime-/Ownership-Bezügen |
-| [04-managed-low.sublang-ir](04-managed-low.sublang-ir) | Plan-konsumierende Low IR, Effekte nach Lowering |
-| [05-gc-integration.sublang-ir](05-gc-integration.sublang-ir) | bewegender GC, aktualisierte Roots und Write Barrier |
-| [06-bond-cycles.sublang-ir](06-bond-cycles.sublang-ir) | Bond-Graph und Cycle-Provider |
-| [07-dynamic.sublang-ir](07-dynamic.sublang-ir) | dynamische Zahlen/Strings, Heap-Handles und Fallback |
-| [08-closure.sublang-ir](08-closure.sublang-ir) | Closure mit Value-Capture und Effektvertrag |
-| [09-explain.sublang-ir](09-explain.sublang-ir) | unbekannter Call, GC-Escape und Explain-Bezug |
-| [10-exceptions.sublang-ir](10-exceptions.sublang-ir) | Invoke, normale/exceptional Kanten, Cleanup, Catch und Resume |
-| [11-ownership-transfer.sublang-ir](11-ownership-transfer.sublang-ir) | Ownership-Transfer über lexikalisches Scope-Ende |
+| [01-procedural.sublang-ir](01-procedural.sublang-ir) | Checked i64, functions and effects |
+| [02-objects.sublang-ir](02-objects.sublang-ir) | OO interface, open dispatch targets, declared/proven effects |
+| [03-managed-high.sublang-ir](03-managed-high.sublang-ir) | Managed High IR with ownership/lifetime dependencies |
+| [04-managed-low.sublang-ir](04-managed-low.sublang-ir) | Memory-plan-consuming Low IR and lowered effects |
+| [06-bond-cycles.sublang-ir](06-bond-cycles.sublang-ir) | Shared cycle and provider contract |
+| [07-dynamic.sublang-ir](07-dynamic.sublang-ir) | Dynamic heap values, explicit ownership and runtime calls |
+| [08-closure.sublang-ir](08-closure.sublang-ir) | Value capture and effects |
+| [09-explain.sublang-ir](09-explain.sublang-ir) | Unknown consuming call, escape and Explain |
+| [10-exceptions.sublang-ir](10-exceptions.sublang-ir) | Invoke, cleanup, catch and resume |
+| [11-ownership-transfer.sublang-ir](11-ownership-transfer.sublang-ir) | Ownership surviving lexical scope end |
 
-[LLVM-Illustration](managed-illustrative.ll) gehört zu Managed High/Low. Pläne, Explain-, Pass- und Protokollberichte stehen zusammenhängend in [extended-ir.md](../extended-ir.md), mit denselben Modul-/Entity-IDs. Sie bilden keinen separaten Parser oder Validator.
+[Illustrative LLVM](managed-illustrative.ll) accompanies Managed High/Low. Plans, decisions and protocol sketches share entity IDs in extended-ir.md; they are not a separate parser/validator.
 
-Die [aktuellen Builder-Beispiele](../readme.md) bleiben getrennt: schema=1, echte erzeugte Dumps, strukturgeprüft; Semantik/Lifetime nicht geprüft. Für die v0.4-Überarbeitung wurde kein Compiler ausgeführt.
+The [core dumps](../readme.md) and [actual Wire inputs](../../wire/readme.md) are different example families. For working integration, read the [IR guide](../../../docs/Sublang_IR_Guide.md).
+
+The former collector proposal 05 and collector-dependent 07/09 variants are [archived](../../../archive/gc-integration/readme.md). Foreign GC integration is outside the active roadmap.

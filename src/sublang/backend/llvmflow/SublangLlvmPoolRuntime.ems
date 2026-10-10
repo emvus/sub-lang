@@ -1,0 +1,50 @@
+namespace sublang::backend::llvmflow;
+
+use sublang::ir::SublangModule;
+use sublang::backend::llvm::SublangLlvmTypes;
+
+// Escaping fixed-layout objects keep stable addresses, but their dead storage can
+// be reused. Exact-layout caches avoid power-of-two padding and remain bounded.
+public class SublangLlvmPoolRuntime {
+    public static String definitions(SublangModule module, Bool enabled) {
+        String text = "@sublang.pool.bytes = internal global i64 0\n";
+        Int type = 1;
+        while (type <= module.types().typeCount()) {
+            if (SublangLlvmPoolRuntime.layout(module, type)) { text = text + SublangLlvmPoolRuntime.allocator(type); }
+            type = type + 1;
+        }
+        text = text + SublangLlvmPoolRuntime.recycle(module, enabled) + SublangLlvmPoolRuntime.clear();
+        text = text + "define internal void @sublang.pool.flush() {\nentry:\n"; type = 1;
+        while (type <= module.types().typeCount()) {
+            if (SublangLlvmPoolRuntime.layout(module, type)) { text = text + "  call void @sublang.pool.clear(ptr @sublang.pool.t" + type.toString() + ", ptr @sublang.pool.count" + type.toString() + ")\n"; }
+            type = type + 1;
+        }
+        return text + "  store i64 0, ptr @sublang.pool.bytes\n  ret void\n}\n";
+    }
+    private static Bool layout(SublangModule module, Int type) { return module.types().isKind(type, "Class") || module.types().isKind(type, "List"); }
+
+    private static String allocator(Int type) {
+        String id = type.toString();
+        String text = "@sublang.pool.t" + id + " = internal global ptr null\n@sublang.pool.count" + id + " = internal global i64 0\n";
+        return text + "define internal ptr @sublang.flow.allocate.t" + id + "(ptr %scope, i64 %size) {\nentry:\n  %head = load ptr, ptr @sublang.pool.t" + id + "\n  %empty = icmp eq ptr %head, null\n  br i1 %empty, label %fresh, label %reuse\nfresh:\n  %new = call ptr @sublang.flow.allocate(ptr %scope, i64 %size)\n  ret ptr %new\nreuse:\n  %next = load ptr, ptr %head\n  store ptr %next, ptr @sublang.pool.t" + id + "\n  %count = load i64, ptr @sublang.pool.count" + id + "\n  %less = sub i64 %count, 1\n  store i64 %less, ptr @sublang.pool.count" + id + "\n  %total = add i64 %size, 16\n  %bytes = load i64, ptr @sublang.pool.bytes\n  %remaining = sub i64 %bytes, %total\n  store i64 %remaining, ptr @sublang.pool.bytes\n  store ptr null, ptr %head\n  %payload = getelementptr i8, ptr %head, i64 16\n  call void @sublang.flow.adopt(ptr %scope, ptr %payload)\n  ret ptr %payload\n}\n";
+    }
+
+    private static String recycle(SublangModule module, Bool enabled) {
+        String text = "define internal void @sublang.flow.recycle(ptr %header, ptr %visitor) {\nentry:\n";
+        Int type = 1;
+        while (type <= module.types().typeCount()) {
+            if (enabled && SublangLlvmPoolRuntime.layout(module, type)) {
+                String id = type.toString(); String layout = SublangLlvmTypes.type(module, type);
+                text = text + "  %match" + id + " = icmp eq ptr %visitor, @sublang.drop.t" + id + "\n  br i1 %match" + id + ", label %test" + id + ", label %next" + id + "\ntest" + id + ":\n";
+                text = text + "  %count" + id + " = load i64, ptr @sublang.pool.count" + id + "\n  %space" + id + " = icmp ult i64 %count" + id + ", 8\n  %end" + id + " = getelementptr " + layout + ", ptr null, i32 1\n  %size" + id + " = ptrtoint ptr %end" + id + " to i64\n  %total" + id + " = add i64 %size" + id + ", 16\n  %bytes" + id + " = load i64, ptr @sublang.pool.bytes\n  %sum" + id + " = add i64 %bytes" + id + ", %total" + id + "\n  %budget" + id + " = icmp ule i64 %sum" + id + ", 1048576\n  %allow" + id + " = and i1 %space" + id + ", %budget" + id + "\n  br i1 %allow" + id + ", label %cache" + id + ", label %free\ncache" + id + ":\n";
+                text = text + "  %old" + id + " = load ptr, ptr @sublang.pool.t" + id + "\n  store ptr %old" + id + ", ptr %header\n  store ptr %header, ptr @sublang.pool.t" + id + "\n  %more" + id + " = add i64 %count" + id + ", 1\n  store i64 %more" + id + ", ptr @sublang.pool.count" + id + "\n  store i64 %sum" + id + ", ptr @sublang.pool.bytes\n  ret void\nnext" + id + ":\n";
+            }
+            type = type + 1;
+        }
+        return text + "  br label %free\nfree:\n  call void @free(ptr %header)\n  ret void\n}\n";
+    }
+
+    private static String clear() {
+        return "define internal void @sublang.pool.clear(ptr %head.slot, ptr %count.slot) {\nentry:\n  %head = load ptr, ptr %head.slot\n  store ptr null, ptr %head.slot\n  store i64 0, ptr %count.slot\n  br label %loop\nloop:\n  %node = phi ptr [ %head, %entry ], [ %next, %release ]\n  %empty = icmp eq ptr %node, null\n  br i1 %empty, label %done, label %release\nrelease:\n  %next = load ptr, ptr %node\n  call void @free(ptr %node)\n  br label %loop\ndone:\n  ret void\n}\n";
+    }
+}

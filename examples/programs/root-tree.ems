@@ -1,0 +1,38 @@
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+// A frontend integration example. build() constructs typed IR, not an Emerald AST.
+public class SublangProgram {
+    public static SublangModule build() {
+        SublangBuilder builder = SublangBuilder("root-tree");
+        Int span = builder.syntheticSpan("example:root-tree");
+        Int node = builder.classType("Node", span);
+        Int value = builder.classField(node, "value", builder.intType(), true, span);
+        Int next = builder.classField(node, "next", builder.refType(node), true, span);
+        Int factory = builder.beginFunction("makeTree", builder.refType(node), 0, span);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int parent = builder.ops().classNew(node, scope, span);
+        builder.ops().fieldInit(parent, value, builder.ops().constInt(40, span), span);
+        Int child = builder.ops().classNew(node, scope, span);
+        builder.ops().fieldInit(child, value, builder.ops().constInt(2, span), span);
+        builder.ops().fieldClear(child, next, span);
+        builder.ops().fieldInitOwned(parent, next, child, span);
+        builder.ops().returnOwned(parent, span);
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+        scope = builder.ops().scopeBegin(span);
+        List<Int> args = List();
+        List<String> modes = List();
+        parent = builder.ops().callDirectOwned(factory, args, modes, scope, span);
+        child = builder.ops().fieldTake(parent, next, scope, span);
+        builder.ops().fieldClear(parent, next, span);
+        Int a = builder.ops().fieldRead(parent, value, span);
+        Int b = builder.ops().fieldRead(child, value, span);
+        Int sum = builder.ops().intBinary("int.add", a, b, "wrap", 0, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(sum, span);
+        return builder.module();
+    }
+}

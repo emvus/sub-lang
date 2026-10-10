@@ -7,18 +7,29 @@ type 4 Float Float width=64 signed=false
 type 5 Class Counter fields=[1] span=1
 type 6 Ref Ref<Counter> target=5
 field 1 owner=Counter value type=Int mutable=true span=1
-func 1 Counter.read(v1 self:Ref<Counter>@borrow_read noescape) -> Int methodOf=5 span=1
+profile 1 sublang.startup version=1 integer=i64-signed float=f64-ieee-rne failure=abort unwinding=none startup=true
+effect 1 conservative facts=9 span=0
+  fact allocation unknown provenance=assumed-conservative detail= proof=
+  fact escape unknown provenance=assumed-conservative detail= proof=
+  fact failure unknown provenance=assumed-conservative detail= proof=
+  fact exceptions unknown provenance=assumed-conservative detail= proof=
+  fact memory-read unknown provenance=assumed-conservative detail= proof=
+  fact memory-write unknown provenance=assumed-conservative detail= proof=
+  fact synchronization unknown provenance=assumed-conservative detail= proof=
+  fact observable unknown provenance=assumed-conservative detail= proof=
+  fact control unknown provenance=assumed-conservative detail= proof=
+func 1 Counter.read(v1 self:Ref<Counter>@borrow_read noescape) -> Int methodOf=5 profile=1 effects=1 linkage=internal definition=body span=1
   block 1 params=[]
     v2:Int = field.read v1@borrow_read field=Counter.value span=1
     return v2@value span=1
-func 2 main() -> Int methodOf=0 span=1
+func 2 main() -> Int methodOf=0 profile=1 effects=1 linkage=internal definition=body span=1
   block 1 params=[]
     scope.begin scope=1 span=1
-    v1:Ref<Counter> = class.new scope=1 type=Counter span=1
+    v1:Ref<Counter> = class.new scope=1 result=owned type=Counter span=1
     v2:Int = const.int value=1 span=1
     field.init v1@init, v2@value field=Counter.value span=1
     v3:Int = const.int value=42 span=1
     field.write v1@borrow_write, v3@value field=Counter.value span=1
-    v4:Int = call.direct v1@borrow_read callee=Counter.read span=1
+    v4:Int = call.direct v1@borrow_read effects=1 callee=Counter.read span=1
     scope.end scope=1 span=1
     return v4@value span=1

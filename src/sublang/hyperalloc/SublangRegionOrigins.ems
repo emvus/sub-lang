@@ -1,0 +1,41 @@
+namespace sublang::hyperalloc;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::hyperalloc::SublangBorrowViews;
+
+// Regions follow the owning root, including a borrowed path into that root.
+// Moving a child joins its storage dependency with the parent's region.
+public class SublangRegionOrigins {
+    private List<Int> scopes;
+    private SublangBorrowViews views;
+    private List<Int> takenFrom;
+
+    public SublangRegionOrigins(SublangFunction function) {
+        this.scopes = List(); this.views = SublangBorrowViews(function); this.takenFrom = List();
+        Int value = 0;
+        while (value <= function.valueCount()) { this.scopes.add(0); this.takenFrom.add(0); value = value + 1; }
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                SublangOperation operation = function.blockAt(block).operationAt(index);
+                if (operation.hasResult() && operation.scope() > 0) { this.scopes.set(operation.resultValue(), operation.scope()); }
+                if (operation.opcode() == "field.take") { this.takenFrom.set(operation.resultValue(), operation.operandAt(0)); }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+    }
+
+    public Int scopeOf(Int value) {
+        Int rounds = 0;
+        while (rounds < this.scopes.length()) {
+            value = this.views.root(value);
+            Int source = this.takenFrom.get(value);
+            if (source == 0) { return this.scopes.get(value); }
+            value = source; rounds = rounds + 1;
+        }
+        return 0;
+    }
+}
