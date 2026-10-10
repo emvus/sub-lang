@@ -1,0 +1,189 @@
+SUBLANG-A001	src/sublang/checks/operation/SublangArithmeticChecks.ems	75	missing overflow mode for <opcode>
+SUBLANG-A001	src/sublang/checks/operation/SublangArithmeticChecks.ems	101	missing floating-point mode for <op.opcode()>
+SUBLANG-A002	src/sublang/checks/operation/SublangArithmeticChecks.ems	82	missing failure action for <opcode>; trapping overflow and division by zero must
+SUBLANG-A003	src/sublang/checks/operation/SublangArithmeticChecks.ems	78	overflow mode <overflow> is not allowed for <opcode>
+SUBLANG-A003	src/sublang/checks/operation/SublangArithmeticChecks.ems	105	floating-point mode <op.fpMode()> is not supported in Sublang v0.1
+SUBLANG-A003	src/sublang/checks/operation/SublangArithmeticChecks.ems	165	float compare needs an explicit ordered or unordered predicate, got <op.predicat
+SUBLANG-A003	src/sublang/checks/operation/SublangArithmeticChecks.ems	178	missing or unknown compare predicate
+SUBLANG-A003	src/sublang/checks/operation/SublangArithmeticChecks.ems	182	only eq and ne are defined for Bool and references
+SUBLANG-B001	src/sublang/backend/SublangBackendGate.ems	15	freeze the input snapshot before compilation
+SUBLANG-B002	src/sublang/backend/SublangBackendGate.ems	23	<verifier message of first diagnostic; its own code is dropped>
+SUBLANG-B003	src/sublang/backend/SublangBackendBudget.ems	25	module exceeds the initial backend budget
+SUBLANG-B003	src/sublang/backend/SublangBackendBudget.ems	38	function exceeds the initial backend budget
+SUBLANG-B003	src/sublang/backend/SublangBackendBudget.ems	43	block exceeds the initial backend budget
+SUBLANG-B003	src/sublang/backend/SublangBackendBudget.ems	48	scope id exceeds backend budget
+SUBLANG-B003	src/sublang/backend/SublangBackendBudget.ems	49	scope id exceeds backend budget
+SUBLANG-B003	src/sublang/backend/SublangBackendBudget.ems	62	operation id/count exceeds the initial backend budget
+SUBLANG-B004	src/sublang/backend/SublangBackendGate.ems	33	failure binding is not supported by the host-libc target
+SUBLANG-B004	src/sublang/backend/SublangBackendGate.ems	47	records require primitive fields; class fields may also own Ref values
+SUBLANG-B004	src/sublang/backend/SublangBackendGate.ems	59	external contracts need a supported runtime binding
+SUBLANG-B004	src/sublang/backend/SublangBackendGate.ems	66	reference parameters require a supported borrow or owned contract
+SUBLANG-B005	src/sublang/backend/SublangBackendGate.ems	73	fn<N>: <lifetime message from SublangLocalLifetime>
+SUBLANG-B006	src/sublang/backend/SublangBackendGate.ems	86	executable entry must be () -> i64
+SUBLANG-B007	src/sublang/backend/SublangCompiler.ems	16	invalid Flow mode
+SUBLANG-B008	src/sublang/backend/SublangBackendBudget.ems	65	duplicate operation id
+SUBLANG-C001	scripts/sublang-build.sh	39	C ownership import is not implemented; --flow=on cannot be satisfied. Use --flow
+SUBLANG-CLI001	src/sublang/cli/SublangCommand.ems	52	invalid Optimind mode
+SUBLANG-CLI002	src/sublang/cli/SublangCommand.ems	40	input must be a regular file of at most 16 MiB
+SUBLANG-CLI002	src/sublang/cli/SublangCommand.ems	54	input must be a regular file of at most 16 MiB
+SUBLANG-CLI003	src/sublang/cli/SublangCommand.ems	63	cannot write output
+SUBLANG-E001	src/sublang/checks/SublangSemanticChecks.ems	171	function <fnEntry.name()> refers to effect summary <fnEntry.effectSummary().toSt
+SUBLANG-E001	src/sublang/checks/operation/SublangOperationChecks.ems	45	<opcode> refers to effect summary <op.effectSummary().toString()>, which does no
+SUBLANG-E002	src/sublang/checks/SublangSemanticChecks.ems	99	effect summary <summary.name()> has unknown provenance <fact.provenance()>
+SUBLANG-E002	src/sublang/checks/SublangSemanticChecks.ems	106	effect summary <summary.name()> has unknown area <fact.area()>
+SUBLANG-E002	src/sublang/checks/SublangSemanticChecks.ems	110	effect summary <summary.name()> gives <fact.value()> for area <fact.area()>
+SUBLANG-E002	src/sublang/checks/SublangSemanticChecks.ems	141	alias fact <fact.id().toString()> has unknown origin <fact.origin()>
+SUBLANG-E003	src/sublang/checks/SublangEvidenceChecks.ems	22	effect evidence requires analysis id, current revision and valid dependencies
+SUBLANG-E003	src/sublang/checks/SublangEvidenceChecks.ems	36	effect evidence omits its referenced location dependency
+SUBLANG-E003	src/sublang/checks/SublangSemanticChecks.ems	146	alias evidence requires the current revision and valid dependencies covering bot
+SUBLANG-E004	src/sublang/checks/SublangSemanticChecks.ems	79	effect summary <summary.name()> lacks area <areas.get(areaIndex)>; a missing are
+SUBLANG-E006	src/sublang/checks/SublangEvidenceChecks.ems	33	effect fact refers to an unknown logical location
+SUBLANG-E006	src/sublang/checks/SublangSemanticChecks.ems	152	alias fact <fact.id().toString()> refers to an unknown location
+SUBLANG-E006	src/sublang/checks/SublangSemanticChecks.ems	155	alias fact <fact.id().toString()> has unknown answer <fact.answer()>
+SUBLANG-E007	src/sublang/checks/SublangSemanticChecks.ems	164	alias fact <fact.id().toString()> claims <fact.answer()> from an assumed-conserv
+SUBLANG-F001	src/sublang/checks/SublangSemanticChecks.ems	52	failure action <action.name()> is incomplete; binding and signature are required
+SUBLANG-F002	src/sublang/checks/SublangSemanticChecks.ems	49	abort requires signature noreturn void()
+SUBLANG-F003	src/sublang/checks/SublangSemanticChecks.ems	43	failure action <action.name()> must not continue; abort never returns
+SUBLANG-P001	src/sublang/checks/SublangSemanticChecks.ems	177	function <fnEntry.name()> refers to semantic profile <fnEntry.profile().toString
+SUBLANG-P002	src/sublang/checks/SublangSemanticChecks.ems	182	semantic profile <profile.name()> of <fnEntry.name()> uses rules outside the sta
+SUBLANG-P003	src/sublang/checks/operation/SublangArithmeticChecks.ems	116	<op.opcode()> names rounding <op.fpMode()> that the function's profile does not 
+SUBLANG-S001	src/sublang/checks/SublangFunctionChecks.ems	35	function <fnEntry.name()> has unknown linkage <fnEntry.linkage()>
+SUBLANG-S001	src/sublang/checks/SublangFunctionChecks.ems	41	function <fnEntry.name()> has unknown definition kind <fnEntry.definition()>
+SUBLANG-S001	src/sublang/checks/SublangFunctionChecks.ems	56	unknown passing mode <paramEntry.passing()> on parameter <paramEntry.name()>
+SUBLANG-S001	src/sublang/checks/SublangFunctionChecks.ems	137	external contract <fnEntry.name()> must have external linkage
+SUBLANG-S001	src/sublang/checks/SublangSemanticChecks.ems	124	location <locationEntry.name()> has unknown kind <locationEntry.kind()>
+SUBLANG-S001	src/sublang/checks/SublangTypeChecks.ems	39	unknown type kind <typeEntry.kind()>
+SUBLANG-S001	src/sublang/checks/operation/SublangOperationChecks.ems	38	unknown opcode <opcode>
+SUBLANG-S001	src/sublang/checks/operation/SublangOperationChecks.ems	70	<op.opcode()> operand <modeIndex.toString()> has unknown passing mode <mode>
+SUBLANG-S002	src/sublang/analysis/SublangVerifier.ems	77	entry function id is not defined
+SUBLANG-S002	src/sublang/checks/SublangFlowChecks.ems	104	definition refers to undefined value v<valueId.toString()>
+SUBLANG-S002	src/sublang/checks/SublangFlowChecks.ems	193	<op.opcode()> uses undefined value v<operandId.toString()>
+SUBLANG-S002	src/sublang/checks/SublangFunctionChecks.ems	25	return type of <fnEntry.name()> is not defined
+SUBLANG-S002	src/sublang/checks/SublangFunctionChecks.ems	59	parameter <paramEntry.name()> has an undefined type
+SUBLANG-S002	src/sublang/checks/SublangFunctionChecks.ems	117	value v<valueId.toString()> of <fnEntry.name()> has undefined type id <typeId.to
+SUBLANG-S002	src/sublang/checks/SublangTypeChecks.ems	43	nominal type <typeEntry.name()> has no valid source span
+SUBLANG-S002	src/sublang/checks/SublangTypeChecks.ems	84	<owner.name()> lists unknown field id <fieldId.toString()>
+SUBLANG-S002	src/sublang/checks/SublangTypeChecks.ems	88	<owner.name()> lists field <fieldId.toString()> that belongs to another type
+SUBLANG-S002	src/sublang/checks/SublangTypeChecks.ems	91	<owner.name()> lists field <fieldId.toString()> more than once
+SUBLANG-S002	src/sublang/checks/SublangTypeChecks.ems	135	field <fieldEntry.name()> has no defined owner
+SUBLANG-S002	src/sublang/checks/SublangTypeChecks.ems	140	field <fieldEntry.name()> has an undefined type
+SUBLANG-S002	src/sublang/checks/SublangTypeChecks.ems	153	field <fieldEntry.name()> is not registered at its owner
+SUBLANG-S002	src/sublang/checks/operation/SublangControlChecks.ems	57	call.direct uses an unknown function
+SUBLANG-S002	src/sublang/checks/operation/SublangControlChecks.ems	118	scope.begin needs a positive scope id
+SUBLANG-S002	src/sublang/checks/operation/SublangControlChecks.ems	131	scope.end <op.ref().toString()> has no matching scope.begin
+SUBLANG-S002	src/sublang/checks/operation/SublangControlChecks.ems	162	branch target block <target.toString()> is not defined
+SUBLANG-S002	src/sublang/checks/operation/SublangControlChecks.ems	190	cond_branch target block is not defined
+SUBLANG-S002	src/sublang/checks/operation/SublangControlChecks.ems	218	fail uses an unknown failure action
+SUBLANG-S002	src/sublang/checks/operation/SublangMemoryChecks.ems	73	<op.opcode()> uses an unknown field
+SUBLANG-S002	src/sublang/checks/operation/SublangMemoryChecks.ems	119	record.make refers to unknown field id <fieldId.toString()>
+SUBLANG-S002	src/sublang/checks/operation/SublangMemoryChecks.ems	187	class.new uses scope <op.scope().toString()> that is never begun
+SUBLANG-S002	src/sublang/checks/operation/SublangMemoryChecks.ems	239	field.take needs a declared destination scope
+SUBLANG-S002	src/sublang/checks/operation/SublangOperationChecks.ems	42	<opcode> has no valid source span
+SUBLANG-S003	src/sublang/checks/SublangFlowChecks.ems	118	value v<valueId.toString()> of <fnEntry.name()> is never defined
+SUBLANG-S003	src/sublang/checks/SublangFlowChecks.ems	121	value v<valueId.toString()> of <fnEntry.name()> is defined more than once
+SUBLANG-S003	src/sublang/checks/operation/SublangControlChecks.ems	122	scope <op.ref().toString()> is begun more than once
+SUBLANG-S004	src/sublang/checks/SublangFlowChecks.ems	31	function <fnEntry.name()> has no blocks
+SUBLANG-S004	src/sublang/checks/SublangFlowChecks.ems	131	block <blockId.toString()> of <fnEntry.name()> has no terminator
+SUBLANG-S004	src/sublang/checks/SublangFlowChecks.ems	163	terminator <op.opcode()> is not the last operation of its block
+SUBLANG-S004	src/sublang/checks/SublangFlowChecks.ems	166	block <blockId.toString()> does not end with a terminator
+SUBLANG-S004	src/sublang/checks/SublangFunctionChecks.ems	134	external contract <fnEntry.name()> must not have a body
+SUBLANG-S005	src/sublang/checks/SublangFlowChecks.ems	35	entry block of <fnEntry.name()> must not declare block parameters; function para
+SUBLANG-S005	src/sublang/checks/operation/SublangControlChecks.ems	157	branch needs exactly one target
+SUBLANG-S005	src/sublang/checks/operation/SublangControlChecks.ems	171	cond_branch needs exactly two targets
+SUBLANG-S005	src/sublang/checks/operation/SublangControlChecks.ems	175	cond_branch needs a condition operand
+SUBLANG-S005	src/sublang/checks/operation/SublangControlChecks.ems	184	cond_branch argument split is invalid
+SUBLANG-S005	src/sublang/checks/operation/SublangControlChecks.ems	202	branch to block <targetId.toString()> passes <count.toString()> argument(s), blo
+SUBLANG-S005	src/sublang/checks/operation/SublangOperationChecks.ems	48	<opcode> has <op.operandCount().toString()> operands but <op.modeCount().toStrin
+SUBLANG-S006	src/sublang/checks/SublangFlowChecks.ems	216	v<valueId.toString()> is used before its definition in block <blockId.toString()
+SUBLANG-S007	src/sublang/checks/SublangFlowChecks.ems	211	v<valueId.toString()> is defined in an unreachable block
+SUBLANG-S007	src/sublang/checks/SublangFlowChecks.ems	221	definition of v<valueId.toString()> in block <defBlock.toString()> does not domi
+SUBLANG-S008	src/sublang/checks/SublangFlowChecks.ems	144	block <blockId.toString()> of <fnEntry.name()> is unreachable from the entry blo
+SUBLANG-T001	src/sublang/checks/SublangTypeChecks.ems	161	field <fieldEntry.name()> cannot have type Void
+SUBLANG-T001	src/sublang/checks/data/SublangStringChecks.ems	17	invalid String operand count
+SUBLANG-T001	src/sublang/checks/data/SublangStringChecks.ems	31	invalid static String result contract
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	48	<opcode> expects <expected.toString()> operand(s)
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	52	<opcode> must produce an Int value
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	63	<op.opcode()> operand <index.toString()> must be <typeName>
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	89	<opcode> expects 2 operands
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	93	<opcode> must produce a Float value
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	130	<opcode> takes no operands
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	133	<opcode> must produce a value of type <this.module.types().typeNameOf(expected)>
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	141	compare expects 2 operands
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	147	compare operands have different types
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	151	compare must produce Bool
+SUBLANG-T001	src/sublang/checks/operation/SublangArithmeticChecks.ems	174	compare is not defined for type <this.module.types().typeNameOf(operandType)>
+SUBLANG-T001	src/sublang/checks/operation/SublangControlChecks.ems	115	scope.begin takes no operands
+SUBLANG-T001	src/sublang/checks/operation/SublangControlChecks.ems	128	scope.end takes no operands
+SUBLANG-T001	src/sublang/checks/operation/SublangControlChecks.ems	148	return value has the wrong type for <fnEntry.name()>
+SUBLANG-T001	src/sublang/checks/operation/SublangControlChecks.ems	179	cond_branch condition must be Bool
+SUBLANG-T001	src/sublang/checks/operation/SublangControlChecks.ems	210	branch argument <index.toString()> to block <targetId.toString()> has the wrong 
+SUBLANG-T001	src/sublang/checks/operation/SublangControlChecks.ems	221	fail takes no operands
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	65	<message argument supplied by expectOperands caller>
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	97	record.make must produce <recordEntry.name()>
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	105	record.make passes <op.operandCount().toString()> values for <recordEntry.fieldC
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	124	record.make operand <index.toString()> has the wrong type for field <fieldEntry.
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	141	record.get must produce the field type of <fieldEntry.name()>
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	158	record.with must produce <this.module.types().typeNameOf(fieldEntry.owner())>
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	167	record.with replacement has the wrong type for field <fieldEntry.name()>
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	194	class.new must produce Ref<<this.module.types().typeNameOf(classId)>>
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	209	field.init value has the wrong type for field <fieldEntry.name()>
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	223	field.has must produce Bool
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	273	field.read must produce the field type of <fieldEntry.name()>
+SUBLANG-T001	src/sublang/checks/operation/SublangMemoryChecks.ems	294	field.write value has the wrong type for field <fieldEntry.name()>
+SUBLANG-T001	src/sublang/checks/operation/SublangOperationChecks.ems	52	<opcode> must not produce a value
+SUBLANG-T001	src/sublang/checks/operation/SublangOperationChecks.ems	91	result type of <op.opcode()> does not match the type of its value
+SUBLANG-T002	src/sublang/checks/SublangFunctionChecks.ems	69	reference parameter <paramEntry.name()> needs an explicit passing mode
+SUBLANG-T002	src/sublang/checks/SublangFunctionChecks.ems	72	parameter <paramEntry.name()> of non-reference type cannot use passing mode <par
+SUBLANG-T002	src/sublang/checks/SublangFunctionChecks.ems	86	instance method <fnEntry.name()> has no receiver parameter
+SUBLANG-T002	src/sublang/checks/SublangFunctionChecks.ems	90	receiver of <fnEntry.name()> must be Ref<class> with passing mode borrow_read, b
+SUBLANG-T002	src/sublang/checks/data/SublangStringChecks.ems	23	invalid String operand type or mode
+SUBLANG-T002	src/sublang/checks/operation/SublangControlChecks.ems	75	call to <callee.name()> passes <op.operandCount().toString()> argument(s), expec
+SUBLANG-T002	src/sublang/checks/operation/SublangControlChecks.ems	90	argument <index.toString()> of call to <callee.name()> has the wrong type
+SUBLANG-T002	src/sublang/checks/operation/SublangControlChecks.ems	93	argument <index.toString()> of call to <callee.name()> must use passing mode <pa
+SUBLANG-T002	src/sublang/checks/operation/SublangControlChecks.ems	100	call to void function <callee.name()> must not produce a value
+SUBLANG-T002	src/sublang/checks/operation/SublangControlChecks.ems	105	call to <callee.name()> must produce <this.module.types().typeNameOf(callee.retu
+SUBLANG-T002	src/sublang/checks/operation/SublangControlChecks.ems	139	void function <fnEntry.name()> must not return a value
+SUBLANG-T002	src/sublang/checks/operation/SublangControlChecks.ems	144	return in <fnEntry.name()> must pass exactly one value
+SUBLANG-T002	src/sublang/checks/operation/SublangMemoryChecks.ems	220	field.clear/has needs an owned reference field
+SUBLANG-T002	src/sublang/checks/operation/SublangMemoryChecks.ems	221	field.clear needs a mutable field
+SUBLANG-T002	src/sublang/checks/operation/SublangMemoryChecks.ems	233	field.take needs a mutable owned reference field
+SUBLANG-T002	src/sublang/checks/operation/SublangMemoryChecks.ems	249	field.borrow needs an owned reference field
+SUBLANG-T002	src/sublang/checks/operation/SublangMemoryChecks.ems	291	field <fieldEntry.name()> is not mutable
+SUBLANG-T002	src/sublang/checks/operation/SublangMemoryChecks.ems	309	<op.opcode()> receiver must use passing mode <requiredMode>
+SUBLANG-T002	src/sublang/checks/operation/SublangOperationChecks.ems	80	<op.opcode()> operand <modeIndex.toString()> is a <operandKind> value and cannot
+SUBLANG-T003	src/sublang/checks/SublangFunctionChecks.ems	82	methodOf of <fnEntry.name()> must be a class type
+SUBLANG-T003	src/sublang/checks/SublangTypeChecks.ems	50	Bond requires a non-null class handle descriptor
+SUBLANG-T003	src/sublang/checks/SublangTypeChecks.ems	53	List requires a concrete value or class element layout
+SUBLANG-T003	src/sublang/checks/SublangTypeChecks.ems	54	invalid List descriptor
+SUBLANG-T003	src/sublang/checks/SublangTypeChecks.ems	64	Ref target must be a class type: <typeEntry.name()>
+SUBLANG-T003	src/sublang/checks/SublangTypeChecks.ems	149	field <fieldEntry.name()> belongs to a non-nominal type
+SUBLANG-T003	src/sublang/checks/data/SublangBondChecks.ems	11	<error string from Bond validate()>
+SUBLANG-T003	src/sublang/checks/data/SublangCollectionChecks.ems	11	<error string from List validate()>
+SUBLANG-T003	src/sublang/checks/operation/SublangMemoryChecks.ems	81	<op.opcode()> needs a field of a record type
+SUBLANG-T003	src/sublang/checks/operation/SublangMemoryChecks.ems	88	record.make needs a record type
+SUBLANG-T003	src/sublang/checks/operation/SublangMemoryChecks.ems	138	record.get operand is not of type <this.module.types().typeNameOf(fieldEntry.own
+SUBLANG-T003	src/sublang/checks/operation/SublangMemoryChecks.ems	164	record.with operand 0 must be of type <this.module.types().typeNameOf(fieldEntry
+SUBLANG-T003	src/sublang/checks/operation/SublangMemoryChecks.ems	176	class.new needs a class type
+SUBLANG-T003	src/sublang/checks/operation/SublangMemoryChecks.ems	183	classes with shared edges require bond.new
+SUBLANG-T003	src/sublang/checks/operation/SublangMemoryChecks.ems	306	<op.opcode()> receiver must be Ref<<this.module.types().typeNameOf(fieldEntry.ow
+SUBLANG-T004	src/sublang/checks/operation/SublangControlChecks.ems	108	reference call result needs owned ownership and destination scope
+SUBLANG-T004	src/sublang/checks/operation/SublangControlChecks.ems	151	reference return must explicitly transfer ownership
+SUBLANG-T004	src/sublang/checks/operation/SublangMemoryChecks.ems	190	class.new must produce an owned reference, got ownership '<op.resultOwnership()>
+SUBLANG-T004	src/sublang/checks/operation/SublangMemoryChecks.ems	236	field.take must produce an owned reference of the field type
+SUBLANG-T004	src/sublang/checks/operation/SublangMemoryChecks.ems	252	field.borrow produces a read-only view without an owning scope
+SUBLANG-T004	src/sublang/checks/operation/SublangMemoryChecks.ems	257	shared edges require bond.link/clear
+SUBLANG-T004	src/sublang/checks/operation/SublangMemoryChecks.ems	259	reference field assignment must consume an owned child
+SUBLANG-T004	src/sublang/checks/operation/SublangOperationChecks.ems	94	<op.opcode()> produces a reference without ownership information
+SUBLANG-T005	src/sublang/checks/SublangFunctionChecks.ems	29	function <fnEntry.name()> returns a bare class; values must use Ref<class>
+SUBLANG-T005	src/sublang/checks/SublangFunctionChecks.ems	122	value v<valueId.toString()> of <fnEntry.name()> cannot have type Void
+SUBLANG-T005	src/sublang/checks/SublangFunctionChecks.ems	126	value v<valueId.toString()> of <fnEntry.name()> is a bare class; values must use
+SUBLANG-T006	src/sublang/checks/SublangTypeChecks.ems	112	primitive type <typeEntry.name()> has unsupported width <typeEntry.width().toStr
+SUBLANG-U001	src/sublang/checks/SublangTypeChecks.ems	67	nullable references are not part of Sublang v0.1: <typeEntry.name()>
+SUBLANG-U001	src/sublang/checks/SublangTypeChecks.ems	166	field <fieldEntry.name()> has a non-primitive type; Sublang v0.1 supports primit
+SUBLANG-U001	src/sublang/checks/operation/SublangMemoryChecks.ems	276	field.read supports primitive fields only in Sublang v0.1
+SUBLANG-U001	src/sublang/checks/operation/SublangMemoryChecks.ems	297	field.write supports primitive fields only in Sublang v0.1
+SUBLANG-U003	src/sublang/checks/SublangFunctionChecks.ems	38	function <fnEntry.name()> uses calling convention <fnEntry.callingConvention()>;
+SUBLANG-U004	src/sublang/checks/SublangSemanticChecks.ems	40	failure action <action.name()> has behavior <action.behavior()>; only abort is s
+SUBLANG-U005	src/sublang/checks/SublangSemanticChecks.ems	46	failure action <action.name()> declares unwinding <action.unwinding()>; not supp
+SUBLANG-U006	src/sublang/checks/operation/SublangControlChecks.ems	62	call to external function <callee.name()> needs a trusted provider contract; not
+SUBLANG-W001	src/sublang/wire/SublangWireStream.ems	36	<reason>, prefixed by 'at byte <offset>: '

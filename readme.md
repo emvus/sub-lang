@@ -20,6 +20,12 @@ Start with the **[IR developer guide](docs/Sublang_IR_Guide.md)** for formats, c
 | --- | --- |
 | [Roadmap](docs/Roadmap.md) | Remaining work, planned capabilities and optional ideas |
 | [Wire and CLI](docs/Sublang_Wire.md) | Actual process boundary, encoding and limits |
+| [Wire specification](docs/Sublang_Wire_Spec.md) | Record-level encoding for writers in other languages, with conformance cases |
+| [Release contract](docs/Sublang_Release_Contract.md) | Accepted input, semantics, versions and budgets of the first release |
+| [Diagnostics](docs/Sublang_Diagnostics.md) | Cataloged diagnostic codes and known inconsistencies |
+| [Packaging](docs/Sublang_Packaging.md) | Reproducible package, manifest and smoke check |
+| [Measurement](docs/Sublang_Measurement.md) | Sandboxed timing method and its non-comparable cases |
+| [Dynamic profile](docs/Sublang_Dynamic_Profile.md) | Draft dynamic-language profile (not implemented) |
 | [HyperAlloc IR](docs/HyperAlloc_IR.md) | Exact executable memory contracts |
 | [Flow parity](docs/Flow_Parity.md) | Original Flow comparison and remaining gaps |
 | [Native Slice](docs/Sublang_Native_Slice.md) | Accepted native subset and evidence |
@@ -72,6 +78,7 @@ src/SublangHarness.ems     core IR harness
 src/SublangBackendSmoke.ems native pipeline fixture generator
 examples/programs/        actual builder and C inputs
 examples/wire/            actual versioned IR inputs
+examples/frontend/tiny/   independent second frontend (Python) that writes Wire
 examples/ir/              readable dumps and labeled architecture proposals
 scripts/                  capped build/check launchers
 docs/                     usage, contracts, evidence and roadmap
@@ -96,6 +103,8 @@ The standalone process interface is:
 ```text
 sublang --version
 sublang emit-llvm INPUT.sublang-wire OUTPUT.ll auto|on|off on|off
+sublang dump INPUT.sublang-wire
+sublang capabilities
 ```
 
 Its final arguments select Flow and Optimind. The binary emits LLVM and a plan; linking is performed by the launcher. Use sandboxed integration for all executions.

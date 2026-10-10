@@ -1,0 +1,24 @@
+// Iterative Fibonacci with a loop, a branch and a call.
+fn fib(n) {
+    let a = 0;
+    let b = 1;
+    let i = 0;
+    while i < n {
+        let t = a + b;
+        a = b;
+        b = t;
+        i = i + 1;
+    }
+    return a;
+}
+
+fn clamp(x, limit) {
+    if x > limit {
+        return limit;
+    }
+    return x;
+}
+
+fn main() {
+    return clamp(fib(10) + fib(20), 6000);
+}

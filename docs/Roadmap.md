@@ -38,20 +38,20 @@ The generic verifier still does not establish universal effect/lifetime proofs. 
 
 ### Clear support contract
 
-- [ ] Define the first release's exact accepted IR, runtime semantics, supported host/LLVM versions and resource budgets.
-- [ ] Publish a compatibility matrix for transport, IR schema, architecture contracts and compiler versions.
-- [ ] Clearly separate supported inputs from illustrative extension examples.
-- [ ] Keep failure behavior and unsupported-feature diagnostics deterministic.
-- [ ] Document distribution prerequisites independently from the Emerald bootstrap toolchain.
+- [x] Define the first release's exact accepted IR, runtime semantics, supported host/LLVM versions and resource budgets. See [Release contract](Sublang_Release_Contract.md); unverified items are listed there.
+- [x] Publish a compatibility matrix for transport, IR schema, architecture contracts and compiler versions (Release contract, section 4).
+- [x] Clearly separate supported inputs from illustrative extension examples (Release contract; `examples/wire` and `examples/frontend` are inputs, `examples/ir` is not).
+- [ ] Keep failure behavior and unsupported-feature diagnostics deterministic. *Partial:* all codes are cataloged in [Diagnostics](Sublang_Diagnostics.md), which also lists inconsistencies still to fix.
+- [x] Document distribution prerequisites independently from the Emerald bootstrap toolchain (Release contract and [Packaging](Sublang_Packaging.md)).
 
 **Completion criterion:** another frontend developer can install/use a pinned compiler version, produce an accepted input and understand rejection without reading undocumented internals.
 
 ### Binary packaging and reproducibility
 
-- [ ] Provide a reproducible release artifact build and checksums.
-- [ ] Pin/record compatible LLVM/Clang and sandbox-image versions.
-- [ ] Define linking/runtime-library assumptions for exported native programs.
-- [ ] Add a minimal representative package smoke check and CI artifact export.
+- [x] Provide a reproducible release artifact build and checksums (`scripts/sublang-package.sh`; deterministic tar.gz with SHA256SUMS).
+- [ ] Pin/record compatible LLVM/Clang and sandbox-image versions. *Partial:* versions and image ID are recorded in the package manifest; nothing enforces them yet.
+- [x] Define linking/runtime-library assumptions for exported native programs (package manifest and Packaging doc).
+- [ ] Add a minimal representative package smoke check and CI artifact export. *Partial:* `scripts/sublang-package-smoke.sh` exists and passes; there is no CI export.
 - [ ] Keep compiler bootstrap, IR compilation and generated-program execution distinct.
 
 No complete multi-platform binary release or package manager is currently promised.
@@ -82,9 +82,9 @@ No complete multi-platform binary release or package manager is currently promis
 
 ### Transport and library boundaries — partial
 
-- [ ] Publish a self-contained record-level Wire specification with conformance examples.
+- [x] Publish a self-contained record-level Wire specification with conformance examples ([Wire specification](Sublang_Wire_Spec.md); negative cases verified against the binary).
 - [ ] Define long-term schema/version compatibility and optional metadata rules.
-- [ ] Add explicit capability discovery for features, targets, passes and providers.
+- [ ] Add explicit capability discovery for features, targets, passes and providers. *Partial:* `sublang capabilities` reports versions, features, target, provider, Flow and Optimind modes; passes are not listed.
 - [ ] Design request/result records and structured errors without exposing Emerald layouts.
 - [ ] Consider a separately versioned C ABI with opaque handles after process integration stabilizes.
 - [ ] Provide foreign-language writer examples/SDKs once the encoding contract is pinned.
@@ -146,7 +146,7 @@ The original trial-deletion/component-cache strategy has been adapted to neutral
 - [ ] Proven devirtualization after OO dispatch contracts exist.
 - [ ] Loop transformations where overflow, failure and FP semantics permit.
 - [ ] Layout-aware allocation/representation optimizations beyond current classes/lists.
-- [ ] Stable pass ordering, controls and decision reporting.
+- [ ] Stable pass ordering, controls and decision reporting. *Partial:* the plan output now carries a per-function Optimind decision count; there is no per-decision report or pass controls beyond on/off.
 
 Keep optimization language-neutral. Do not hard-code benchmark names, expected outputs or source-specific shortcuts.
 
@@ -165,9 +165,9 @@ LLVM optimization levels already exist. They do not imply LTO or PGO support.
 
 ### Independent frontend — planned
 
-- [ ] Build a small second frontend with documented source semantics.
-- [ ] Exercise procedural values and ownership without importing an Emerald AST.
-- [ ] Produce actual Wire from another implementation language.
+- [x] Build a small second frontend with documented source semantics ([Tiny](../examples/frontend/tiny/readme.md)).
+- [ ] Exercise procedural values and ownership without importing an Emerald AST. *Partial:* Tiny exercises procedural Int values, loops and calls; it has no heap values, so ownership is not exercised.
+- [x] Produce actual Wire from another implementation language (Python; checked end to end by `scripts/sublang-tiny-check.sh`).
 - [ ] Keep frontend syntax/type rules outside the neutral core.
 
 ### C semantic import — partial entry, planned analyses
@@ -181,7 +181,7 @@ Do not infer that arbitrary C pointers obey Flow ownership. --flow=on remains re
 
 ### Dynamic AOT — planned active requirement
 
-- [ ] Specify a small dynamic-language profile: numeric promotion, truthiness, equality, properties and failures.
+- [x] Specify a small dynamic-language profile: numeric promotion, truthiness, equality, properties and failures ([Dynamic profile](Sublang_Dynamic_Profile.md), a draft with acceptance tests D1–D6; nothing is implemented yet).
 - [ ] Implement tagged values, type tests, checked box/unbox and runtime fallbacks.
 - [ ] Keep a genuinely heap-backed value alive across an allocating call and release it correctly.
 - [ ] Add property/index operations and closure/capture contracts.
@@ -211,20 +211,20 @@ Abort-only behavior must never silently replace requested exceptions.
 
 ## 7. Debugging, Explain and developer experience
 
-- [ ] Structured decisions/diagnostics with stable codes, entities, revisions and blockers.
+- [ ] Structured decisions/diagnostics with stable codes, entities, revisions and blockers. *Partial:* codes are cataloged and a code-range proposal exists in [Diagnostics](Sublang_Diagnostics.md); the output is still text.
 - [ ] Report the call/alias/effect preventing a placement and the selected safe alternative.
 - [ ] Optional before/after snapshots and bounded proof graphs.
 - [ ] Preserve usable source locations/debug information through lowering.
-- [ ] Add an IR inspection/dump command and eventually consider a textual input parser.
+- [ ] Add an IR inspection/dump command and eventually consider a textual input parser. *Partial:* `sublang dump INPUT.sublang-wire` exists and is deterministic; there is no textual input parser.
 - [ ] Add documented editor/tooling integration after interfaces stabilize.
 
 Current memory explanations are text; they are not the final protocol.
 
 ## 8. Measurement and focused validation
 
-- [ ] Record a representative performance/RSS baseline for allocation, numeric, string and graph workloads.
+- [ ] Record a representative performance/RSS baseline for allocation, numeric, string and graph workloads. *Partial:* `scripts/sublang-measure.sh` runs the bundled inputs; they are correctness-sized and finish in about a millisecond, so no baseline is claimed.
 - [ ] Compare equal algorithms, inputs, outputs, compiler settings and hardware.
-- [ ] Separate compilation cost from program runtime.
+- [x] Separate compilation cost from program runtime (`scripts/sublang-measure.sh` reports compile, LLVM optimization, link and run times separately; see [Measurement](Sublang_Measurement.md)).
 - [ ] Measure both Flow-off and Flow-on and document all non-comparable cases.
 - [ ] Establish original-runtime compatibility only through explicit mapped cases.
 - [ ] Keep sanitizer checks focused on changed memory boundaries.

@@ -1,0 +1,14 @@
+// 20! is the largest factorial that fits in Int64.
+fn factorial(n) {
+    let result = 1;
+    let i = 2;
+    while i <= n {
+        result = result * i;
+        i = i + 1;
+    }
+    return result;
+}
+
+fn main() {
+    return factorial(20);
+}

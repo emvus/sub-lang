@@ -19,7 +19,16 @@ The executable process interface is:
 ```text
 sublang --version
 sublang emit-llvm INPUT OUTPUT.ll auto|on|off on|off
+sublang dump INPUT
+sublang capabilities
 ```
+
+`dump` decodes a Wire file and prints the deterministic text dump to standard
+output (exit 1 for malformed input, 2 for a missing or oversized file); it does not
+verify or compile. `capabilities` prints stable `key=value` lines (`wire.read`,
+`wire.write`, `ir.schema`, `feature`, `target`, `provider`, `flow`, `optimind`,
+`input.max-bytes`, `output`). The record-level encoding is specified in
+[Wire specification](Sublang_Wire_Spec.md).
 
 The last argument selects Optimind. Successful compilation writes LLVM and
 `OUTPUT.ll.plan`. Exit codes: 0 success, 1 invalid IR/codegen/write failure,

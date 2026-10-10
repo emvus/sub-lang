@@ -20,7 +20,7 @@ public class SublangBackendGate {
         }
         SublangVerification verdict = SublangVerifier(module).verify();
         if (!verdict.structurallyValid() || verdict.semanticsStatus() != "valid") {
-            return "SUBLANG-B002: " + verdict.diagnostics().get(0).message();
+            return SublangBackendGate.verifierFinding(module, verdict);
         }
         error = SublangBackendGate.types(module);
         if (error != "") {
@@ -35,6 +35,16 @@ public class SublangBackendGate {
             failureId = failureId + 1;
         }
         return SublangBackendGate.functions(module);
+    }
+
+    // Keep the first verifier finding's own code and source position; B002 only names the stage.
+    private static String verifierFinding(SublangModule module, SublangVerification verdict) {
+        Int spanId = verdict.diagnostics().get(0).spanId();
+        String text = "SUBLANG-B002: " + verdict.diagnostics().get(0).code() + " " + verdict.diagnostics().get(0).message();
+        if (spanId > 0 && spanId <= module.spanCount()) {
+            text = text + " (line " + module.spanAt(spanId).line().toString() + ", column " + module.spanAt(spanId).column().toString() + ")";
+        }
+        return text;
     }
 
     private static String types(SublangModule module) {
