@@ -1,0 +1,39 @@
+namespace sublang::ir;
+
+// Function parameter: the SSA value it defines, its type and its ownership
+// contract (passing mode plus the noescape effect flag).
+public class SublangParam {
+    private Int valueIdValue;
+    private String nameText;
+    private Int paramTypeId;
+    private String passingMode;
+    private Bool noEscapeFlag;
+
+    public SublangParam(Int valueId, String name, Int typeId, String passing, Bool noEscape) {
+        this.valueIdValue = valueId;
+        this.nameText = name + "";
+        this.paramTypeId = typeId;
+        this.passingMode = passing + "";
+        this.noEscapeFlag = noEscape;
+    }
+
+    public Int value() {
+        return this.valueIdValue;
+    }
+
+    public String name() {
+        return this.nameText;
+    }
+
+    public Int typeId() {
+        return this.paramTypeId;
+    }
+
+    public String passing() {
+        return this.passingMode;
+    }
+
+    public Bool noEscape() {
+        return this.noEscapeFlag;
+    }
+}

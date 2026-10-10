@@ -1,0 +1,39 @@
+// Sublang v0.4 target notation; NOT implemented input syntax.
+// Analysis/proof claims are illustrative expected results, not executed checks.
+module @temporary stage=High schema=planned revision=7 {
+  require Core@planned, Object@planned, Memory@planned
+  profile @simple {
+    integers=signed_i64; overflow=checked; unwind=none
+    object_identity=observable; finalizers=none
+  }
+  failure @overflow { behavior=abort; signature=() -> never }
+  class !Point identity=observable {
+    field x: !i64 immutable
+    field y: !i64 immutable
+  }
+  provider @flow_simple {
+    stack_refs_supported=true; moving_gc=false; finalizers=none
+    object_allocation_failure=abort; abort_cleanup=not_observable
+  }
+  effects @unknown { default=unknown origin=AssumedConservative }
+  effects @sum_effects inherits=@unknown {
+    mayAllocate=true; mayEscape=false; mayThrow=false; mayFail=true
+    reads=local(%p); writes=local(%p); synchronization=none; observable=none
+    mayDiverge=false
+    origin=Proven analysis=@sum_body revision=7
+  }
+  func @sum() -> !i64 profile=@simple linkage=internal cc=sublang effects=@sum_effects {
+    ^entry:
+      %scope = memory.scope.begin
+      %x = core.const.i64 20
+      %y = core.const.i64 22
+      %p = object.new !Point(%x, %y) result=owned scope_hint=%scope
+      %a = object.field.read %p, !Point.x
+      %b = object.field.read %p, !Point.y
+      %r = core.int.add %a, %b overflow=checked failure=@overflow
+      memory.drop %p
+      memory.scope.end %scope
+      core.return %r
+  }
+}
+pipeline { flow=on; memory=hyperalloc-managed; provider=@flow_simple }

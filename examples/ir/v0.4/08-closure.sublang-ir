@@ -1,0 +1,35 @@
+// Sublang v0.4 target notation; NOT implemented input syntax.
+// Analysis/proof claims are illustrative expected results, not executed checks.
+module @closure stage=High schema=planned revision=1 {
+  require Core@planned, Object@planned, Memory@planned, Closure@planned
+  profile @functional { integers=signed_i64; overflow=checked; unwind=none }
+  failure @overflow { behavior=abort; signature=() -> never }
+  effects @unknown { default=unknown origin=AssumedConservative }
+  effects @body_effects inherits=@unknown {
+    mayAllocate=false; mayEscape=false; mayThrow=false; mayFail=true
+    reads=none; writes=none; synchronization=none; observable=none
+    mayDiverge=false origin=Proven analysis=@closure_body revision=1
+  }
+  effects @closure_effects inherits=@unknown {
+    mayAllocate=true; mayEscape=false; mayThrow=false; mayFail=true
+    reads=local_capture; writes=local_capture; synchronization=none; observable=none
+    mayDiverge=false origin=Proven analysis=@closure_main revision=1
+  }
+  provider @closure_runtime { finalizers=none; allocation_failure=abort; moving_gc=false }
+  record !Env { base: !i64 }
+
+  func @body(%env: !Env, %arg: !i64) -> !i64 profile=@functional effects=@body_effects {
+    ^entry:
+      %base = object.record.get %env, !Env.base
+      %r = core.int.add %base, %arg overflow=checked failure=@overflow
+      core.return %r
+  }
+  func @main() -> !i64 profile=@functional effects=@closure_effects {
+    ^entry:
+      %env = object.record.make !Env(base=i64(40))
+      %f = closure.make code=@body env=%env capture=value provider=@closure_runtime result=owned
+      %r = closure.call %f(i64(2)) effects=@body_effects
+      memory.drop %f
+      core.return %r
+  }
+}

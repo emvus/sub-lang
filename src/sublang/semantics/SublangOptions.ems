@@ -1,0 +1,23 @@
+namespace sublang::semantics;
+
+// Neutral options record. flowMode is recorded only; no Flow pass is attached
+// in this stage, and the mode never changes language semantics.
+public class SublangOptions {
+    private String flowModeName;
+
+    public SublangOptions(String mode) {
+        this.flowModeName = mode + "";
+    }
+
+    public static SublangOptions defaults() {
+        return SublangOptions("auto");
+    }
+
+    public String flowMode() {
+        return this.flowModeName;
+    }
+
+    public Bool isValid() {
+        return this.flowModeName == "auto" || this.flowModeName == "on" || this.flowModeName == "off";
+    }
+}

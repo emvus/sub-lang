@@ -1,0 +1,43 @@
+// Sublang v0.4 target notation; NOT implemented input syntax.
+// Analysis/proof claims are illustrative expected results, not executed checks.
+module @integrated stage=High schema=planned revision=1 {
+  require Core@planned, Object@planned, Memory@planned, GC@planned
+  profile @host {
+    integers=signed_i64; unwind=none; finalizers=none
+    object_identity=observable; gc=host_moving
+  }
+  runtime @host_gc {
+    moving=true; roots=updateable_handles
+    safepoints=explicit_and_allocating_calls
+    write_barrier=required_on_reference_store
+    allocation_failure=abort
+  }
+  provider @integration { runtime=@host_gc; collector_replacement=false }
+  class !Node identity=observable {
+    field next: !nullable_ref<!Node> mutable
+  }
+
+  effects @unknown { default=unknown origin=AssumedConservative }
+  effects @gc_effects inherits=@unknown {
+    mayAllocate=true; mayEscape=false; mayThrow=false; mayFail=true
+    reads=runtime+local_nodes; writes=runtime+local_nodes
+    synchronization=provider_defined; observable=none; mayDiverge=unknown
+    origin=Declared trusted=@host_gc
+  }
+  func @linkTwo() -> !i64 profile=@host effects=@gc_effects {
+    ^entry:
+      %roots = gc.root_scope.begin runtime=@host_gc
+      %a = gc.alloc_rooted !Node(next=null) roots=%roots
+      %b = gc.alloc_rooted !Node(next=null) roots=%roots
+      gc.store_ref_with_barrier base_root=%a field=!Node.next value_root=%b
+      gc.safepoint runtime=@host_gc
+      %currentA = gc.root.load %a
+      %currentB = gc.root.load %b
+      %next = object.field.read %currentA, !Node.next
+      %same = object.ref.equal %next, %currentB
+      %answer = core.select %same, i64(1), i64(0)
+      gc.root_scope.end %roots
+      core.return %answer
+  }
+}
+pipeline { flow=on; memory=hyperalloc-integration; provider=@integration }

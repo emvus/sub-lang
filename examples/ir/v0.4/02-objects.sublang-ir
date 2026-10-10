@@ -1,0 +1,39 @@
+// Sublang v0.4 target notation; NOT implemented input syntax.
+// Analysis/proof claims are illustrative expected results, not executed checks.
+module @objects stage=High schema=planned revision=1 {
+  require Core@planned, Object@planned
+  profile @oo { integers=signed_i64; overflow=checked; unwind=none }
+  effects @unknown { default=unknown origin=AssumedConservative }
+  effects @slot_effects inherits=@unknown {
+    mayThrow=false origin=Declared trusted=@oo.interface_contract
+  }
+  effects @read_effects inherits=@unknown {
+    mayAllocate=false; mayEscape=false; mayThrow=false; mayFail=false
+    reads=argument0.value; writes=none; synchronization=none; observable=none
+    mayDiverge=false
+    origin=Proven analysis=@Counter_read_body revision=1
+  }
+  interface !Readable {
+    slot read: (borrow_read self) -> !i64 effects=@slot_effects
+  }
+  class !Counter implements !Readable identity=observable {
+    field value: !i64 mutable
+    slot read = @Counter.read
+  }
+
+  func @Counter.read(%self: borrow_read !ref<!Counter>) -> !i64
+      profile=@oo methodOf=!Counter effects=@read_effects {
+    ^entry:
+      %r = object.field.read %self, !Counter.value
+      core.return %r
+  }
+
+  func @readAny(%input: borrow_read !interface_ref<!Readable>) -> !i64
+      profile=@oo effects=@slot_effects
+      dispatch_world=open {
+    ^entry:
+      %r = object.call.interface %input, !Readable.read()
+           effects=@slot_effects contract=!Readable.read
+      core.return %r
+  }
+}

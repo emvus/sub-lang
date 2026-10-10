@@ -1,0 +1,12 @@
+# Local outputs and toolchain state
+*.o
+*.bc
+*.profraw
+*.profdata
+*.log
+build/
+.cache/
+.env
+
+# Historical user archive, kept locally
+examples/ir/v0.4/Archiv.zip

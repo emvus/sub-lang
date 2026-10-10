@@ -1,0 +1,229 @@
+namespace sublang::ir;
+
+use sublang::ir::SublangBlock;
+use sublang::ir::SublangField;
+use sublang::ir::SublangFunction;
+use sublang::ir::SublangModule;
+use sublang::ir::SublangOperation;
+use sublang::ir::SublangParam;
+use sublang::ir::SublangSourceSpan;
+use sublang::ir::SublangType;
+use sublang::ir::SublangVocabulary;
+
+// Deterministic text form of a module. Tables are printed in id order and no
+// host addresses, timestamps or file names of the dump itself are included, so
+// equal modules always render to equal text.
+public class SublangDump {
+    public static String render(SublangModule module) {
+        String text = "module " + module.name() + " schema=" + module.schema().toString() + " stage=" + module.stage() + " revision=" + module.revision().toString() + " entry=" + module.entryFunction().toString() + "\n";
+        Int index = 1;
+        while (index <= module.sourceCount()) {
+            text = text + "source " + index.toString() + " " + module.sourceNameAt(index) + "\n";
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= module.spanCount()) {
+            SublangSourceSpan spanEntry = module.spanAt(index);
+            text = text + "span " + spanEntry.id().toString() + " source=" + spanEntry.source().toString() + " line=" + spanEntry.line().toString() + " column=" + spanEntry.column().toString() + " origin=" + spanEntry.origin() + "\n";
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= module.typeCount()) {
+            text = text + SublangDump.typeLine(module, index);
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= module.fieldCount()) {
+            text = text + SublangDump.fieldLine(module, index);
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= module.failureCount()) {
+            text = text + "failure " + index.toString() + " " + module.failureNameAt(index) + "\n";
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= module.functionCount()) {
+            text = text + SublangDump.functionText(module, index);
+            index = index + 1;
+        }
+        return text;
+    }
+
+    public static String boolText(Bool value) {
+        if (value) {
+            return "true";
+        }
+        return "false";
+    }
+
+    public static String listText(List<Int> values) {
+        String text = "[";
+        Int index = 0;
+        while (index < values.length()) {
+            if (index > 0) {
+                text = text + ",";
+            }
+            text = text + values.get(index).toString();
+            index = index + 1;
+        }
+        return text + "]";
+    }
+
+    public static String typeName(SublangModule module, Int typeId) {
+        if (!module.hasType(typeId)) {
+            return "?" + typeId.toString();
+        }
+        return module.typeAt(typeId).name();
+    }
+
+    public static String functionName(SublangModule module, Int functionId) {
+        if (!module.hasFunction(functionId)) {
+            return "?fn" + functionId.toString();
+        }
+        return module.functionAt(functionId).name();
+    }
+
+    public static String failureName(SublangModule module, Int failureId) {
+        if (!module.hasFailure(failureId)) {
+            return "?failure" + failureId.toString();
+        }
+        return module.failureNameAt(failureId);
+    }
+
+    public static String fieldName(SublangModule module, Int fieldId) {
+        if (!module.hasField(fieldId)) {
+            return "?field" + fieldId.toString();
+        }
+        SublangField fieldEntry = module.fieldAt(fieldId);
+        return SublangDump.typeName(module, fieldEntry.owner()) + "." + fieldEntry.name();
+    }
+
+    public static String typeLine(SublangModule module, Int typeId) {
+        SublangType typeEntry = module.typeAt(typeId);
+        String line = "type " + typeEntry.id().toString() + " " + typeEntry.kind() + " " + typeEntry.name();
+        if (typeEntry.isNominal()) {
+            line = line + " fields=" + SublangDump.listText(typeEntry.fields()) + " span=" + typeEntry.span().toString();
+        }
+        if (typeEntry.isRef()) {
+            line = line + " target=" + typeEntry.target().toString();
+        }
+        if (SublangVocabulary.isPrimitiveKind(typeEntry.kind())) {
+            line = line + " width=" + typeEntry.width().toString() + " signed=" + SublangDump.boolText(typeEntry.isSigned());
+        }
+        return line + "\n";
+    }
+
+    public static String fieldLine(SublangModule module, Int fieldId) {
+        SublangField fieldEntry = module.fieldAt(fieldId);
+        return "field " + fieldEntry.id().toString() + " owner=" + SublangDump.typeName(module, fieldEntry.owner()) + " " + fieldEntry.name() + " type=" + SublangDump.typeName(module, fieldEntry.typeId()) + " mutable=" + SublangDump.boolText(fieldEntry.isMutable()) + " span=" + fieldEntry.span().toString() + "\n";
+    }
+
+    public static String functionText(SublangModule module, Int functionId) {
+        SublangFunction fnEntry = module.functionAt(functionId);
+        String text = "func " + fnEntry.id().toString() + " " + fnEntry.name() + "(";
+        Int index = 0;
+        while (index < fnEntry.paramCount()) {
+            SublangParam paramEntry = fnEntry.paramAt(index);
+            if (index > 0) {
+                text = text + ", ";
+            }
+            text = text + "v" + paramEntry.value().toString() + " " + paramEntry.name() + ":" + SublangDump.typeName(module, paramEntry.typeId()) + "@" + paramEntry.passing();
+            if (paramEntry.noEscape()) {
+                text = text + " noescape";
+            }
+            index = index + 1;
+        }
+        text = text + ") -> " + SublangDump.typeName(module, fnEntry.returnType()) + " methodOf=" + fnEntry.methodOf().toString() + " span=" + fnEntry.span().toString() + "\n";
+        Int blockIndex = 1;
+        while (blockIndex <= fnEntry.blockCount()) {
+            SublangBlock blockEntry = fnEntry.blockAt(blockIndex);
+            text = text + "  block " + blockEntry.id().toString() + " params=" + SublangDump.valueListText(module, fnEntry, blockEntry.paramValues()) + "\n";
+            Int opIndex = 0;
+            while (opIndex < blockEntry.operationCount()) {
+                text = text + SublangDump.operationText(module, blockEntry.operationAt(opIndex));
+                opIndex = opIndex + 1;
+            }
+            blockIndex = blockIndex + 1;
+        }
+        return text;
+    }
+
+    public static String valueListText(SublangModule module, SublangFunction fnEntry, List<Int> values) {
+        String text = "[";
+        Int index = 0;
+        while (index < values.length()) {
+            Int valueId = values.get(index);
+            if (index > 0) {
+                text = text + ",";
+            }
+            text = text + "v" + valueId.toString();
+            if (fnEntry.hasValue(valueId)) {
+                text = text + ":" + SublangDump.typeName(module, fnEntry.valueTypeAt(valueId));
+            }
+            index = index + 1;
+        }
+        return text + "]";
+    }
+
+    public static String operationText(SublangModule module, SublangOperation op) {
+        String text = "    ";
+        if (op.hasResult()) {
+            text = text + "v" + op.resultValue().toString() + ":" + SublangDump.typeName(module, op.resultType()) + " = ";
+        }
+        text = text + op.opcode();
+        Int index = 0;
+        while (index < op.operandCount()) {
+            if (index == 0) {
+                text = text + " ";
+            } else {
+                text = text + ", ";
+            }
+            text = text + "v" + op.operandAt(index).toString() + "@" + op.modeAt(index);
+            index = index + 1;
+        }
+        if (op.opcode() == "const.int") {
+            text = text + " value=" + op.constInt().toString();
+        }
+        if (op.opcode() == "const.bool") {
+            text = text + " value=" + SublangDump.boolText(op.constBool());
+        }
+        if (op.opcode() == "const.float") {
+            text = text + " value=" + op.constFloat().toString();
+        }
+        if (op.overflow() != "") {
+            text = text + " overflow=" + op.overflow();
+        }
+        if (op.predicate() != "") {
+            text = text + " predicate=" + op.predicate();
+        }
+        if (op.fpMode() != "") {
+            text = text + " fp=" + op.fpMode();
+        }
+        if (op.scope() != 0) {
+            text = text + " scope=" + op.scope().toString();
+        }
+        String meaning = SublangVocabulary.refMeaning(op.opcode());
+        if (op.ref() != 0) {
+            if (meaning == "type") {
+                text = text + " type=" + SublangDump.typeName(module, op.ref());
+            }
+            if (meaning == "field") {
+                text = text + " field=" + SublangDump.fieldName(module, op.ref());
+            }
+            if (meaning == "function") {
+                text = text + " callee=" + SublangDump.functionName(module, op.ref());
+            }
+            if (meaning == "scope") {
+                text = text + " scope=" + op.ref().toString();
+            }
+            if (meaning == "failure") {
+                text = text + " failure=" + SublangDump.failureName(module, op.ref());
+            }
+        }
+        if (op.targets().length() > 0) {
+            text = text + " targets=" + SublangDump.listText(op.targets()) + " trueArgs=" + op.trueArgs().toString();
+        }
+        return text + " span=" + op.span().toString() + "\n";
+    }
+}

@@ -1,0 +1,27 @@
+namespace sublang::diagnostics;
+
+// One verifier finding. The code is a stable identifier (Sublang-<family><number>),
+// the span points at the operation, declaration or table entry that caused it.
+public class SublangDiagnostic {
+    private String codeText;
+    private String messageText;
+    private Int spanIdValue;
+
+    public SublangDiagnostic(String code, String message, Int span) {
+        this.codeText = code + "";
+        this.messageText = message + "";
+        this.spanIdValue = span;
+    }
+
+    public String code() {
+        return this.codeText;
+    }
+
+    public String message() {
+        return this.messageText;
+    }
+
+    public Int spanId() {
+        return this.spanIdValue;
+    }
+}

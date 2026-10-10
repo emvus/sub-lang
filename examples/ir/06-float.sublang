@@ -1,0 +1,13 @@
+module 06-float schema=1 stage=High revision=1 entry=0
+span 1 source=0 line=0 column=0 origin=example:float
+type 1 Void Void
+type 2 Bool Bool width=1 signed=false
+type 3 Int Int width=64 signed=true
+type 4 Float Float width=64 signed=false
+func 1 calculate(v1 a:Float@value, v2 b:Float@value) -> Float methodOf=0 span=1
+  block 1 params=[]
+    v3:Float = float.mul v1@value, v2@value fp=rne span=1
+    v4:Float = float.add v3@value, v1@value fp=rne span=1
+    v5:Float = float.sub v4@value, v1@value fp=rne span=1
+    v6:Float = float.div v5@value, v2@value fp=rne span=1
+    return v6@value span=1

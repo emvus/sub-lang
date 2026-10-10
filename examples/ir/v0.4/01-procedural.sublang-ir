@@ -1,0 +1,39 @@
+// Sublang v0.4 target notation; NOT implemented input syntax.
+// Analysis/proof claims are illustrative expected results, not executed checks.
+module @procedural stage=High schema=planned revision=1 {
+  require Core@planned
+  profile @checked {
+    integers = signed_i64
+    overflow = checked
+    division_by_zero = abort
+    division_min_by_minus_one = abort
+    fp = ieee754_binary64_rne_strict
+    unwind = none
+  }
+  failure @overflow { behavior=abort; signature=() -> never }
+  effects @unknown { default=unknown origin=AssumedConservative }
+  effects @checked_effects inherits=@unknown {
+    mayAllocate=false; mayEscape=false; mayThrow=false; mayFail=true
+    reads=none; writes=none; synchronization=none; observable=none
+    mayDiverge=false
+    origin=Proven analysis=@body_effects revision=1
+  }
+
+  func @add(%a: !i64, %b: !i64) -> !i64
+      profile=@checked linkage=internal cc=sublang
+      effects=@checked_effects {
+    ^entry:
+      %sum = core.int.add %a, %b overflow=checked failure=@overflow
+      core.return %sum
+  }
+
+  func @main() -> !i64 profile=@checked linkage=internal cc=sublang effects=@checked_effects {
+    ^entry:
+      %a = core.const.i64 20
+      %b = core.const.i64 22
+      %r = core.call.direct @add(%a, %b) effects=@checked_effects
+      core.return %r
+  }
+  entry = @main
+}
+pipeline { flow=off; memory=language; backend=llvm }

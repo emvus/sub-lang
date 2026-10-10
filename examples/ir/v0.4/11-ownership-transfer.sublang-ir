@@ -1,0 +1,29 @@
+// Sublang v0.4 target notation; NOT implemented input syntax.
+// Analysis/proof claims are illustrative expected results, not executed checks.
+module @ownership_transfer stage=High schema=planned revision=1 {
+  require Core@planned, Object@planned, Memory@planned
+  profile @unique { unwind=none; finalizers=none; identity=observable }
+  provider @unique_heap { ownership=unique; moving_gc=false; allocation_failure=abort }
+  class !Box { field value: !i64 immutable }
+  effects @unknown { default=unknown origin=AssumedConservative }
+  effects @make_effects inherits=@unknown {
+    mayAllocate=true; mayFail=true; mayThrow=false; escape.result=owned
+    origin=Proven analysis=@make_body revision=1
+  }
+  func @make() -> owned !ref<!Box> profile=@unique effects=@make_effects {
+    ^entry:
+      %scope = memory.scope.begin
+      %object = object.new !Box(value=i64(42)) result=owned
+                provider=@unique_heap scope_hint=%scope
+      %out = memory.move %object destination=return_owner
+      memory.scope.end %scope
+      core.return_owned %out
+  }
+  func @main() -> !i64 profile=@unique effects=@unknown {
+    ^entry:
+      %owned = core.call.direct @make() effects=@make_effects
+      %answer = object.field.read %owned, !Box.value
+      memory.drop %owned provider=@unique_heap
+      core.return %answer
+  }
+}

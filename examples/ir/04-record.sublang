@@ -1,0 +1,21 @@
+module 04-record schema=1 stage=High revision=1 entry=1
+span 1 source=0 line=0 column=0 origin=example:record
+type 1 Void Void
+type 2 Bool Bool width=1 signed=false
+type 3 Int Int width=64 signed=true
+type 4 Float Float width=64 signed=false
+type 5 Record Pair fields=[1,2] span=1
+field 1 owner=Pair x type=Int mutable=false span=1
+field 2 owner=Pair y type=Int mutable=false span=1
+failure 1 example.integer_failure
+func 1 main() -> Int methodOf=0 span=1
+  block 1 params=[]
+    v1:Int = const.int value=20 span=1
+    v2:Int = const.int value=22 span=1
+    v3:Pair = record.make v1@value, v2@value type=Pair span=1
+    v4:Int = const.int value=21 span=1
+    v5:Pair = record.with v3@value, v4@value field=Pair.x span=1
+    v6:Int = record.get v5@value field=Pair.x span=1
+    v7:Int = record.get v3@value field=Pair.y span=1
+    v8:Int = int.add v6@value, v7@value overflow=trap failure=example.integer_failure span=1
+    return v8@value span=1

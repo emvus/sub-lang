@@ -1,0 +1,16 @@
+Sublang — migrated standalone repository verification
+
+Successful bundled run: bash scripts/check-sandbox.sh all
+External toolchain: SUBLANG_EMERALD_ROOT (local sibling Emerald LLVM)
+Compiler: emerald-stable/emerald-compiler (installed binary unchanged)
+Sandbox: emerald-selfhost-sandbox; memory=6,000,000,000 bytes; swap=0; network=none
+Both repositories read-only; temporary compiler outputs stayed in tmpfs.
+Exit status: 0
+
+Harness: all 5 cases passed, including Sublang-* diagnostic codes.
+Examples: all 7 modules structurally valid.
+The .sublang dumps were regenerated from the migrated SublangBuilder/SublangDump.
+Lifetime: not_checked. Codegen readiness: false.
+Target .sublang-ir examples, Optimind passes, Dynamic/EH and LLVM pipeline:
+design contracts, not claimed implemented or executed.
+No full selfhost bootstrap and no benchmark suite.

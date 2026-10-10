@@ -1,0 +1,68 @@
+// Sublang v0.4 target notation; NOT implemented input syntax.
+// Analysis/proof claims are illustrative expected results, not executed checks.
+module @exception_cleanup stage=High schema=planned revision=1 {
+  require Core@planned, Memory@planned, Exception@planned
+  profile @resources {
+    integers=signed_i64; unwind=exceptions; cleanup_order=reverse_acquisition
+    cleanup_throw=forbidden
+  }
+  runtime @resources_rt {
+    exception_abi=@target_eh
+    exception_token=owned_rooted
+    allocation_failure=abort
+    drop_resource=nonthrowing
+  }
+  effects @unknown { default=unknown origin=AssumedConservative }
+  effects @read_effects inherits=@unknown {
+    mayThrow=true; mayAllocate=true; mayFail=true
+    reads=runtime+argument0; writes=argument0
+    escape.argument0=false
+    origin=Declared trusted=@resources_rt.read
+  }
+  effects @drop_effects inherits=@unknown {
+    mayThrow=false; mayAllocate=false; mayFail=false
+    escape.argument0=false; reads=argument0; writes=runtime+argument0
+    synchronization=none; observable=resource_close; mayDiverge=false
+    origin=Declared trusted=@resources_rt.drop_resource
+  }
+  effects @load_effects inherits=@unknown {
+    mayThrow=true; mayAllocate=true; mayFail=true
+    origin=Proven analysis=@load_body revision=1
+  }
+  resource !Buffer provider=@resources_rt
+  exception !Error provider=@resources_rt
+
+  extern func @read(borrow_write !Buffer) -> !i64
+      profile=@resources cc=provider contract=@resources_rt.read
+      effects=@read_effects
+
+  func @load() -> !i64 profile=@resources throws=!Error effects=@load_effects {
+    ^entry:
+      %buffer = memory.resource.acquire !Buffer failure=abort result=owned
+      exception.invoke @read(%buffer) effects=@read_effects
+          normal ^success(%result: !i64)
+          unwind ^cleanup(%exception: owned_rooted !Error)
+    ^success(%value: !i64):
+      memory.resource.drop %buffer contract=@resources_rt.drop_resource effects=@drop_effects
+      core.return %value
+    ^cleanup(%pending: owned_rooted !Error):
+      memory.resource.drop %buffer contract=@resources_rt.drop_resource effects=@drop_effects
+      exception.resume %pending abi=@target_eh
+  }
+  func @loadOrZero() -> !i64 profile=@resources effects=@unknown throws=!Error {
+    ^entry:
+      exception.invoke @load() effects=@load_effects
+          normal ^done(%result: !i64)
+          unwind ^catch(%exception: owned_rooted !Error)
+    ^done(%value: !i64):
+      core.return %value
+    ^catch(%pending: owned_rooted !Error):
+      %matched = exception.matches %pending, !Error
+      core.cond_branch %matched, ^handled, ^rethrow
+    ^handled:
+      exception.consume %pending runtime=@resources_rt
+      core.return i64(0)
+    ^rethrow:
+      exception.resume %pending abi=@target_eh
+  }
+}

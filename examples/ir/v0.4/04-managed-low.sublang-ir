@@ -1,0 +1,26 @@
+// Sublang v0.4 target notation; NOT implemented input syntax.
+// Analysis/proof claims are illustrative expected results, not executed checks.
+module @temporary_low stage=Low revision=8 consumes_plan=@temporary_sum {
+  require Core@planned, Memory@planned
+  target = x86_64-linux
+  failure @overflow { behavior=abort; provider=@abort_runtime }
+  effects @low_effects {
+    default=unknown origin=AssumedConservative
+    mayAllocate=false; mayEscape=false; mayThrow=false; mayFail=true
+    reads=local(%slot); writes=local(%slot); synchronization=none
+    observable=none; mayDiverge=false
+    facts_origin=Proven analysis=@low_sum_body revision=8
+  }
+  func @sum() -> !i64 cc=sublang effects=@low_effects {
+    ^entry:
+      %slot = memory.stack.alloc bytes=16 align=8
+      memory.lifetime.start %slot bytes=16
+      memory.store.i64 %slot offset=0, 20 align=8
+      memory.store.i64 %slot offset=8, 22 align=8
+      %a = memory.load.i64 %slot offset=0 align=8
+      %b = memory.load.i64 %slot offset=8 align=8
+      %r = core.int.add %a, %b overflow=checked failure=@overflow
+      memory.lifetime.end %slot bytes=16
+      core.return %r
+  }
+}

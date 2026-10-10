@@ -1,0 +1,251 @@
+use sublang::analysis::SublangVerification;
+use sublang::analysis::SublangVerifier;
+use sublang::diagnostics::SublangDiagnostic;
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangDump;
+use sublang::ir::SublangModule;
+use sublang::ir::SublangSourceSpan;
+use sublang::semantics::SublangOptions;
+use Std::Process::Process;
+
+// Standalone check for the Sublang High IR core (Auftrag A). It is not part of the
+// production compiler: nothing in Main.ems imports it. Build and run it only in
+// the capped sandbox.
+public class SublangHarnessCases {
+    public static String yesNo(Bool value) {
+        if (value) {
+            return "yes";
+        }
+        return "no";
+    }
+
+    public static String describeSpan(SublangModule module, Int spanId) {
+        if (!module.hasSpan(spanId)) {
+            return "span=" + spanId.toString() + " (invalid)";
+        }
+        SublangSourceSpan spanEntry = module.spanAt(spanId);
+        String source = "?";
+        if (module.hasSource(spanEntry.source())) {
+            source = module.sourceNameAt(spanEntry.source());
+        }
+        return "span=" + spanId.toString() + " at " + source + ":" + spanEntry.line().toString() + ":" + spanEntry.column().toString();
+    }
+
+    public static Bool hasDiagnostic(List<SublangDiagnostic> found, String code, Int spanId) {
+        Int index = 0;
+        while (index < found.length()) {
+            SublangDiagnostic entry = found.get(index);
+            if (entry.code() == code && entry.spanId() == spanId) {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    public static Void printDiagnostics(SublangModule module, List<SublangDiagnostic> found) {
+        Int index = 0;
+        while (index < found.length()) {
+            SublangDiagnostic entry = found.get(index);
+            println("  " + entry.code() + " " + SublangHarnessCases.describeSpan(module, entry.spanId()) + ": " + entry.message());
+            index = index + 1;
+        }
+    }
+
+    public static Bool report(String label, Bool passed) {
+        if (passed) {
+            println("PASS " + label);
+        } else {
+            println("FAIL " + label);
+        }
+        return passed;
+    }
+
+    public static Bool expectRejected(SublangModule module, String label, String code, Int spanId) {
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        SublangHarnessCases.printDiagnostics(module, verdict.diagnostics());
+        Bool found = SublangHarnessCases.hasDiagnostic(verdict.diagnostics(), code, spanId);
+        println("expected " + code + " at span " + spanId.toString() + ": " + SublangHarnessCases.yesNo(found));
+        return SublangHarnessCases.report(label, found && !verdict.structurallyValid());
+    }
+
+    // Free function add, record Pair, class Counter with a mutable field and the
+    // receiver method Counter.read, plus main, which uses all of them once.
+    public static SublangBuilder buildValid() {
+        SublangBuilder builder = SublangBuilder("valid-demo");
+        Int src = builder.source("SublangHarness.ems");
+        Int intT = builder.intType();
+        Int failureId = builder.failure("emerald.int_overflow");
+
+        Int pairT = builder.recordType("Pair", builder.span(src, 10, 5));
+        Int pairX = builder.recordField(pairT, "x", intT, builder.span(src, 11, 5));
+        Int pairY = builder.recordField(pairT, "y", intT, builder.span(src, 12, 5));
+
+        Int counterT = builder.classType("Counter", builder.span(src, 14, 5));
+        Int counterValue = builder.classField(counterT, "value", intT, true, builder.span(src, 15, 5));
+        Int counterRef = builder.refType(counterT);
+
+        Int addFn = builder.beginFunction("add", intT, 0, builder.span(src, 20, 5));
+        Int addA = builder.addParam("a", intT, "value", false);
+        Int addB = builder.addParam("b", intT, "value", false);
+        builder.beginBlock();
+        Int addSum = builder.intBinary("int.add", addA, addB, "trap", failureId, builder.span(src, 21, 9));
+        builder.returnValue(addSum, builder.span(src, 22, 9));
+
+        Int readFn = builder.beginFunction("Counter.read", intT, counterT, builder.span(src, 24, 5));
+        Int readSelf = builder.addParam("self", counterRef, "borrow_read", true);
+        builder.beginBlock();
+        Int readValue = builder.fieldRead(readSelf, counterValue, builder.span(src, 25, 9));
+        builder.returnValue(readValue, builder.span(src, 26, 9));
+
+        Int mainFn = builder.beginFunction("main", intT, 0, builder.span(src, 30, 5));
+        builder.beginBlock();
+        Int scopeId = builder.scopeBegin(builder.span(src, 31, 9));
+        Int twenty = builder.constInt(20, builder.span(src, 32, 9));
+        Int twentyTwo = builder.constInt(22, builder.span(src, 33, 9));
+        List<Int> pairValues = List();
+        pairValues.add(twenty);
+        pairValues.add(twentyTwo);
+        Int pairValue = builder.recordMake(pairT, pairValues, builder.span(src, 34, 9));
+        Int pairLeft = builder.recordGet(pairValue, pairX, builder.span(src, 35, 9));
+        Int pairRight = builder.recordGet(pairValue, pairY, builder.span(src, 36, 9));
+        List<Int> addArgs = List();
+        addArgs.add(pairLeft);
+        addArgs.add(pairRight);
+        List<String> addModes = List();
+        addModes.add("value");
+        addModes.add("value");
+        Int total = builder.callDirect(addFn, addArgs, addModes, builder.span(src, 37, 9));
+        Int counter = builder.classNew(counterT, scopeId, builder.span(src, 38, 9));
+        builder.fieldInit(counter, counterValue, total, builder.span(src, 39, 9));
+        List<Int> readArgs = List();
+        readArgs.add(counter);
+        List<String> readModes = List();
+        readModes.add("borrow_read");
+        Int observed = builder.callDirect(readFn, readArgs, readModes, builder.span(src, 40, 9));
+        builder.scopeEnd(scopeId, builder.span(src, 41, 9));
+        builder.returnValue(observed, builder.span(src, 42, 9));
+        builder.module().setEntry(mainFn);
+        return builder;
+    }
+
+    public static Bool validModuleAccepted() {
+        println("== valid module: free function, record, class with receiver call ==");
+        SublangBuilder builder = SublangHarnessCases.buildValid();
+        SublangModule module = builder.module();
+        String firstDump = SublangDump.render(module);
+        String secondDump = SublangDump.render(module);
+        SublangBuilder rebuiltBuilder = SublangHarnessCases.buildValid();
+        String rebuiltDump = SublangDump.render(rebuiltBuilder.module());
+        println(firstDump);
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        SublangHarnessCases.printDiagnostics(module, verdict.diagnostics());
+        Bool structural = verdict.structurallyValid();
+        Bool deterministic = firstDump == secondDump && firstDump == rebuiltDump;
+        Bool gated = !verdict.codegenReady();
+        println("structural=" + SublangHarnessCases.yesNo(structural) + " deterministicDump=" + SublangHarnessCases.yesNo(deterministic) + " lifetime=" + verdict.lifetimeStatus() + " codegenReady=" + SublangHarnessCases.yesNo(verdict.codegenReady()));
+        return SublangHarnessCases.report("valid-module", structural && deterministic && gated);
+    }
+
+    public static Bool typeErrorRejected() {
+        println("== negative: type error ==");
+        SublangBuilder builder = SublangBuilder("negative-type-error");
+        Int src = builder.source("SublangHarness.ems");
+        Int intT = builder.intType();
+        Int boolT = builder.boolType();
+        Int failureId = builder.failure("emerald.int_overflow");
+        builder.beginFunction("add", intT, 0, builder.span(src, 100, 5));
+        Int paramA = builder.addParam("a", intT, "value", false);
+        Int paramFlag = builder.addParam("flag", boolT, "value", false);
+        builder.beginBlock();
+        Int addSpan = builder.span(src, 102, 9);
+        Int total = builder.intBinary("int.add", paramA, paramFlag, "trap", failureId, addSpan);
+        builder.returnValue(total, builder.span(src, 103, 9));
+        return SublangHarnessCases.expectRejected(builder.module(), "type-error", "SUBLANG-T001", addSpan);
+    }
+
+    public static Bool dominanceRejected() {
+        println("== negative: dominance violation ==");
+        SublangBuilder builder = SublangBuilder("negative-dominance");
+        Int src = builder.source("SublangHarness.ems");
+        Int intT = builder.intType();
+        Int boolT = builder.boolType();
+        Int failureId = builder.failure("emerald.int_overflow");
+        builder.beginFunction("choose", intT, 0, builder.span(src, 120, 5));
+        Int flag = builder.addParam("flag", boolT, "value", false);
+        builder.beginBlock();
+        Int one = builder.constInt(1, builder.span(src, 122, 9));
+        Int two = builder.constInt(2, builder.span(src, 123, 9));
+        Int thenBlock = builder.newBlock();
+        Int elseBlock = builder.newBlock();
+        List<Int> noThenArgs = List();
+        List<Int> noElseArgs = List();
+        builder.condBranch(flag, thenBlock, noThenArgs, elseBlock, noElseArgs, builder.span(src, 124, 9));
+        builder.enterBlock(thenBlock);
+        Int inThen = builder.intBinary("int.add", one, two, "trap", failureId, builder.span(src, 126, 13));
+        builder.returnValue(inThen, builder.span(src, 127, 13));
+        builder.enterBlock(elseBlock);
+        Int useSpan = builder.span(src, 129, 13);
+        builder.returnValue(inThen, useSpan);
+        return SublangHarnessCases.expectRejected(builder.module(), "dominance", "SUBLANG-S007", useSpan);
+    }
+
+    public static Bool missingOverflowRejected() {
+        println("== negative: missing overflow and failure semantics ==");
+        SublangBuilder builder = SublangBuilder("negative-overflow");
+        Int src = builder.source("SublangHarness.ems");
+        Int intT = builder.intType();
+        builder.beginFunction("unchecked", intT, 0, builder.span(src, 140, 5));
+        Int paramA = builder.addParam("a", intT, "value", false);
+        Int paramB = builder.addParam("b", intT, "value", false);
+        builder.beginBlock();
+        Int noModeSpan = builder.span(src, 142, 9);
+        Int unmarked = builder.intBinary("int.add", paramA, paramB, "", 0, noModeSpan);
+        Int noFailureSpan = builder.span(src, 143, 9);
+        Int trapped = builder.intBinary("int.sub", paramA, paramB, "trap", 0, noFailureSpan);
+        Int combined = builder.intBinary("int.add", unmarked, trapped, "wrap", 0, builder.span(src, 144, 9));
+        builder.returnValue(combined, builder.span(src, 145, 9));
+        SublangModule module = builder.module();
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        SublangHarnessCases.printDiagnostics(module, verdict.diagnostics());
+        Bool missingMode = SublangHarnessCases.hasDiagnostic(verdict.diagnostics(), "SUBLANG-A001", noModeSpan);
+        Bool missingFailure = SublangHarnessCases.hasDiagnostic(verdict.diagnostics(), "SUBLANG-A002", noFailureSpan);
+        return SublangHarnessCases.report("missing-overflow", missingMode && missingFailure && !verdict.structurallyValid());
+    }
+
+    public static Bool optionsValidated() {
+        println("== options ==");
+        Bool defaultsValid = SublangOptions.defaults().isValid();
+        Bool unknownRejected = !SublangOptions("maybe").isValid();
+        println("default flowMode=" + SublangOptions.defaults().flowMode());
+        return SublangHarnessCases.report("options", defaultsValid && unknownRejected);
+    }
+}
+
+main() {
+    Int failures = 0;
+    if (!SublangHarnessCases.validModuleAccepted()) {
+        failures = failures + 1;
+    }
+    if (!SublangHarnessCases.typeErrorRejected()) {
+        failures = failures + 1;
+    }
+    if (!SublangHarnessCases.dominanceRejected()) {
+        failures = failures + 1;
+    }
+    if (!SublangHarnessCases.missingOverflowRejected()) {
+        failures = failures + 1;
+    }
+    if (!SublangHarnessCases.optionsValidated()) {
+        failures = failures + 1;
+    }
+    if (failures == 0) {
+        println("Sublang harness: all 5 cases passed");
+    } else {
+        println("Sublang harness: " + failures.toString() + " case(s) failed");
+        Process.exit(1);
+    }
+}

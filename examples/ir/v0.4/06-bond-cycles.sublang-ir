@@ -1,0 +1,34 @@
+// Sublang v0.4 target notation; NOT implemented input syntax.
+// Analysis/proof claims are illustrative expected results, not executed checks.
+module @cycles stage=High schema=planned revision=1 {
+  require Core@planned, Object@planned, Memory@planned
+  profile @graph {
+    unwind=none; finalizers=none; weak_references=none
+    threads=single; object_identity=observable
+  }
+  provider @bond {
+    sharing=true; cycles=true; weak_references=false; finalizers=false
+    edge_updates=tracked; collection_timing=unobservable
+  }
+  class !Node identity=observable {
+    field next: !nullable_shared_ref<!Node> mutable
+  }
+  effects @unknown { default=unknown origin=AssumedConservative }
+  effects @bond_effects inherits=@unknown {
+    mayAllocate=true; mayThrow=false; mayFail=true
+    mayEscape=runtime_graph; reads=runtime+local_graph; writes=runtime+local_graph
+    synchronization=none; observable=none; mayDiverge=unknown
+    origin=Declared trusted=@bond
+  }
+  func @cycle() -> !i64 profile=@graph effects=@bond_effects {
+    ^entry:
+      %a = memory.shared.new !Node(next=null) provider=@bond
+      %b = memory.shared.new !Node(next=null) provider=@bond
+      memory.shared.edge.set %a, !Node.next, %b provider=@bond
+      memory.shared.edge.set %b, !Node.next, %a provider=@bond
+      memory.shared.release %a provider=@bond
+      memory.shared.release %b provider=@bond
+      core.return i64(0)
+  }
+}
+pipeline { flow=on; memory=hyperalloc-managed; provider=@bond }

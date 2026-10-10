@@ -1,0 +1,220 @@
+use sublang::analysis::SublangVerification;
+use sublang::analysis::SublangVerifier;
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangDump;
+use sublang::ir::SublangModule;
+use Std::Process::Process;
+
+// Standalone examples of the CURRENT API. Not imported by production Main.
+// Build/run only through scripts/sublang-examples-sandbox.sh (6 GB, no swap).
+public class SublangExamples {
+    public static List<Int> one(Int a) {
+        List<Int> values = List();
+        values.add(a);
+        return values;
+    }
+
+    public static List<Int> two(Int a, Int b) {
+        List<Int> values = List();
+        values.add(a);
+        values.add(b);
+        return values;
+    }
+
+    // A direct call and checked signed i64 addition. Semantic result: 42.
+    public static SublangModule arithmetic() {
+        SublangBuilder b = SublangBuilder("01-arithmetic");
+        Int s = b.syntheticSpan("example:arithmetic");
+        Int failure = b.failure("example.integer_failure");
+        Int add = b.beginFunction("add", b.intType(), 0, s);
+        Int x = b.addParam("x", b.intType(), "value", false);
+        Int y = b.addParam("y", b.intType(), "value", false);
+        b.beginBlock();
+        Int sum = b.intBinary("int.add", x, y, "trap", failure, s);
+        b.returnValue(sum, s);
+        Int mainFn = b.beginFunction("main", b.intType(), 0, s);
+        b.beginBlock();
+        Int a = b.constInt(20, s);
+        Int c = b.constInt(22, s);
+        List<String> modes = List();
+        modes.add("value");
+        modes.add("value");
+        Int result = b.callDirect(add, SublangExamples.two(a, c), modes, s);
+        b.returnValue(result, s);
+        b.module().setEntry(mainFn);
+        return b.module();
+    }
+
+    // max(a,b), merged through a block parameter instead of mutable locals.
+    public static SublangModule branch() {
+        SublangBuilder b = SublangBuilder("02-branch");
+        Int s = b.syntheticSpan("example:branch");
+        Int fn = b.beginFunction("max", b.intType(), 0, s);
+        Int a = b.addParam("a", b.intType(), "value", false);
+        Int c = b.addParam("b", b.intType(), "value", false);
+        b.beginBlock();
+        Int yes = b.newBlock();
+        Int no = b.newBlock();
+        Int merge = b.newBlock();
+        Int condition = b.compare("gt", a, c, s);
+        List<Int> empty = List();
+        b.condBranch(condition, yes, empty, no, empty, s);
+        b.enterBlock(yes);
+        b.branchTo(merge, SublangExamples.one(a), s);
+        b.enterBlock(no);
+        b.branchTo(merge, SublangExamples.one(c), s);
+        b.enterBlock(merge);
+        Int selected = b.addBlockParam(b.intType());
+        b.returnValue(selected, s);
+        // Library module: entry=0 is intentional.
+        return b.module();
+    }
+
+    // sum(0 .. n-1), loop-carried i and total are SSA block parameters.
+    public static SublangModule loop() {
+        SublangBuilder b = SublangBuilder("03-loop");
+        Int s = b.syntheticSpan("example:loop");
+        Int failure = b.failure("example.integer_failure");
+        b.beginFunction("sumBelow", b.intType(), 0, s);
+        Int n = b.addParam("n", b.intType(), "value", false);
+        b.beginBlock();
+        Int header = b.newBlock();
+        Int body = b.newBlock();
+        Int exit = b.newBlock();
+        Int zero = b.constInt(0, s);
+        Int one = b.constInt(1, s);
+        b.branchTo(header, SublangExamples.two(zero, zero), s);
+        b.enterBlock(header);
+        Int i = b.addBlockParam(b.intType());
+        Int total = b.addBlockParam(b.intType());
+        Int more = b.compare("lt", i, n, s);
+        List<Int> empty = List();
+        b.condBranch(more, body, empty, exit, SublangExamples.one(total), s);
+        b.enterBlock(body);
+        Int nextTotal = b.intBinary("int.add", total, i, "trap", failure, s);
+        Int nextI = b.intBinary("int.add", i, one, "trap", failure, s);
+        b.branchTo(header, SublangExamples.two(nextI, nextTotal), s);
+        b.enterBlock(exit);
+        Int result = b.addBlockParam(b.intType());
+        b.returnValue(result, s);
+        return b.module();
+    }
+
+    // Value semantics: record.with returns a NEW Pair; original.x remains 20.
+    public static SublangModule record() {
+        SublangBuilder b = SublangBuilder("04-record");
+        Int s = b.syntheticSpan("example:record");
+        Int failure = b.failure("example.integer_failure");
+        Int pair = b.recordType("Pair", s);
+        Int fx = b.recordField(pair, "x", b.intType(), s);
+        Int fy = b.recordField(pair, "y", b.intType(), s);
+        Int fn = b.beginFunction("main", b.intType(), 0, s);
+        b.beginBlock();
+        Int x = b.constInt(20, s);
+        Int y = b.constInt(22, s);
+        Int original = b.recordMake(pair, SublangExamples.two(x, y), s);
+        Int replacement = b.constInt(21, s);
+        Int updated = b.recordWith(original, fx, replacement, s);
+        Int left = b.recordGet(updated, fx, s);
+        Int right = b.recordGet(original, fy, s);
+        Int result = b.intBinary("int.add", left, right, "trap", failure, s);
+        b.returnValue(result, s);
+        b.module().setEntry(fn);
+        return b.module();
+    }
+
+    // Reference identity, initialization, mutation and a borrowed receiver.
+    public static SublangModule object() {
+        SublangBuilder b = SublangBuilder("05-object");
+        Int s = b.syntheticSpan("example:object");
+        Int counter = b.classType("Counter", s);
+        Int field = b.classField(counter, "value", b.intType(), true, s);
+        Int ref = b.refType(counter);
+        Int read = b.beginFunction("Counter.read", b.intType(), counter, s);
+        Int self = b.addParam("self", ref, "borrow_read", true);
+        b.beginBlock();
+        Int observed = b.fieldRead(self, field, s);
+        b.returnValue(observed, s);
+        Int fn = b.beginFunction("main", b.intType(), 0, s);
+        b.beginBlock();
+        Int scope = b.scopeBegin(s);
+        Int instance = b.classNew(counter, scope, s);
+        Int before = b.constInt(1, s);
+        b.fieldInit(instance, field, before, s);
+        Int after = b.constInt(42, s);
+        b.fieldWrite(instance, field, after, s);
+        List<String> modes = List();
+        modes.add("borrow_read");
+        Int result = b.callDirect(read, SublangExamples.one(instance), modes, s);
+        b.scopeEnd(scope, s);
+        b.returnValue(result, s);
+        b.module().setEntry(fn);
+        return b.module();
+    }
+
+    // Float parameters avoid the current lossy constant-dump representation.
+    // For (6.0,2.0), ((a*b+a)-a)/b = 6.0 with explicit rne on every op.
+    public static SublangModule floating() {
+        SublangBuilder b = SublangBuilder("06-float");
+        Int s = b.syntheticSpan("example:float");
+        b.beginFunction("calculate", b.floatType(), 0, s);
+        Int a = b.addParam("a", b.floatType(), "value", false);
+        Int c = b.addParam("b", b.floatType(), "value", false);
+        b.beginBlock();
+        Int product = b.floatBinary("float.mul", a, c, "rne", s);
+        Int sum = b.floatBinary("float.add", product, a, "rne", s);
+        Int difference = b.floatBinary("float.sub", sum, a, "rne", s);
+        Int result = b.floatBinary("float.div", difference, c, "rne", s);
+        b.returnValue(result, s);
+        return b.module();
+    }
+
+    // Failure is a terminator; a failure block does not need a return.
+    public static SublangModule failure() {
+        SublangBuilder b = SublangBuilder("07-failure");
+        Int s = b.syntheticSpan("example:failure");
+        Int action = b.failure("example.invalid_input");
+        b.beginFunction("requireNonNegative", b.intType(), 0, s);
+        Int x = b.addParam("x", b.intType(), "value", false);
+        b.beginBlock();
+        Int bad = b.newBlock();
+        Int good = b.newBlock();
+        Int zero = b.constInt(0, s);
+        Int negative = b.compare("lt", x, zero, s);
+        List<Int> empty = List();
+        b.condBranch(negative, bad, empty, good, empty, s);
+        b.enterBlock(bad);
+        b.failWith(action, s);
+        b.enterBlock(good);
+        b.returnValue(x, s);
+        return b.module();
+    }
+
+    public static Void show(SublangModule module) {
+        SublangVerifier verifier = SublangVerifier(module);
+        SublangVerification verdict = verifier.verify();
+        if (!verdict.structurallyValid()) {
+            println("INVALID " + module.name());
+            Int i = 0;
+            while (i < verdict.diagnostics().length()) {
+                println(verdict.diagnostics().get(i).message());
+                i = i + 1;
+            }
+            Process.exit(1);
+        }
+        println("=== Sublang " + module.name() + " ===");
+        println(SublangDump.render(module));
+        println("=== END Sublang ===");
+        println("structure=valid lifetime=not_checked codegenReady=false");
+    }
+}
+
+main() {
+    SublangExamples.show(SublangExamples.arithmetic());
+    SublangExamples.show(SublangExamples.branch());
+    SublangExamples.show(SublangExamples.loop());
+    SublangExamples.show(SublangExamples.record());
+    SublangExamples.show(SublangExamples.object());
+    SublangExamples.show(SublangExamples.floating());
+    SublangExamples.show(SublangExamples.failure());
+}

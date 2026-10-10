@@ -1,0 +1,85 @@
+namespace sublang::ir;
+
+// Tag vocabulary of Sublang High IR v0.1. Every kind, passing mode, opcode and
+// overflow mode is a plain string here; unknown tags are rejected by the
+// verifier instead of being passed through to a backend.
+public class SublangVocabulary {
+    public static Int schemaVersion() {
+        return 1;
+    }
+
+    public static String stageHigh() {
+        return "High";
+    }
+
+    public static Bool isKnownTypeKind(String kind) {
+        return kind == "Void" || kind == "Bool" || kind == "Int" || kind == "Float" || kind == "Record" || kind == "Class" || kind == "Ref";
+    }
+
+    public static Bool isPrimitiveKind(String kind) {
+        return kind == "Bool" || kind == "Int" || kind == "Float";
+    }
+
+    public static Bool isKnownPassing(String mode) {
+        return mode == "value" || mode == "owned" || mode == "borrow_read" || mode == "borrow_write" || mode == "init";
+    }
+
+    public static Bool isKnownPredicate(String predicate) {
+        return predicate == "eq" || predicate == "ne" || predicate == "lt" || predicate == "le" || predicate == "gt" || predicate == "ge";
+    }
+
+    public static Bool isTerminator(String opcode) {
+        return opcode == "return" || opcode == "branch" || opcode == "cond_branch" || opcode == "fail";
+    }
+
+    public static Bool isIntOpcode(String opcode) {
+        return opcode == "int.add" || opcode == "int.sub" || opcode == "int.mul" || opcode == "int.div" || opcode == "int.rem" || opcode == "int.neg";
+    }
+
+    public static Bool isFloatOpcode(String opcode) {
+        return opcode == "float.add" || opcode == "float.sub" || opcode == "float.mul" || opcode == "float.div";
+    }
+
+    public static Bool isKnownOpcode(String opcode) {
+        if (SublangVocabulary.isTerminator(opcode) || SublangVocabulary.isIntOpcode(opcode) || SublangVocabulary.isFloatOpcode(opcode)) {
+            return true;
+        }
+        return opcode == "const.bool" || opcode == "const.int" || opcode == "const.float" || opcode == "compare" || opcode == "record.make" || opcode == "record.get" || opcode == "record.with" || opcode == "class.new" || opcode == "field.init" || opcode == "field.read" || opcode == "field.write" || opcode == "call.direct" || opcode == "scope.begin" || opcode == "scope.end";
+    }
+
+    // call.direct is excluded on purpose: whether it produces a value depends on the callee.
+    public static Bool producesValue(String opcode) {
+        if (SublangVocabulary.isIntOpcode(opcode) || SublangVocabulary.isFloatOpcode(opcode)) {
+            return true;
+        }
+        return opcode == "const.bool" || opcode == "const.int" || opcode == "const.float" || opcode == "compare" || opcode == "record.make" || opcode == "record.get" || opcode == "record.with" || opcode == "class.new" || opcode == "field.read";
+    }
+
+    // Integer division by zero always traps; overflow modes differ per opcode.
+    public static Bool allowsOverflow(String opcode, String overflow) {
+        if (opcode == "int.rem") {
+            return overflow == "zero" || overflow == "trap";
+        }
+        return overflow == "trap" || overflow == "wrap";
+    }
+
+    // Names what SublangOperation.ref() points to for a given opcode.
+    public static String refMeaning(String opcode) {
+        if (opcode == "record.make" || opcode == "class.new") {
+            return "type";
+        }
+        if (opcode == "record.get" || opcode == "record.with" || opcode == "field.init" || opcode == "field.read" || opcode == "field.write") {
+            return "field";
+        }
+        if (opcode == "call.direct") {
+            return "function";
+        }
+        if (opcode == "scope.begin" || opcode == "scope.end") {
+            return "scope";
+        }
+        if (opcode == "fail" || SublangVocabulary.isIntOpcode(opcode)) {
+            return "failure";
+        }
+        return "none";
+    }
+}

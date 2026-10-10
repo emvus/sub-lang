@@ -1,0 +1,16 @@
+module 07-failure schema=1 stage=High revision=1 entry=0
+span 1 source=0 line=0 column=0 origin=example:failure
+type 1 Void Void
+type 2 Bool Bool width=1 signed=false
+type 3 Int Int width=64 signed=true
+type 4 Float Float width=64 signed=false
+failure 1 example.invalid_input
+func 1 requireNonNegative(v1 x:Int@value) -> Int methodOf=0 span=1
+  block 1 params=[]
+    v2:Int = const.int value=0 span=1
+    v3:Bool = compare v1@value, v2@value predicate=lt span=1
+    cond_branch v3@value targets=[2,3] trueArgs=0 span=1
+  block 2 params=[]
+    fail failure=example.invalid_input span=1
+  block 3 params=[]
+    return v1@value span=1

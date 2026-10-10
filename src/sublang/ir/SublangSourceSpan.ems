@@ -1,0 +1,39 @@
+namespace sublang::ir;
+
+// A source location. Synthetic nodes (no real text position) carry an origin
+// string instead and use line 0.
+public class SublangSourceSpan {
+    private Int spanIdValue;
+    private Int sourceIdValue;
+    private Int lineValue;
+    private Int columnValue;
+    private String originText;
+
+    public SublangSourceSpan(Int id, Int source, Int line, Int column, String origin) {
+        this.spanIdValue = id;
+        this.sourceIdValue = source;
+        this.lineValue = line;
+        this.columnValue = column;
+        this.originText = origin + "";
+    }
+
+    public Int id() {
+        return this.spanIdValue;
+    }
+
+    public Int source() {
+        return this.sourceIdValue;
+    }
+
+    public Int line() {
+        return this.lineValue;
+    }
+
+    public Int column() {
+        return this.columnValue;
+    }
+
+    public String origin() {
+        return this.originText;
+    }
+}

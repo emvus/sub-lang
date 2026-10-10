@@ -1,0 +1,34 @@
+namespace sublang::analysis;
+
+use sublang::diagnostics::SublangDiagnostic;
+
+// Result of verification. Structural validity and the lifetime/effect proof are
+// separate facts: a structurally valid module is still not cleared for code
+// generation until the lifetime proof exists, and that proof is not implemented yet.
+public class SublangVerification {
+    private List<SublangDiagnostic> issueList;
+
+    public SublangVerification(List<SublangDiagnostic> issues) {
+        this.issueList = issues;
+    }
+
+    public Bool structurallyValid() {
+        return this.issueList.length() == 0;
+    }
+
+    public List<SublangDiagnostic> diagnostics() {
+        return this.issueList;
+    }
+
+    public String lifetimeStatus() {
+        return "not_checked";
+    }
+
+    public Bool lifetimeProven() {
+        return false;
+    }
+
+    public Bool codegenReady() {
+        return this.structurallyValid() && this.lifetimeProven();
+    }
+}

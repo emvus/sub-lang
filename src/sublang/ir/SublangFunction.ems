@@ -1,0 +1,120 @@
+namespace sublang::ir;
+
+use sublang::ir::SublangBlock;
+use sublang::ir::SublangParam;
+
+// Function signature plus body. Value ids are function-local and 1-based;
+// the value table stores only the type of each value. Blocks are 1-based and
+// block 1 is the entry block.
+public class SublangFunction {
+    private Int functionIdValue;
+    private String nameText;
+    private Int returnTypeId;
+    private Int methodOfId;
+    private Int spanIdValue;
+    private List<SublangParam> paramList;
+    private List<SublangBlock> blockList;
+    private List<Int> valueTypeIds;
+    private Int scopeCounter;
+
+    public SublangFunction(Int id, String name, Int returnType, Int methodOf, Int span) {
+        this.functionIdValue = id;
+        this.nameText = name + "";
+        this.returnTypeId = returnType;
+        this.methodOfId = methodOf;
+        this.spanIdValue = span;
+        this.paramList = List();
+        this.blockList = List();
+        this.valueTypeIds = List();
+        this.scopeCounter = 0;
+    }
+
+    public Int id() {
+        return this.functionIdValue;
+    }
+
+    public String name() {
+        return this.nameText;
+    }
+
+    public Int returnType() {
+        return this.returnTypeId;
+    }
+
+    public Int methodOf() {
+        return this.methodOfId;
+    }
+
+    public Int span() {
+        return this.spanIdValue;
+    }
+
+    public List<SublangParam> params() {
+        return this.paramList;
+    }
+
+    public Int paramCount() {
+        return this.paramList.length();
+    }
+
+    public SublangParam paramAt(Int index) {
+        return this.paramList.get(index);
+    }
+
+    public List<SublangBlock> blocks() {
+        return this.blockList;
+    }
+
+    public Int blockCount() {
+        return this.blockList.length();
+    }
+
+    public Bool hasBlock(Int blockId) {
+        return blockId >= 1 && blockId <= this.blockList.length();
+    }
+
+    public SublangBlock blockAt(Int blockId) {
+        return this.blockList.get(blockId - 1);
+    }
+
+    public Int valueCount() {
+        return this.valueTypeIds.length();
+    }
+
+    public Bool hasValue(Int valueId) {
+        return valueId >= 1 && valueId <= this.valueTypeIds.length();
+    }
+
+    public Int valueTypeAt(Int valueId) {
+        return this.valueTypeIds.get(valueId - 1);
+    }
+
+    public Int newValue(Int typeId) {
+        this.valueTypeIds.add(typeId);
+        return this.valueTypeIds.length();
+    }
+
+    public Int addParam(String name, Int typeId, String passing, Bool noEscape) {
+        Int valueId = this.newValue(typeId);
+        SublangParam paramEntry = SublangParam(valueId, name, typeId, passing, noEscape);
+        this.paramList.add(paramEntry);
+        return valueId;
+    }
+
+    public Int addBlock() {
+        SublangBlock blockEntry = SublangBlock(this.blockList.length() + 1);
+        this.blockList.add(blockEntry);
+        return this.blockList.length();
+    }
+
+    public Int addBlockParam(Int blockId, Int typeId) {
+        Int valueId = this.newValue(typeId);
+        this.blockList.get(blockId - 1).addParam(valueId);
+        return valueId;
+    }
+
+    public Int newScope() {
+        this.scopeCounter = this.scopeCounter + 1;
+        return this.scopeCounter;
+    }
+}

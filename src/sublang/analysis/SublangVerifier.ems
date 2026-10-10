@@ -1,0 +1,826 @@
+namespace sublang::analysis;
+
+use sublang::analysis::SublangDominance;
+use sublang::analysis::SublangVerification;
+use sublang::diagnostics::SublangDiagnostic;
+use sublang::ir::SublangBlock;
+use sublang::ir::SublangField;
+use sublang::ir::SublangFunction;
+use sublang::ir::SublangModule;
+use sublang::ir::SublangOperation;
+use sublang::ir::SublangParam;
+use sublang::ir::SublangType;
+use sublang::ir::SublangVocabulary;
+
+// Structural verifier for Sublang High IR v0.1: schema, ids, types, SSA definitions,
+// terminators, dominance and attribute completeness. It does not prove lifetime
+// or effect properties; SublangVerification reports that status separately.
+// Diagnostic codes: S = structure/ids, T = types, A = arithmetic attributes,
+// U = unsupported in v0.1.
+public class SublangVerifier {
+    private SublangModule module;
+    private List<SublangDiagnostic> found;
+    private List<Int> defCounts;
+    private List<Int> defBlocks;
+    private List<Int> defPositions;
+
+    public SublangVerifier(SublangModule target) {
+        this.module = target;
+        this.found = List();
+        this.defCounts = List();
+        this.defBlocks = List();
+        this.defPositions = List();
+    }
+
+    public SublangVerification verify() {
+        Int index = 1;
+        while (index <= this.module.typeCount()) {
+            this.verifyType(index);
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= this.module.fieldCount()) {
+            this.verifyField(index);
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= this.module.functionCount()) {
+            this.verifyFunction(index);
+            index = index + 1;
+        }
+        if (this.module.entryFunction() != 0) {
+            if (!this.module.hasFunction(this.module.entryFunction())) {
+                this.report("SUBLANG-S002", "entry function id is not defined", 0);
+            }
+        }
+        return SublangVerification(this.found);
+    }
+
+    private Void report(String code, String message, Int span) {
+        SublangDiagnostic diagnostic = SublangDiagnostic(code, message, span);
+        this.found.add(diagnostic);
+    }
+
+    private Bool isKind(Int typeId, String kind) {
+        if (!this.module.hasType(typeId)) {
+            return false;
+        }
+        return this.module.typeAt(typeId).kind() == kind;
+    }
+
+    private String kindOf(Int typeId) {
+        if (!this.module.hasType(typeId)) {
+            return "";
+        }
+        return this.module.typeAt(typeId).kind();
+    }
+
+    private String typeNameOf(Int typeId) {
+        if (!this.module.hasType(typeId)) {
+            return "?";
+        }
+        return this.module.typeAt(typeId).name();
+    }
+
+    private Int typeOf(SublangFunction fnEntry, Int valueId) {
+        if (fnEntry.hasValue(valueId)) {
+            return fnEntry.valueTypeAt(valueId);
+        }
+        return 0;
+    }
+
+    private Bool containsId(List<Int> ids, Int target) {
+        Int index = 0;
+        while (index < ids.length()) {
+            if (ids.get(index) == target) {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    private Int countScopeBegins(SublangFunction fnEntry, Int scopeId) {
+        Int count = 0;
+        Int blockId = 1;
+        while (blockId <= fnEntry.blockCount()) {
+            SublangBlock blockEntry = fnEntry.blockAt(blockId);
+            Int index = 0;
+            while (index < blockEntry.operationCount()) {
+                SublangOperation op = blockEntry.operationAt(index);
+                if (op.opcode() == "scope.begin" && op.ref() == scopeId) {
+                    count = count + 1;
+                }
+                index = index + 1;
+            }
+            blockId = blockId + 1;
+        }
+        return count;
+    }
+
+    private Void verifyType(Int typeId) {
+        SublangType typeEntry = this.module.typeAt(typeId);
+        if (!SublangVocabulary.isKnownTypeKind(typeEntry.kind())) {
+            this.report("SUBLANG-S001", "unknown type kind " + typeEntry.kind(), typeEntry.span());
+            return;
+        }
+        if (typeEntry.isNominal() && !this.module.hasSpan(typeEntry.span())) {
+            this.report("SUBLANG-S002", "nominal type " + typeEntry.name() + " has no valid source span", 0);
+        }
+        if (typeEntry.isRef()) {
+            if (!this.isKind(typeEntry.target(), "Class")) {
+                this.report("SUBLANG-T003", "Ref target must be a class type: " + typeEntry.name(), typeEntry.span());
+            }
+            if (typeEntry.nullable()) {
+                this.report("SUBLANG-U001", "nullable references are not part of Sublang v0.1: " + typeEntry.name(), typeEntry.span());
+            }
+        }
+    }
+
+    private Void verifyField(Int fieldId) {
+        SublangField fieldEntry = this.module.fieldAt(fieldId);
+        if (!this.module.hasType(fieldEntry.owner())) {
+            this.report("SUBLANG-S002", "field " + fieldEntry.name() + " has no defined owner", fieldEntry.span());
+            return;
+        }
+        SublangType owner = this.module.typeAt(fieldEntry.owner());
+        if (!owner.isNominal()) {
+            this.report("SUBLANG-T003", "field " + fieldEntry.name() + " belongs to a non-nominal type", fieldEntry.span());
+        } else if (!this.containsId(owner.fields(), fieldId)) {
+            this.report("SUBLANG-S002", "field " + fieldEntry.name() + " is not registered at its owner", fieldEntry.span());
+        }
+        if (!this.module.hasType(fieldEntry.typeId())) {
+            this.report("SUBLANG-S002", "field " + fieldEntry.name() + " has an undefined type", fieldEntry.span());
+            return;
+        }
+        String kind = this.module.typeAt(fieldEntry.typeId()).kind();
+        if (kind == "Void") {
+            this.report("SUBLANG-T001", "field " + fieldEntry.name() + " cannot have type Void", fieldEntry.span());
+        } else if (!SublangVocabulary.isPrimitiveKind(kind)) {
+            this.report("SUBLANG-U001", "field " + fieldEntry.name() + " has a non-primitive type; Sublang v0.1 supports primitive fields only", fieldEntry.span());
+        }
+    }
+
+    private Void verifyFunction(Int functionId) {
+        SublangFunction fnEntry = this.module.functionAt(functionId);
+        if (!this.module.hasType(fnEntry.returnType())) {
+            this.report("SUBLANG-S002", "return type of " + fnEntry.name() + " is not defined", fnEntry.span());
+        } else if (this.module.typeAt(fnEntry.returnType()).isRef()) {
+            this.report("SUBLANG-U002", "reference return of " + fnEntry.name() + " is not supported in Sublang v0.1", fnEntry.span());
+        }
+        this.verifyParams(fnEntry);
+        if (fnEntry.blockCount() == 0) {
+            this.report("SUBLANG-S004", "function " + fnEntry.name() + " has no blocks", fnEntry.span());
+            return;
+        }
+        this.verifyDefinitions(fnEntry);
+        SublangDominance dominance = SublangDominance(fnEntry);
+        Int blockId = 1;
+        while (blockId <= fnEntry.blockCount()) {
+            this.verifyBlock(fnEntry, dominance, blockId);
+            blockId = blockId + 1;
+        }
+    }
+
+    private Void verifyParams(SublangFunction fnEntry) {
+        Int index = 0;
+        while (index < fnEntry.paramCount()) {
+            SublangParam paramEntry = fnEntry.paramAt(index);
+            if (!SublangVocabulary.isKnownPassing(paramEntry.passing())) {
+                this.report("SUBLANG-S001", "unknown passing mode " + paramEntry.passing() + " on parameter " + paramEntry.name(), fnEntry.span());
+            }
+            if (!this.module.hasType(paramEntry.typeId())) {
+                this.report("SUBLANG-S002", "parameter " + paramEntry.name() + " has an undefined type", fnEntry.span());
+            } else {
+                Bool isRefParam = this.module.typeAt(paramEntry.typeId()).isRef();
+                if (isRefParam && paramEntry.passing() == "value") {
+                    this.report("SUBLANG-T002", "reference parameter " + paramEntry.name() + " needs an explicit passing mode", fnEntry.span());
+                }
+                if (!isRefParam && paramEntry.passing() != "value") {
+                    this.report("SUBLANG-T002", "parameter " + paramEntry.name() + " of non-reference type cannot use passing mode " + paramEntry.passing(), fnEntry.span());
+                }
+            }
+            index = index + 1;
+        }
+        if (fnEntry.methodOf() == 0) {
+            return;
+        }
+        if (!this.isKind(fnEntry.methodOf(), "Class")) {
+            this.report("SUBLANG-T003", "methodOf of " + fnEntry.name() + " must be a class type", fnEntry.span());
+            return;
+        }
+        if (fnEntry.paramCount() == 0) {
+            this.report("SUBLANG-T002", "instance method " + fnEntry.name() + " has no receiver parameter", fnEntry.span());
+            return;
+        }
+        SublangParam receiver = fnEntry.paramAt(0);
+        Bool receiverMode = receiver.passing() == "borrow_read" || receiver.passing() == "borrow_write" || receiver.passing() == "init";
+        Bool receiverType = false;
+        if (this.module.hasType(receiver.typeId())) {
+            SublangType receiverEntry = this.module.typeAt(receiver.typeId());
+            receiverType = receiverEntry.isRef() && receiverEntry.target() == fnEntry.methodOf();
+        }
+        if (!receiverType || !receiverMode) {
+            this.report("SUBLANG-T002", "receiver of " + fnEntry.name() + " must be Ref<class> with passing mode borrow_read, borrow_write or init", fnEntry.span());
+        }
+    }
+
+    // Counts every definition of every value: parameters, block parameters and
+    // operation results. Each value must be defined exactly once.
+    private Void verifyDefinitions(SublangFunction fnEntry) {
+        Int valueCount = fnEntry.valueCount();
+        this.defCounts = List();
+        this.defBlocks = List();
+        this.defPositions = List();
+        Int slot = 0;
+        while (slot < valueCount) {
+            this.defCounts.add(0);
+            this.defBlocks.add(0);
+            this.defPositions.add(-1);
+            slot = slot + 1;
+        }
+        Int index = 0;
+        while (index < fnEntry.paramCount()) {
+            this.noteDefinition(fnEntry, fnEntry.paramAt(index).value(), 0, -1, fnEntry.span());
+            index = index + 1;
+        }
+        Int blockId = 1;
+        while (blockId <= fnEntry.blockCount()) {
+            SublangBlock blockEntry = fnEntry.blockAt(blockId);
+            Int paramIndex = 0;
+            while (paramIndex < blockEntry.paramValues().length()) {
+                this.noteDefinition(fnEntry, blockEntry.paramValues().get(paramIndex), blockId, -1, fnEntry.span());
+                paramIndex = paramIndex + 1;
+            }
+            Int opIndex = 0;
+            while (opIndex < blockEntry.operationCount()) {
+                SublangOperation op = blockEntry.operationAt(opIndex);
+                if (op.hasResult()) {
+                    this.noteDefinition(fnEntry, op.resultValue(), blockId, opIndex, op.span());
+                }
+                opIndex = opIndex + 1;
+            }
+            blockId = blockId + 1;
+        }
+        Int valueId = 1;
+        while (valueId <= valueCount) {
+            Int count = this.defCounts.get(valueId - 1);
+            if (count == 0) {
+                this.report("SUBLANG-S003", "value v" + valueId.toString() + " of " + fnEntry.name() + " is never defined", fnEntry.span());
+            }
+            if (count > 1) {
+                this.report("SUBLANG-S003", "value v" + valueId.toString() + " of " + fnEntry.name() + " is defined more than once", fnEntry.span());
+            }
+            valueId = valueId + 1;
+        }
+    }
+
+    private Void noteDefinition(SublangFunction fnEntry, Int valueId, Int blockId, Int position, Int span) {
+        if (!fnEntry.hasValue(valueId)) {
+            this.report("SUBLANG-S002", "definition refers to undefined value v" + valueId.toString(), span);
+            return;
+        }
+        Int count = this.defCounts.get(valueId - 1);
+        this.defCounts.set(valueId - 1, count + 1);
+        this.defBlocks.set(valueId - 1, blockId);
+        this.defPositions.set(valueId - 1, position);
+    }
+
+    private Void verifyBlock(SublangFunction fnEntry, SublangDominance dominance, Int blockId) {
+        SublangBlock blockEntry = fnEntry.blockAt(blockId);
+        Int count = blockEntry.operationCount();
+        if (count == 0) {
+            this.report("SUBLANG-S004", "block " + blockId.toString() + " of " + fnEntry.name() + " has no terminator", fnEntry.span());
+            return;
+        }
+        if (!dominance.isReachable(blockId)) {
+            this.report("SUBLANG-S008", "block " + blockId.toString() + " of " + fnEntry.name() + " is unreachable from the entry block", blockEntry.operationAt(0).span());
+        }
+        Int position = 0;
+        while (position < count) {
+            SublangOperation op = blockEntry.operationAt(position);
+            Bool isLast = position == count - 1;
+            if (op.isTerminator() && !isLast) {
+                this.report("SUBLANG-S004", "terminator " + op.opcode() + " is not the last operation of its block", op.span());
+            }
+            if (!op.isTerminator() && isLast) {
+                this.report("SUBLANG-S004", "block " + blockId.toString() + " does not end with a terminator", op.span());
+            }
+            this.verifyOperation(fnEntry, dominance, blockId, position, op);
+            position = position + 1;
+        }
+    }
+
+    private Void verifyOperation(SublangFunction fnEntry, SublangDominance dominance, Int blockId, Int position, SublangOperation op) {
+        String opcode = op.opcode();
+        Int span = op.span();
+        if (!SublangVocabulary.isKnownOpcode(opcode)) {
+            this.report("SUBLANG-S001", "unknown opcode " + opcode, span);
+            return;
+        }
+        if (!this.module.hasSpan(span)) {
+            this.report("SUBLANG-S002", opcode + " has no valid source span", 0);
+        }
+        if (op.modeCount() != op.operandCount()) {
+            this.report("SUBLANG-S005", opcode + " has " + op.operandCount().toString() + " operands but " + op.modeCount().toString() + " passing modes", span);
+            return;
+        }
+        if (op.hasResult() && !SublangVocabulary.producesValue(opcode) && opcode != "call.direct") {
+            this.report("SUBLANG-T001", opcode + " must not produce a value", span);
+        }
+        Int index = 0;
+        while (index < op.operandCount()) {
+            Int operandId = op.operandAt(index);
+            if (!fnEntry.hasValue(operandId)) {
+                this.report("SUBLANG-S002", opcode + " uses undefined value v" + operandId.toString(), span);
+            } else if (dominance.isReachable(blockId)) {
+                this.checkAvailability(dominance, blockId, position, operandId, span);
+            }
+            index = index + 1;
+        }
+        if (op.hasResult()) {
+            if (fnEntry.hasValue(op.resultValue())) {
+                if (fnEntry.valueTypeAt(op.resultValue()) != op.resultType()) {
+                    this.report("SUBLANG-T001", "result type of " + opcode + " does not match the type of its value", span);
+                }
+            }
+        }
+        if (SublangVocabulary.isIntOpcode(opcode)) {
+            this.checkIntOperation(fnEntry, op);
+        } else if (SublangVocabulary.isFloatOpcode(opcode)) {
+            this.checkFloatOperation(fnEntry, op);
+        } else if (opcode == "const.bool" || opcode == "const.int" || opcode == "const.float") {
+            this.checkConstant(op);
+        } else if (opcode == "compare") {
+            this.checkCompare(fnEntry, op);
+        } else if (opcode == "record.make") {
+            this.checkRecordMake(fnEntry, op);
+        } else if (opcode == "record.get") {
+            this.checkRecordGet(fnEntry, op);
+        } else if (opcode == "record.with") {
+            this.checkRecordWith(fnEntry, op);
+        } else if (opcode == "class.new") {
+            this.checkClassNew(fnEntry, op);
+        } else if (opcode == "field.init") {
+            this.checkFieldInit(fnEntry, op);
+        } else if (opcode == "field.read") {
+            this.checkFieldRead(fnEntry, op);
+        } else if (opcode == "field.write") {
+            this.checkFieldWrite(fnEntry, op);
+        } else if (opcode == "call.direct") {
+            this.checkCall(fnEntry, op);
+        } else if (opcode == "scope.begin") {
+            this.checkScopeBegin(fnEntry, op);
+        } else if (opcode == "scope.end") {
+            this.checkScopeEnd(fnEntry, op);
+        } else if (opcode == "return") {
+            this.checkReturn(fnEntry, op);
+        } else if (opcode == "branch") {
+            this.checkBranch(fnEntry, op);
+        } else if (opcode == "cond_branch") {
+            this.checkCondBranch(fnEntry, op);
+        } else if (opcode == "fail") {
+            this.checkFail(op);
+        }
+    }
+
+    // A value is usable at a position if its definition comes earlier in the same
+    // block, or its defining block dominates the use. Function parameters (block 0) are always usable.
+    private Void checkAvailability(SublangDominance dominance, Int blockId, Int position, Int valueId, Int span) {
+        Int defBlock = this.defBlocks.get(valueId - 1);
+        Int defPosition = this.defPositions.get(valueId - 1);
+        if (defBlock == 0) {
+            return;
+        }
+        if (!dominance.isReachable(defBlock)) {
+            this.report("SUBLANG-S007", "v" + valueId.toString() + " is defined in an unreachable block", span);
+            return;
+        }
+        if (defBlock == blockId) {
+            if (defPosition >= position) {
+                this.report("SUBLANG-S006", "v" + valueId.toString() + " is used before its definition in block " + blockId.toString(), span);
+            }
+            return;
+        }
+        if (!dominance.dominates(defBlock, blockId)) {
+            this.report("SUBLANG-S007", "definition of v" + valueId.toString() + " in block " + defBlock.toString() + " does not dominate its use in block " + blockId.toString(), span);
+        }
+    }
+
+    private Void checkIntOperation(SublangFunction fnEntry, SublangOperation op) {
+        String opcode = op.opcode();
+        Int span = op.span();
+        Int expected = 2;
+        if (opcode == "int.neg") {
+            expected = 1;
+        }
+        if (op.operandCount() != expected) {
+            this.report("SUBLANG-T001", opcode + " expects " + expected.toString() + " operand(s)", span);
+        }
+        Int index = 0;
+        while (index < op.operandCount()) {
+            if (this.typeOf(fnEntry, op.operandAt(index)) != this.module.intType()) {
+                this.report("SUBLANG-T001", opcode + " operand " + index.toString() + " must be Int", span);
+            }
+            index = index + 1;
+        }
+        if (!op.hasResult() || op.resultType() != this.module.intType()) {
+            this.report("SUBLANG-T001", opcode + " must produce an Int value", span);
+        }
+        String overflow = op.overflow();
+        if (overflow == "") {
+            this.report("SUBLANG-A001", "missing overflow mode for " + opcode, span);
+        } else if (!SublangVocabulary.allowsOverflow(opcode, overflow)) {
+            this.report("SUBLANG-A003", "overflow mode " + overflow + " is not allowed for " + opcode, span);
+        }
+        Bool needsFailure = overflow == "trap" || opcode == "int.div" || opcode == "int.rem";
+        if (needsFailure && !this.module.hasFailure(op.ref())) {
+            this.report("SUBLANG-A002", "missing failure action for " + opcode + "; trapping overflow and division by zero must name one", span);
+        }
+    }
+
+    private Void checkFloatOperation(SublangFunction fnEntry, SublangOperation op) {
+        String opcode = op.opcode();
+        Int span = op.span();
+        if (op.operandCount() != 2) {
+            this.report("SUBLANG-T001", opcode + " expects 2 operands", span);
+        }
+        Int index = 0;
+        while (index < op.operandCount()) {
+            if (this.typeOf(fnEntry, op.operandAt(index)) != this.module.floatType()) {
+                this.report("SUBLANG-T001", opcode + " operand " + index.toString() + " must be Float", span);
+            }
+            index = index + 1;
+        }
+        if (!op.hasResult() || op.resultType() != this.module.floatType()) {
+            this.report("SUBLANG-T001", opcode + " must produce a Float value", span);
+        }
+        if (op.fpMode() == "") {
+            this.report("SUBLANG-A001", "missing floating-point mode for " + opcode, span);
+        } else if (op.fpMode() != "rne") {
+            this.report("SUBLANG-A003", "floating-point mode " + op.fpMode() + " is not supported in Sublang v0.1", span);
+        }
+    }
+
+    private Void checkConstant(SublangOperation op) {
+        String opcode = op.opcode();
+        Int expected = this.module.intType();
+        if (opcode == "const.bool") {
+            expected = this.module.boolType();
+        }
+        if (opcode == "const.float") {
+            expected = this.module.floatType();
+        }
+        if (op.operandCount() != 0) {
+            this.report("SUBLANG-T001", opcode + " takes no operands", op.span());
+        }
+        if (!op.hasResult() || op.resultType() != expected) {
+            this.report("SUBLANG-T001", opcode + " must produce a value of type " + this.typeNameOf(expected), op.span());
+        }
+    }
+
+    private Void checkCompare(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        if (op.operandCount() != 2) {
+            this.report("SUBLANG-T001", "compare expects 2 operands", span);
+            return;
+        }
+        Int leftType = this.typeOf(fnEntry, op.operandAt(0));
+        Int rightType = this.typeOf(fnEntry, op.operandAt(1));
+        if (leftType != rightType) {
+            this.report("SUBLANG-T001", "compare operands have different types", span);
+        }
+        Bool isInt = leftType == this.module.intType();
+        Bool isBool = leftType == this.module.boolType();
+        Bool isRef = this.isKind(leftType, "Ref");
+        if (leftType == this.module.floatType()) {
+            this.report("SUBLANG-U001", "float compare is not part of Sublang v0.1", span);
+        } else if (!isInt && !isBool && !isRef) {
+            this.report("SUBLANG-T001", "compare is not defined for type " + this.typeNameOf(leftType), span);
+        }
+        if (!SublangVocabulary.isKnownPredicate(op.predicate())) {
+            this.report("SUBLANG-A003", "missing or unknown compare predicate", span);
+        } else if ((isBool || isRef) && op.predicate() != "eq" && op.predicate() != "ne") {
+            this.report("SUBLANG-A003", "only eq and ne are defined for Bool and references", span);
+        }
+        if (!op.hasResult() || op.resultType() != this.module.boolType()) {
+            this.report("SUBLANG-T001", "compare must produce Bool", span);
+        }
+    }
+
+    private Void checkRecordMake(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        Int recordId = op.ref();
+        if (!this.isKind(recordId, "Record")) {
+            this.report("SUBLANG-T003", "record.make needs a record type", span);
+            return;
+        }
+        SublangType recordEntry = this.module.typeAt(recordId);
+        if (op.operandCount() != recordEntry.fieldCount()) {
+            this.report("SUBLANG-T001", "record.make passes " + op.operandCount().toString() + " values for " + recordEntry.fieldCount().toString() + " fields of " + recordEntry.name(), span);
+        } else {
+            Int index = 0;
+            while (index < op.operandCount()) {
+                Int fieldId = recordEntry.fields().get(index);
+                if (this.module.hasField(fieldId)) {
+                    Int expectedType = this.module.fieldAt(fieldId).typeId();
+                    if (this.typeOf(fnEntry, op.operandAt(index)) != expectedType) {
+                        this.report("SUBLANG-T001", "record.make operand " + index.toString() + " has the wrong type for field " + this.module.fieldAt(fieldId).name(), span);
+                    }
+                }
+                index = index + 1;
+            }
+        }
+        if (!op.hasResult() || op.resultType() != recordId) {
+            this.report("SUBLANG-T001", "record.make must produce " + recordEntry.name(), span);
+        }
+    }
+
+    private Void checkRecordGet(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        Int fieldId = op.ref();
+        if (!this.module.hasField(fieldId)) {
+            this.report("SUBLANG-S002", "record.get uses an unknown field", span);
+            return;
+        }
+        SublangField fieldEntry = this.module.fieldAt(fieldId);
+        if (!this.isKind(fieldEntry.owner(), "Record")) {
+            this.report("SUBLANG-T003", "record.get needs a field of a record type", span);
+            return;
+        }
+        if (op.operandCount() != 1) {
+            this.report("SUBLANG-T001", "record.get expects 1 operand", span);
+        } else if (this.typeOf(fnEntry, op.operandAt(0)) != fieldEntry.owner()) {
+            this.report("SUBLANG-T003", "record.get operand is not of type " + this.typeNameOf(fieldEntry.owner()), span);
+        }
+        if (!op.hasResult() || op.resultType() != fieldEntry.typeId()) {
+            this.report("SUBLANG-T001", "record.get must produce the field type of " + fieldEntry.name(), span);
+        }
+    }
+
+    private Void checkRecordWith(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        Int fieldId = op.ref();
+        if (!this.module.hasField(fieldId)) {
+            this.report("SUBLANG-S002", "record.with uses an unknown field", span);
+            return;
+        }
+        SublangField fieldEntry = this.module.fieldAt(fieldId);
+        if (!this.isKind(fieldEntry.owner(), "Record")) {
+            this.report("SUBLANG-T003", "record.with needs a field of a record type", span);
+            return;
+        }
+        if (op.operandCount() != 2) {
+            this.report("SUBLANG-T001", "record.with expects 2 operands", span);
+        } else {
+            if (this.typeOf(fnEntry, op.operandAt(0)) != fieldEntry.owner()) {
+                this.report("SUBLANG-T003", "record.with operand 0 must be of type " + this.typeNameOf(fieldEntry.owner()), span);
+            }
+            if (this.typeOf(fnEntry, op.operandAt(1)) != fieldEntry.typeId()) {
+                this.report("SUBLANG-T001", "record.with replacement has the wrong type for field " + fieldEntry.name(), span);
+            }
+        }
+        if (!op.hasResult() || op.resultType() != fieldEntry.owner()) {
+            this.report("SUBLANG-T001", "record.with must produce " + this.typeNameOf(fieldEntry.owner()), span);
+        }
+    }
+
+    private Void checkClassNew(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        Int classId = op.ref();
+        if (!this.isKind(classId, "Class")) {
+            this.report("SUBLANG-T003", "class.new needs a class type", span);
+            return;
+        }
+        if (op.operandCount() != 0) {
+            this.report("SUBLANG-T001", "class.new takes no operands", span);
+        }
+        if (this.countScopeBegins(fnEntry, op.scope()) == 0) {
+            this.report("SUBLANG-S002", "class.new uses scope " + op.scope().toString() + " that is never begun", span);
+        }
+        Int refId = this.module.refTypeOrZero(classId);
+        if (refId == 0 || !op.hasResult() || op.resultType() != refId) {
+            this.report("SUBLANG-T001", "class.new must produce Ref<" + this.typeNameOf(classId) + ">", span);
+        }
+    }
+
+    private Void checkFieldInit(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        Int fieldId = op.ref();
+        if (!this.module.hasField(fieldId)) {
+            this.report("SUBLANG-S002", "field.init uses an unknown field", span);
+            return;
+        }
+        SublangField fieldEntry = this.module.fieldAt(fieldId);
+        if (op.operandCount() != 2) {
+            this.report("SUBLANG-T001", "field.init expects 2 operands", span);
+            return;
+        }
+        Int refId = this.module.refTypeOrZero(fieldEntry.owner());
+        if (refId == 0 || this.typeOf(fnEntry, op.operandAt(0)) != refId) {
+            this.report("SUBLANG-T003", "field.init receiver must be Ref<" + this.typeNameOf(fieldEntry.owner()) + ">", span);
+        }
+        if (op.modeAt(0) != "init") {
+            this.report("SUBLANG-T002", "field.init receiver must use passing mode init", span);
+        }
+        if (this.typeOf(fnEntry, op.operandAt(1)) != fieldEntry.typeId()) {
+            this.report("SUBLANG-T001", "field.init value has the wrong type for field " + fieldEntry.name(), span);
+        }
+    }
+
+    private Void checkFieldRead(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        Int fieldId = op.ref();
+        if (!this.module.hasField(fieldId)) {
+            this.report("SUBLANG-S002", "field.read uses an unknown field", span);
+            return;
+        }
+        SublangField fieldEntry = this.module.fieldAt(fieldId);
+        if (op.operandCount() != 1) {
+            this.report("SUBLANG-T001", "field.read expects 1 operand", span);
+            return;
+        }
+        Int refId = this.module.refTypeOrZero(fieldEntry.owner());
+        if (refId == 0 || this.typeOf(fnEntry, op.operandAt(0)) != refId) {
+            this.report("SUBLANG-T003", "field.read receiver must be Ref<" + this.typeNameOf(fieldEntry.owner()) + ">", span);
+        }
+        if (op.modeAt(0) != "borrow_read") {
+            this.report("SUBLANG-T002", "field.read receiver must use passing mode borrow_read", span);
+        }
+        if (!op.hasResult() || op.resultType() != fieldEntry.typeId()) {
+            this.report("SUBLANG-T001", "field.read must produce the field type of " + fieldEntry.name(), span);
+        }
+        if (!SublangVocabulary.isPrimitiveKind(this.kindOf(fieldEntry.typeId()))) {
+            this.report("SUBLANG-U001", "field.read supports primitive fields only in Sublang v0.1", span);
+        }
+    }
+
+    private Void checkFieldWrite(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        Int fieldId = op.ref();
+        if (!this.module.hasField(fieldId)) {
+            this.report("SUBLANG-S002", "field.write uses an unknown field", span);
+            return;
+        }
+        SublangField fieldEntry = this.module.fieldAt(fieldId);
+        if (op.operandCount() != 2) {
+            this.report("SUBLANG-T001", "field.write expects 2 operands", span);
+            return;
+        }
+        Int refId = this.module.refTypeOrZero(fieldEntry.owner());
+        if (refId == 0 || this.typeOf(fnEntry, op.operandAt(0)) != refId) {
+            this.report("SUBLANG-T003", "field.write receiver must be Ref<" + this.typeNameOf(fieldEntry.owner()) + ">", span);
+        }
+        if (op.modeAt(0) != "borrow_write") {
+            this.report("SUBLANG-T002", "field.write receiver must use passing mode borrow_write", span);
+        }
+        if (!fieldEntry.isMutable()) {
+            this.report("SUBLANG-T002", "field " + fieldEntry.name() + " is not mutable", span);
+        }
+        if (this.typeOf(fnEntry, op.operandAt(1)) != fieldEntry.typeId()) {
+            this.report("SUBLANG-T001", "field.write value has the wrong type for field " + fieldEntry.name(), span);
+        }
+        if (!SublangVocabulary.isPrimitiveKind(this.kindOf(fieldEntry.typeId()))) {
+            this.report("SUBLANG-U001", "field.write supports primitive fields only in Sublang v0.1", span);
+        }
+    }
+
+    private Void checkCall(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        Int calleeId = op.ref();
+        if (!this.module.hasFunction(calleeId)) {
+            this.report("SUBLANG-S002", "call.direct uses an unknown function", span);
+            return;
+        }
+        SublangFunction callee = this.module.functionAt(calleeId);
+        if (op.operandCount() != callee.paramCount()) {
+            this.report("SUBLANG-T002", "call to " + callee.name() + " passes " + op.operandCount().toString() + " argument(s), expected " + callee.paramCount().toString(), span);
+        } else {
+            Int index = 0;
+            while (index < op.operandCount()) {
+                SublangParam paramEntry = callee.paramAt(index);
+                if (this.typeOf(fnEntry, op.operandAt(index)) != paramEntry.typeId()) {
+                    this.report("SUBLANG-T002", "argument " + index.toString() + " of call to " + callee.name() + " has the wrong type", span);
+                }
+                if (op.modeAt(index) != paramEntry.passing()) {
+                    this.report("SUBLANG-T002", "argument " + index.toString() + " of call to " + callee.name() + " must use passing mode " + paramEntry.passing(), span);
+                }
+                index = index + 1;
+            }
+        }
+        if (callee.returnType() == this.module.voidType()) {
+            if (op.hasResult()) {
+                this.report("SUBLANG-T002", "call to void function " + callee.name() + " must not produce a value", span);
+            }
+        } else if (!op.hasResult() || op.resultType() != callee.returnType()) {
+            this.report("SUBLANG-T002", "call to " + callee.name() + " must produce " + this.typeNameOf(callee.returnType()), span);
+        }
+    }
+
+    private Void checkScopeBegin(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        if (op.operandCount() != 0) {
+            this.report("SUBLANG-T001", "scope.begin takes no operands", span);
+        }
+        if (op.ref() < 1) {
+            this.report("SUBLANG-S002", "scope.begin needs a positive scope id", span);
+        } else if (this.countScopeBegins(fnEntry, op.ref()) > 1) {
+            this.report("SUBLANG-S003", "scope " + op.ref().toString() + " is begun more than once", span);
+        }
+    }
+
+    private Void checkScopeEnd(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        if (op.operandCount() != 0) {
+            this.report("SUBLANG-T001", "scope.end takes no operands", span);
+        }
+        if (this.countScopeBegins(fnEntry, op.ref()) == 0) {
+            this.report("SUBLANG-S002", "scope.end " + op.ref().toString() + " has no matching scope.begin", span);
+        }
+    }
+
+    private Void checkReturn(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        Int returnType = fnEntry.returnType();
+        if (returnType == this.module.voidType()) {
+            if (op.operandCount() != 0) {
+                this.report("SUBLANG-T002", "void function " + fnEntry.name() + " must not return a value", span);
+            }
+        } else if (op.operandCount() != 1) {
+            this.report("SUBLANG-T002", "return in " + fnEntry.name() + " must pass exactly one value", span);
+        } else if (this.typeOf(fnEntry, op.operandAt(0)) != returnType) {
+            this.report("SUBLANG-T001", "return value has the wrong type for " + fnEntry.name(), span);
+        }
+    }
+
+    private Void checkBranch(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        if (op.targets().length() != 1) {
+            this.report("SUBLANG-S005", "branch needs exactly one target", span);
+            return;
+        }
+        Int target = op.targets().get(0);
+        if (!fnEntry.hasBlock(target)) {
+            this.report("SUBLANG-S002", "branch target block " + target.toString() + " is not defined", span);
+            return;
+        }
+        this.checkBranchArgs(fnEntry, op, 0, op.operandCount(), target);
+    }
+
+    private Void checkCondBranch(SublangFunction fnEntry, SublangOperation op) {
+        Int span = op.span();
+        if (op.targets().length() != 2) {
+            this.report("SUBLANG-S005", "cond_branch needs exactly two targets", span);
+            return;
+        }
+        if (op.operandCount() < 1) {
+            this.report("SUBLANG-S005", "cond_branch needs a condition operand", span);
+            return;
+        }
+        if (this.typeOf(fnEntry, op.operandAt(0)) != this.module.boolType()) {
+            this.report("SUBLANG-T001", "cond_branch condition must be Bool", span);
+        }
+        Int trueCount = op.trueArgs();
+        Int falseCount = op.operandCount() - 1 - trueCount;
+        if (trueCount < 0 || falseCount < 0) {
+            this.report("SUBLANG-S005", "cond_branch argument split is invalid", span);
+            return;
+        }
+        Int trueTarget = op.targets().get(0);
+        Int falseTarget = op.targets().get(1);
+        if (!fnEntry.hasBlock(trueTarget) || !fnEntry.hasBlock(falseTarget)) {
+            this.report("SUBLANG-S002", "cond_branch target block is not defined", span);
+            return;
+        }
+        this.checkBranchArgs(fnEntry, op, 1, trueCount, trueTarget);
+        this.checkBranchArgs(fnEntry, op, 1 + trueCount, falseCount, falseTarget);
+    }
+
+    private Void checkBranchArgs(SublangFunction fnEntry, SublangOperation op, Int firstOperand, Int count, Int targetId) {
+        SublangBlock targetBlock = fnEntry.blockAt(targetId);
+        Int paramCount = targetBlock.paramValues().length();
+        if (paramCount != count) {
+            this.report("SUBLANG-S005", "branch to block " + targetId.toString() + " passes " + count.toString() + " argument(s), block takes " + paramCount.toString(), op.span());
+            return;
+        }
+        Int index = 0;
+        while (index < count) {
+            Int argType = this.typeOf(fnEntry, op.operandAt(firstOperand + index));
+            Int paramType = this.typeOf(fnEntry, targetBlock.paramValues().get(index));
+            if (argType != paramType) {
+                this.report("SUBLANG-T001", "branch argument " + index.toString() + " to block " + targetId.toString() + " has the wrong type", op.span());
+            }
+            index = index + 1;
+        }
+    }
+
+    private Void checkFail(SublangOperation op) {
+        Int span = op.span();
+        if (!this.module.hasFailure(op.ref())) {
+            this.report("SUBLANG-S002", "fail uses an unknown failure action", span);
+        }
+        if (op.operandCount() != 0) {
+            this.report("SUBLANG-T001", "fail takes no operands", span);
+        }
+    }
+}

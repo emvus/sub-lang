@@ -1,0 +1,41 @@
+// Sublang v0.4 target notation; NOT implemented input syntax.
+// Analysis/proof claims are illustrative expected results, not executed checks.
+module @explain stage=High schema=planned revision=3 {
+  require Core@planned, Object@planned, Memory@planned, GC@planned
+  profile @host { unwind=none; finalizers=none; integers=signed_i64; gc=host }
+  runtime @plugin_runtime {
+    ownership=host_gc; roots=handles; errors=abort; moving=false
+    apply_accepts_root_handle=true
+    apply_may_retain_object=true; retained_object_is_gc_visible=true
+  }
+  provider @integration { runtime=@plugin_runtime; collector_replacement=false }
+  class !Point { field x: !i64 immutable }
+  effects @unknown { default=unknown origin=AssumedConservative }
+  effects @apply_effects inherits=@unknown {
+    mayThrow=false origin=Declared trusted=@plugin_runtime.apply
+    mayAllocate=unknown origin=AssumedConservative
+    escape.argument0=unknown origin=AssumedConservative
+    reads=UnknownLocation origin=AssumedConservative
+    writes=UnknownLocation origin=AssumedConservative
+    synchronization=unknown origin=AssumedConservative
+  }
+  effects @main_effects inherits=@unknown {
+    mayThrow=false origin=Proven analysis=@main_no_unwind revision=3
+    mayAllocate=true origin=Proven analysis=@main_alloc revision=3
+  }
+  extern func @plugin.apply(borrow_read !root<!Point>) -> !i64
+      profile=@host cc=provider effects=@apply_effects contract=@plugin_runtime.apply
+
+  func @main() -> !i64 profile=@host effects=@main_effects {
+    ^entry:
+      %lexical = memory.scope.begin
+      %roots = gc.root_scope.begin runtime=@plugin_runtime
+      %point = gc.alloc_rooted !Point(x=i64(42)) roots=%roots scope_hint=%lexical
+      %result = core.call.external @plugin.apply(%point)
+                effects=@apply_effects contract=@plugin_runtime.apply
+      gc.root_scope.end %roots
+      memory.scope.end %lexical
+      core.return %result
+  }
+}
+pipeline { flow=on; memory=hyperalloc-integration; provider=@integration }
