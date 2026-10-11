@@ -14,6 +14,7 @@ use sublang::snapshot::SublangModuleLinker;
 use sublang::text::SublangTextParser;
 use sublang::text::SublangTextPrinter;
 use sublang::text::SublangTextResult;
+use sublang::cli::SublangRuntimeCommand;
 
 // Compiled executable, independent of Emerald at invocation. LLVM emission is
 // explicit; the capped launcher owns LLVM optimization, linking and execution.
@@ -45,10 +46,14 @@ public class SublangCommand {
             println("passes=optimind.fold,optimind.dce");
             println("input.max-bytes=16777216");
             println("output=llvm-ir,memory-plan,low-ir-dump");
-            println("commands=emit-llvm,dump,dump-low,link,text-dump,text-build,capabilities");
+            println("commands=emit-llvm,dump,dump-low,link,text-dump,text-build,runtime-emit,capabilities");
+            println("runtime-ir=runtime.bodies.v1 (existing Wire 2 bodies)");
+            println("runtime-ir.codegen=x86_64-unknown-linux-gnu");
+            println("runtime-ir.platform-bindings=not-implemented");
             println("unsupported=weak-handles,finalizers,threads,c-ownership-import,additional-targets");
             return 0;
         }
+        if (arguments.length() > 0 && arguments.get(0) == "runtime-emit") { return SublangRuntimeCommand.run(arguments); }
         if (arguments.length() == 2 && arguments.get(0) == "dump") {
             // Read-only inspection of a decoded module; no verification or codegen is implied.
             String dumpInput = arguments.get(1);

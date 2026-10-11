@@ -1,0 +1,33 @@
+namespace sublang::runtime;
+
+// Runtime ABI identities, not claims that a cross-platform SDK is installed.
+// A target-independent body uses "portable"; raw pointers and native ABI types
+// require a concrete target and a separately implemented platform binding.
+public class SublangRuntimeTarget {
+    private String tripleText;
+
+    public SublangRuntimeTarget(String triple) { this.tripleText = triple + ""; }
+    public String triple() { return this.tripleText; }
+
+    public String system() {
+        if (this.tripleText == "x86_64-unknown-linux-gnu" || this.tripleText == "aarch64-unknown-linux-gnu") { return "linux"; }
+        if (this.tripleText == "x86_64-pc-windows-msvc" || this.tripleText == "aarch64-pc-windows-msvc") { return "windows"; }
+        if (this.tripleText == "x86_64-apple-darwin" || this.tripleText == "arm64-apple-darwin") { return "macos"; }
+        return "";
+    }
+
+    public Bool known() { return this.system() != ""; }
+    public Int pointerWidth() { if (this.known()) { return 64; } return 0; }
+    public Int nativeLongWidth() {
+        if (!this.known()) { return 0; }
+        if (this.system() == "windows") { return 32; }
+        return 64;
+    }
+    public String objectFormat() {
+        if (this.system() == "linux") { return "elf"; }
+        if (this.system() == "windows") { return "coff"; }
+        if (this.system() == "macos") { return "macho"; }
+        return "";
+    }
+    public Bool codegenAvailable() { return this.tripleText == "x86_64-unknown-linux-gnu"; }
+}

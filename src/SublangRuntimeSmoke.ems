@@ -1,0 +1,60 @@
+use Std::Native::NativeFile;
+use Std::Process::Processes;
+use sublang::backend::SublangCompilation;
+use sublang::cli::SublangRuntimeCommand;
+use sublang::harness::pass::SublangLinkFixtures;
+use sublang::ir::SublangModule;
+use sublang::runtime::SublangRuntimeCompiler;
+use sublang::runtime::SublangRuntimeTarget;
+use sublang::runtime::SublangRuntimeUnit;
+use sublang::wire::SublangWire;
+
+public class SublangRuntimeSmoke {
+    public static Void require(Bool condition, String name) {
+        if (!condition) { println("FAIL " + name); Processes.exit(1); }
+    }
+}
+
+main() {
+    SublangRuntimeTarget linux = SublangRuntimeTarget("x86_64-unknown-linux-gnu");
+    SublangRuntimeTarget windows = SublangRuntimeTarget("x86_64-pc-windows-msvc");
+    SublangRuntimeTarget mac = SublangRuntimeTarget("arm64-apple-darwin");
+    SublangRuntimeSmoke.require(linux.known() && windows.known() && mac.known(), "three platform identities");
+    SublangRuntimeSmoke.require(windows.nativeLongWidth() == 32 && linux.nativeLongWidth() == 64 && mac.pointerWidth() == 64, "LLP64 versus LP64");
+    SublangModule library = SublangLinkFixtures.build(0);
+    SublangModule program = SublangLinkFixtures.build(1);
+    SublangRuntimeUnit runtime = SublangRuntimeUnit("example.runtime", 1, "portable", library);
+    SublangRuntimeSmoke.require(runtime.check(linux).startsWith("SUBLANG-R003"), "unfrozen runtime rejected");
+    library.freeze();
+    program.freeze();
+    SublangRuntimeSmoke.require(SublangRuntimeCompiler.compile(runtime, program, windows, true, "on").error().startsWith("SUBLANG-R004"), "Windows cannot silently compile for Linux");
+    SublangRuntimeSmoke.require(SublangRuntimeCompiler.compile(runtime, program, mac, true, "on").error().startsWith("SUBLANG-R004"), "macOS cannot silently compile for Linux");
+    SublangRuntimeUnit native = SublangRuntimeUnit("native.runtime", 1, linux.triple(), library);
+    SublangRuntimeSmoke.require(native.check(windows).startsWith("SUBLANG-R002"), "foreign runtime rejected");
+    SublangRuntimeSmoke.require(SublangRuntimeUnit("bad", 2, "portable", library).check(linux).startsWith("SUBLANG-R001"), "unknown envelope version rejected");
+    SublangModule mismatch = SublangLinkFixtures.build(2);
+    mismatch.freeze();
+    SublangRuntimeSmoke.require(!SublangRuntimeCompiler.compile(runtime, mismatch, linux, true, "on").codegenReady(), "import signature mismatch rejected");
+    Int mode = 0;
+    while (mode < 2) {
+        String flow = "off";
+        if (mode == 1) { flow = "on"; }
+        SublangCompilation result = SublangRuntimeCompiler.compile(runtime, program, linux, true, flow);
+        if (!result.codegenReady()) { println(result.error()); Processes.exit(1); }
+        NativeFile.writeText("/tmp/runtime-" + flow + ".ll", result.llvm());
+        mode = mode + 1;
+    }
+    NativeFile.writeText("/tmp/library.sublang-wire", SublangWire.write(library).text());
+    NativeFile.writeText("/tmp/program.sublang-wire", SublangWire.write(program).text());
+    List<String> arguments = List();
+    arguments.add("runtime-emit");
+    arguments.add("/tmp/library.sublang-wire");
+    arguments.add("/tmp/program.sublang-wire");
+    arguments.add("/tmp/runtime-cli.ll");
+    arguments.add("portable");
+    arguments.add(linux.triple());
+    arguments.add("on");
+    arguments.add("on");
+    SublangRuntimeSmoke.require(SublangRuntimeCommand.run(arguments) == 0, "runtime CLI accepts language-generated Wire bodies");
+    println("Runtime IR contracts and compilation passed");
+}

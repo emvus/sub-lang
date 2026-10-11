@@ -24,6 +24,7 @@ Start with the **[IR developer guide](docs/Sublang_IR_Guide.md)** for formats, c
 | [Wire extensions](docs/Sublang_Extensions.md) | Opt-in Wire features: byte text, exact numerics, exceptions and closed-world objects |
 | [Text IR](docs/Sublang_Text_IR.md) | Canonical text form, read and written by `text-dump` and `text-build` |
 | [Low IR](docs/Sublang_Low_IR.md) | Verified intermediate for function bodies; not yet a public format |
+| [Runtime IR](docs/Sublang_Runtime_IR.md) | Language-generated runtime bodies, joint Flow/Optimind compilation and platform boundaries |
 | [Passes and effects](docs/Sublang_Passes_And_Effects.md) | Snapshots, the pass manager, derived effects and blockers |
 | [Implementation plan](docs/Implementation_Plan.md) | Brief for the remaining work; a plan, not a completion claim |
 | [Release contract](docs/Sublang_Release_Contract.md) | Accepted input, semantics, versions and budgets of the first release |

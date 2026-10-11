@@ -1,0 +1,40 @@
+namespace sublang::runtime;
+
+use sublang::ir::SublangModule;
+use sublang::runtime::SublangRuntimeTarget;
+
+// A language compiler supplies executable IR bodies, not just imported signatures.
+// The frozen High IR retains its existing effects, ownership and source locations.
+// This first envelope does not introduce a second instruction set or Wire schema.
+public class SublangRuntimeUnit {
+    private String nameText;
+    private Int versionValue;
+    private String targetText;
+    private SublangModule bodyModule;
+
+    public SublangRuntimeUnit(String name, Int version, String target, SublangModule bodies) {
+        this.nameText = name + "";
+        this.versionValue = version;
+        this.targetText = target + "";
+        this.bodyModule = bodies;
+    }
+
+    public String name() { return this.nameText; }
+    public Int version() { return this.versionValue; }
+    public String target() { return this.targetText; }
+    public SublangModule bodies() { return this.bodyModule; }
+
+    public String check(SublangRuntimeTarget destination) {
+        if (this.nameText == "" || this.versionValue != 1) { return "SUBLANG-R001: runtime unit needs a name and envelope version 1"; }
+        if (!destination.known()) { return "SUBLANG-R002: unknown runtime destination"; }
+        if (this.targetText != "portable" && this.targetText != destination.triple()) { return "SUBLANG-R002: runtime target does not match the destination"; }
+        if (!this.bodyModule.isFrozen()) { return "SUBLANG-R003: freeze runtime bodies before binding"; }
+        if (this.bodyModule.entryFunction() != 0) { return "SUBLANG-R003: runtime libraries must not define the program entry"; }
+        Int id = 1;
+        while (id <= this.bodyModule.functionCount()) {
+            if (this.bodyModule.functionAt(id).definition() != "body") { return "SUBLANG-R005: this runtime slice requires self-contained IR bodies; platform imports are not implemented"; }
+            id = id + 1;
+        }
+        return "";
+    }
+}

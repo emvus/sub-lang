@@ -1,0 +1,42 @@
+namespace sublang::cli;
+
+use Std::Native::NativeFile;
+use sublang::backend::SublangCompilation;
+use sublang::runtime::SublangRuntimeCompiler;
+use sublang::runtime::SublangRuntimeTarget;
+use sublang::runtime::SublangRuntimeUnit;
+use sublang::wire::SublangWire;
+use sublang::wire::SublangWireResult;
+
+// Public process boundary uses existing bounded Wire bodies, not Emerald classes.
+public class SublangRuntimeCommand {
+    public static Int run(List<String> arguments) {
+        if (arguments.length() != 8) {
+            println("Usage: sublang runtime-emit runtime.sublang-wire program.sublang-wire output.ll portable|runtime-triple destination-triple auto|on|off on|off");
+            return 2;
+        }
+        String runtimePath = arguments.get(1);
+        String programPath = arguments.get(2);
+        String output = arguments.get(3);
+        if (output == runtimePath || output == programPath) { println("SUBLANG-CLI001: output must differ from inputs"); return 2; }
+        if (arguments.get(7) != "on" && arguments.get(7) != "off") { println("SUBLANG-CLI001: invalid Optimind mode"); return 2; }
+        if (!SublangRuntimeCommand.input(runtimePath) || !SublangRuntimeCommand.input(programPath)) {
+            println("SUBLANG-CLI002: inputs must be regular files of at most 16 MiB each"); return 2;
+        }
+        SublangWireResult runtime = SublangWire.read(NativeFile.readText(runtimePath));
+        if (!runtime.valid()) { println(runtime.error()); return 1; }
+        SublangWireResult program = SublangWire.read(NativeFile.readText(programPath));
+        if (!program.valid()) { println(program.error()); return 1; }
+        SublangRuntimeUnit unit = SublangRuntimeUnit(runtime.module().name(), 1, arguments.get(4), runtime.module());
+        SublangRuntimeTarget target = SublangRuntimeTarget(arguments.get(5));
+        SublangCompilation result = SublangRuntimeCompiler.compile(unit, program.module(), target, arguments.get(7) == "on", arguments.get(6));
+        if (!result.codegenReady()) { println(result.error()); return 1; }
+        NativeFile.writeText(output, result.llvm());
+        if (!NativeFile.isFile(output) || NativeFile.size(output) != result.llvm().length()) { println("SUBLANG-CLI003: cannot write LLVM output"); return 1; }
+        NativeFile.writeText(output + ".plan", result.explainMemory());
+        if (!NativeFile.isFile(output + ".plan") || NativeFile.size(output + ".plan") != result.explainMemory().length()) { println("SUBLANG-CLI003: cannot write runtime memory plan"); return 1; }
+        return 0;
+    }
+
+    private static Bool input(String path) { return NativeFile.isFile(path) && NativeFile.size(path) <= 16777216; }
+}

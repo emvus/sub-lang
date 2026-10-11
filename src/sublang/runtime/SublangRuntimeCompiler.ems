@@ -1,0 +1,29 @@
+namespace sublang::runtime;
+
+use sublang::backend::SublangBackendGate;
+use sublang::backend::SublangBackendBudget;
+use sublang::backend::SublangCompilation;
+use sublang::backend::SublangCompiler;
+use sublang::ir::SublangModule;
+use sublang::runtime::SublangRuntimeTarget;
+use sublang::runtime::SublangRuntimeUnit;
+use sublang::snapshot::SublangModuleLinker;
+
+// Bind before optimization so runtime bodies participate in the same effect,
+// ownership, lifetime and LLVM pipeline as the program. No C source is generated.
+public class SublangRuntimeCompiler {
+    public static SublangCompilation compile(SublangRuntimeUnit runtime, SublangModule program, SublangRuntimeTarget target, Bool optimind, String flow) {
+        String error = runtime.check(target);
+        if (error != "") { return SublangCompilation("", error, ""); }
+        if (!target.codegenAvailable()) { return SublangCompilation("", "SUBLANG-R004: runtime target is recognized but native lowering and SDK binding are not implemented", ""); }
+        if (!program.isFrozen()) { return SublangCompilation("", "SUBLANG-R003: freeze the program before runtime binding", ""); }
+        error = SublangBackendBudget().check(program);
+        if (error != "") { return SublangCompilation("", error, ""); }
+        error = SublangBackendGate.check(runtime.bodies());
+        if (error != "") { return SublangCompilation("", error, ""); }
+        SublangModuleLinker linked = SublangModuleLinker(runtime.bodies(), program);
+        if (!linked.ok()) { return SublangCompilation("", linked.errorAt(0), ""); }
+        linked.module().freeze();
+        return SublangCompiler.compile(linked.module(), optimind, flow);
+    }
+}

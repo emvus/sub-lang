@@ -4,6 +4,14 @@ Updated **October 11, 2026**. This is the central engineering backlog. It distin
 
 Implementation sequence and engineering defaults: [remaining implementation brief](Implementation_Plan.md). This link is a plan, not a completion claim.
 
+**Runtime IR requirement:** language compilers supply runtime implementations as IR,
+with Linux, Windows and macOS as required platform families. The first
+[Runtime IR slice](Sublang_Runtime_IR.md) binds self-contained High/Wire runtime bodies
+before Optimind/Flow and emits native Linux x86-64 LLVM. Other platform identities are
+recognized but fail codegen explicitly. OS imports, raw-memory/ABI boundaries, platform
+providers, target SDKs and a versioned runtime manifest remain open; no complete portable
+OS runtime or libc-independent backend is claimed.
+
 Usage: [IR developer guide](Sublang_IR_Guide.md). Actual memory contracts: [HyperAlloc IR](HyperAlloc_IR.md). Detailed original-runtime comparison: [Flow parity](Flow_Parity.md). Newer contracts: [Wire extensions](Sublang_Extensions.md), [Text IR](Sublang_Text_IR.md), [Low IR](Sublang_Low_IR.md), [Passes and effects](Sublang_Passes_And_Effects.md).
 
 ## Status vocabulary
