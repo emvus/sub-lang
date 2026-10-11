@@ -1,0 +1,214 @@
+namespace sublang::lowering;
+
+use sublang::body::SublangOperation;
+use sublang::ir::data::SublangCollectionLayout;
+use sublang::lowering::SublangLowerContext;
+use sublang::lowering::SublangLowerOwnership;
+
+// Immutable byte strings and growable lists. Strings are program-lifetime {pointer, byte length}
+// values; indexing is bounds checked and compares equal bytes with memcmp. Lists are runtime
+// headers {data, length, capacity}; owned class elements are pointers, inline classes are stored
+// by value and need no per-element ownership.
+public class SublangLowerData {
+    public static Void lower(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        String code = op.opcode();
+        if (code == "const.string") { context.bind(op.resultValue(), context.string("sublang.str." + op.id().toString(), op.constText().length())); return; }
+        if (code == "string.length") { context.bind(op.resultValue(), context.stringPart("str.len", "i64", context.value(op.operandAt(0)))); return; }
+        if (code == "string.byte") { SublangLowerData.byteAt(context, op); return; }
+        if (code == "string.equal") { SublangLowerData.equal(context, op); return; }
+        if (code == "list.new") { SublangLowerData.create(context, owners, op); return; }
+        if (code == "byte.from_int") { SublangLowerData.narrowByte(context, op); return; }
+        if (code == "byte.to_int") { context.bind(op.resultValue(), context.widen("i8", context.value(op.operandAt(0)))); return; }
+        if (code.startsWith("text.")) { SublangLowerData.text(context, owners, op); return; }
+        SublangLowerData.list(context, owners, op);
+    }
+
+    // A byte index outside [0, length) aborts; the comparison is unsigned so a negative index fails.
+    private static Void byteAt(SublangLowerContext context, SublangOperation op) {
+        Int text = context.value(op.operandAt(0));
+        Int index = context.value(op.operandAt(1));
+        Int length = context.stringPart("str.len", "i64", text);
+        context.guard(context.compare("i64", "uge", index, length));
+        Int address = context.byteAddress(context.stringPart("str.ptr", "ptr", text), index);
+        context.bind(op.resultValue(), context.widen("i8", context.load("i8", address, "")));
+    }
+
+    private static Void equal(SublangLowerContext context, SublangOperation op) {
+        Int left = context.value(op.operandAt(0));
+        Int right = context.value(op.operandAt(1));
+        Int length = context.stringPart("str.len", "i64", left);
+        Int sameLength = context.compare("i64", "eq", length, context.stringPart("str.len", "i64", right));
+        Int empty = context.compare("i64", "eq", length, context.constantInt(0));
+        Int lengthOk = context.newBlock();
+        Int compare = context.newBlock();
+        Int done = context.newBlock();
+        Int answer = context.blockParam(done, "i1");
+        List<Int> none = SublangLowerContext.none();
+        context.conditional(sameLength, lengthOk, none, done, SublangLowerContext.one(context.constantBool(false)));
+        context.enter(lengthOk);
+        context.conditional(empty, done, SublangLowerContext.one(context.constantBool(true)), compare, none);
+        context.enter(compare);
+        List<Int> arguments = SublangLowerContext.three(context.stringPart("str.ptr", "ptr", left), context.stringPart("str.ptr", "ptr", right), length);
+        Int order = context.runtime("memcmp", arguments, "i32");
+        context.branch(done, SublangLowerContext.one(context.compare("i32", "eq", order, context.constantInt32(0))));
+        context.enter(done);
+        context.bind(op.resultValue(), answer);
+    }
+
+    private static Void create(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int head = owners.head(op.scope(), op.ref());
+        Int size = context.constantInt(16);
+        Int list = context.runtime("sublang.flow.allocate.t" + op.ref().toString(), SublangLowerContext.two(head, size), "ptr");
+        context.store("list", list, context.constantZero("list"));
+        context.bind(op.resultValue(), list);
+    }
+
+    private static Bool ownedElements(SublangLowerContext context, Int list) {
+        Int element = context.module.types().typeAt(list).target();
+        return context.module.types().isKind(element, "Class") && !SublangCollectionLayout.inlineClass(context.module, element);
+    }
+
+    private static String elementType(SublangLowerContext context, Int list) {
+        if (SublangLowerData.ownedElements(context, list)) { return "ptr"; }
+        return context.lowType(context.module.types().typeAt(list).target());
+    }
+
+    // Element size as the runtime sees it; a zero-sized element still occupies one byte.
+    private static Int elementSize(SublangLowerContext context, Int list) {
+        Int size = context.layout.sizeOf(SublangLowerData.elementType(context, list));
+        if (size == 0) { return 1; }
+        return size;
+    }
+
+    private static Void list(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int reference = context.function.valueTypeAt(op.operandAt(0));
+        Int list = context.module.types().typeAt(reference).target();
+        Int receiver = context.value(op.operandAt(0));
+        String code = op.opcode();
+        if (code == "list.clear") { context.runtimeVoid("sublang.list.clear.t" + list.toString(), SublangLowerContext.one(receiver)); return; }
+        if (code == "list.length") {
+            Int address = context.fieldAddress("list", 1, receiver, "");
+            context.bind(op.resultValue(), context.widen("i32", context.load("i32", address, "")));
+            return;
+        }
+        Int size = context.constantInt(SublangLowerData.elementSize(context, list));
+        if (code == "list.set") {
+            Int cell = context.runtime("sublang.list.at", SublangLowerContext.three(receiver, context.value(op.operandAt(1)), size), "ptr");
+            context.store(SublangLowerData.elementType(context, list), cell, context.value(op.operandAt(2)));
+            return;
+        }
+        if (code == "list.replace") { SublangLowerData.replace(context, owners, op, list, receiver, size); return; }
+        if (code == "list.push") { SublangLowerData.push(context, owners, op, list, receiver, size); return; }
+        Int slot = context.runtime("sublang.list.at", SublangLowerContext.three(receiver, context.value(op.operandAt(1)), size), "ptr");
+        if (code == "list.borrow" && !SublangLowerData.ownedElements(context, list)) { context.bind(op.resultValue(), slot); return; }
+        context.bind(op.resultValue(), context.load(context.lowType(op.resultType()), slot, ""));
+    }
+
+    private static Void push(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op, Int list, Int receiver, Int size) {
+        Int slot = context.runtime("sublang.list.push.slot", SublangLowerContext.two(receiver, size), "ptr");
+        Int value = op.operandAt(1);
+        if (context.plan.isFolded(value)) { SublangLowerData.foldedPush(context, owners, op, list, slot); return; }
+        Int valueType = context.function.valueTypeAt(value);
+        String element = SublangLowerData.elementType(context, list);
+        Int input = context.value(value);
+        if (op.modeAt(1) == "owned") {
+            Int target = context.module.types().typeAt(valueType).target();
+            Bool headerless = context.plan.isLocal(value) || context.plan.isPool(value);
+            if (!headerless) { context.runtimeVoid("sublang.flow.detach", SublangLowerContext.one(input)); }
+            if (!SublangLowerData.ownedElements(context, list)) {
+                Int copy = context.load(element, input, "");
+                if (!headerless) { context.runtimeVoid("sublang.flow.drop", SublangLowerContext.two(input, context.symbol(owners.visitor(target)))); }
+                context.store(element, slot, copy);
+                return;
+            }
+        }
+        context.store(element, slot, input);
+    }
+
+    // A scalar-replaced element is written field by field from its scalar slots.
+    private static Void foldedPush(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op, Int list, Int slot) {
+        Int element = context.module.types().typeAt(list).target();
+        Int index = 0;
+        while (index < context.module.types().typeAt(element).fieldCount()) {
+            Int field = context.module.types().typeAt(element).fieldAt(index);
+            String type = context.lowType(context.module.types().fieldAt(field).typeId());
+            Int part = context.load(type, owners.foldSlot(op.operandAt(1), field), "");
+            Int address = context.fieldAddress("%t" + element.toString(), index, slot, "");
+            context.store(type, address, part);
+            index = index + 1;
+        }
+    }
+
+    // A value outside 0..255 aborts; the comparison is unsigned so negative values fail too.
+    private static Void narrowByte(SublangLowerContext context, SublangOperation op) {
+        Int value = context.value(op.operandAt(0));
+        context.guard(context.compare("i64", "ugt", value, context.constantInt(255)));
+        context.bind(op.resultValue(), context.narrow("i8", value));
+    }
+
+    // Consume the new element, drop the previous one exactly once, then store the new owner.
+    private static Void replace(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op, Int list, Int receiver, Int size) {
+        Int slot = context.runtime("sublang.list.at", SublangLowerContext.three(receiver, context.value(op.operandAt(1)), size), "ptr");
+        Int old = context.load("ptr", slot, "");
+        Int child = context.value(op.operandAt(2));
+        Int target = context.module.types().typeAt(context.function.valueTypeAt(op.operandAt(2))).target();
+        context.runtimeVoid("sublang.flow.detach", SublangLowerContext.one(child));
+        context.store("ptr", slot, child);
+        context.runtimeVoid("sublang.flow.drop", SublangLowerContext.two(old, context.symbol(owners.visitor(target))));
+    }
+
+    private static Int dataOf(SublangLowerContext context, Int list) {
+        return context.load("ptr", context.fieldAddress("list", 0, list, ""), "");
+    }
+
+    private static Int lengthOf(SublangLowerContext context, Int list) {
+        return context.widen("i32", context.load("i32", context.fieldAddress("list", 1, list, ""), ""));
+    }
+
+    private static Int fresh(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int list = context.runtime("sublang.flow.allocate.t" + op.ref().toString(), SublangLowerContext.two(owners.head(op.scope(), op.ref()), context.constantInt(16)), "ptr");
+        context.store("list", list, context.constantZero("list"));
+        return list;
+    }
+
+    private static Void text(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        String code = op.opcode();
+        if (code == "text.equal") {
+            context.bind(op.resultValue(), context.runtime("sublang.text.equal", SublangLowerContext.two(context.value(op.operandAt(0)), context.value(op.operandAt(1))), "i1"));
+            return;
+        }
+        if (code == "text.append") {
+            Int source = context.value(op.operandAt(1));
+            List<Int> arguments = SublangLowerContext.three(context.value(op.operandAt(0)), context.stringPart("str.ptr", "ptr", source), context.stringPart("str.len", "i64", source));
+            context.runtimeVoid("sublang.text.append", arguments);
+            return;
+        }
+        Int created = SublangLowerData.fresh(context, owners, op);
+        if (code == "text.from_str") {
+            Int source = context.value(op.operandAt(0));
+            List<Int> arguments = SublangLowerContext.three(created, context.stringPart("str.ptr", "ptr", source), context.stringPart("str.len", "i64", source));
+            context.runtimeVoid("sublang.text.append", arguments);
+        }
+        if (code == "text.concat") {
+            Int left = context.value(op.operandAt(0));
+            Int right = context.value(op.operandAt(1));
+            context.runtimeVoid("sublang.text.append", SublangLowerContext.three(created, SublangLowerData.dataOf(context, left), SublangLowerData.lengthOf(context, left)));
+            context.runtimeVoid("sublang.text.append", SublangLowerContext.three(created, SublangLowerData.dataOf(context, right), SublangLowerData.lengthOf(context, right)));
+        }
+        if (code == "text.slice") { SublangLowerData.slice(context, op, created); }
+        context.bind(op.resultValue(), created);
+    }
+
+    // start <= length and count <= length - start, both unsigned, or the operation aborts.
+    private static Void slice(SublangLowerContext context, SublangOperation op, Int created) {
+        Int source = context.value(op.operandAt(0));
+        Int start = context.value(op.operandAt(1));
+        Int count = context.value(op.operandAt(2));
+        Int length = SublangLowerData.lengthOf(context, source);
+        context.guard(context.compare("i64", "ugt", start, length));
+        Int remaining = context.binary("i64.sub", "i64", length, start);
+        context.guard(context.compare("i64", "ugt", count, remaining));
+        Int begin = context.byteAddress(SublangLowerData.dataOf(context, source), start);
+        context.runtimeVoid("sublang.text.append", SublangLowerContext.three(created, begin, count));
+    }
+}

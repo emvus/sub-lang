@@ -1,0 +1,186 @@
+namespace sublang::text;
+
+use sublang::text::SublangTextCodec;
+use sublang::text::SublangTextCursor;
+
+// Tokenizer for one line of canonical text. Spaces and tabs separate tokens, a '#' starts a comment
+// (printable ASCII) that runs to the end of the line, and a double quote starts a string literal. Outside strings only
+// printable ASCII is accepted; a string holds raw printable ASCII (without backslash and quote) or an
+// escape. A word starts with a letter or '_' and continues with letters, digits, '_', '-' or '.'.
+public class SublangTextLexer {
+    public static SublangTextCursor lex(String line, Int lineNumber) {
+        SublangTextCursor cursor = SublangTextCursor(lineNumber, line.length());
+        Int index = 0;
+        while (index < line.length() && !cursor.failed()) {
+            index = SublangTextLexer.token(line, index, cursor);
+        }
+        return cursor;
+    }
+
+    // Lexes the token that starts at index and returns the index after it.
+    private static Int token(String line, Int index, SublangTextCursor cursor) {
+        Int code = line.charAt(index).code();
+        String text = line.substring(index, index + 1);
+        if (code == 32 || code == 9) { return index + 1; }
+        if (code == 35) { return SublangTextLexer.comment(line, index, cursor); }
+        if (code == 34) { return SublangTextLexer.quoted(line, index, cursor); }
+        if (code == 61) {
+            cursor.push(SublangTextCursor.equalsKind(), text, index + 1);
+            return index + 1;
+        }
+        if (code == 91) {
+            cursor.push(SublangTextCursor.openKind(), text, index + 1);
+            return index + 1;
+        }
+        if (code == 93) {
+            cursor.push(SublangTextCursor.closeKind(), text, index + 1);
+            return index + 1;
+        }
+        if (code == 44) {
+            cursor.push(SublangTextCursor.commaKind(), text, index + 1);
+            return index + 1;
+        }
+        if (code == 45 || SublangTextLexer.isDigit(code)) { return SublangTextLexer.number(line, index, cursor); }
+        if (SublangTextLexer.isWordStart(code)) { return SublangTextLexer.word(line, index, cursor); }
+        cursor.failAt("TX001", index + 1, "unexpected byte " + SublangTextCodec.escapeCode(code) + " outside a string");
+        return index + 1;
+    }
+
+    // A comment runs to the end of the line and must hold printable ASCII or tabs only.
+    private static Int comment(String line, Int start, SublangTextCursor cursor) {
+        Int index = start;
+        while (index < line.length() && !cursor.failed()) {
+            Int code = line.charAt(index).code();
+            if (code != 9 && (code < 32 || code >= 127)) {
+                cursor.failAt("TX001", index + 1, "byte " + SublangTextCodec.escapeCode(code) + " in a comment must be printable ASCII");
+            }
+            index = index + 1;
+        }
+        return line.length();
+    }
+
+    // Reads a string literal whose opening quote is at start; returns the index after the closing quote.
+    private static Int quoted(String line, Int start, SublangTextCursor cursor) {
+        String value = "";
+        Int index = start + 1;
+        Bool closed = false;
+        while (!closed && index < line.length() && !cursor.failed()) {
+            Int code = line.charAt(index).code();
+            if (code == 34) {
+                closed = true;
+                index = index + 1;
+            }
+            if (!closed && code == 92) {
+                value = value + SublangTextLexer.decode(line, index, cursor);
+                index = SublangTextLexer.escapeEnd(line, index);
+            }
+            if (!closed && SublangTextCodec.rawByte(code)) {
+                Int end = SublangTextCodec.rawRunEnd(line, index);
+                value = value + line.substring(index, end);
+                index = end;
+            }
+            if (!closed && code != 92 && !SublangTextCodec.rawByte(code)) {
+                cursor.failAt("TX001", index + 1, "raw byte " + SublangTextCodec.escapeCode(code) + " must be written as an escape");
+            }
+        }
+        if (!closed && !cursor.failed()) {
+            cursor.failAt("TX001", start + 1, "unterminated string");
+        }
+        if (closed) {
+            cursor.push(SublangTextCursor.stringKind(), value, start + 1);
+        }
+        return index;
+    }
+
+    // Index after the escape sequence whose backslash is at `at`: four bytes for \\xNN, otherwise two.
+    private static Int escapeEnd(String line, Int at) {
+        if (at + 1 < line.length() && line.substring(at + 1, at + 2) == "x") {
+            return at + 4;
+        }
+        return at + 2;
+    }
+
+    // Text that the escape whose backslash is at `at` stands for; empty after a reported error.
+    private static String decode(String line, Int at, SublangTextCursor cursor) {
+        if (at + 1 >= line.length()) {
+            cursor.failAt("TX001", at + 1, "unterminated escape sequence");
+            return "";
+        }
+        String kind = line.substring(at + 1, at + 2);
+        if (kind == "\\") { return "\\"; }
+        if (kind == "\"") { return "\""; }
+        if (kind == "n") { return SublangTextCodec.byteText(10); }
+        if (kind == "r") { return SublangTextCodec.byteText(13); }
+        if (kind == "t") { return SublangTextCodec.byteText(9); }
+        if (kind == "x") { return SublangTextLexer.hexByte(line, at, cursor); }
+        cursor.failAt("TX001", at + 1, "invalid escape \\" + kind);
+        return "";
+    }
+
+    // \xNN: two hex digits after the x, giving one byte value from 0 to 255.
+    private static String hexByte(String line, Int at, SublangTextCursor cursor) {
+        if (at + 3 >= line.length()) {
+            cursor.failAt("TX001", at + 1, "\\x escape needs two hex digits");
+            return "";
+        }
+        Int high = SublangTextCodec.hexValue(line.substring(at + 2, at + 3));
+        Int low = SublangTextCodec.hexValue(line.substring(at + 3, at + 4));
+        if (high < 0 || low < 0) {
+            cursor.failAt("TX001", at + 1, "\\x escape needs two hex digits");
+            return "";
+        }
+        return SublangTextCodec.byteText(high * 16 + low);
+    }
+
+    // An optional minus sign and decimal digits; the value must fit in a signed 64-bit Int.
+    private static Int number(String line, Int start, SublangTextCursor cursor) {
+        Int index = start;
+        if (line.substring(index, index + 1) == "-") { index = index + 1; }
+        while (index < line.length() && SublangTextLexer.digitAt(line, index)) {
+            index = index + 1;
+        }
+        String token = line.substring(start, index);
+        if (!SublangTextCodec.validInt(token)) {
+            cursor.failAt("TX001", start + 1, "malformed or out-of-range integer " + token);
+            return index;
+        }
+        cursor.push(SublangTextCursor.intKind(), token, start + 1);
+        return index;
+    }
+
+    private static Int word(String line, Int start, SublangTextCursor cursor) {
+        Int index = start;
+        while (index < line.length() && SublangTextLexer.wordPartAt(line, index)) {
+            index = index + 1;
+        }
+        cursor.push(SublangTextCursor.wordKind(), line.substring(start, index), start + 1);
+        return index;
+    }
+
+    // Character classes read one byte at a time; the byte is bound to a local before it is classified.
+    private static Bool digitAt(String line, Int index) {
+        Int code = line.charAt(index).code();
+        return SublangTextLexer.isDigit(code);
+    }
+
+    private static Bool wordPartAt(String line, Int index) {
+        Int code = line.charAt(index).code();
+        return SublangTextLexer.isWordPart(code);
+    }
+
+    private static Bool isDigit(Int code) {
+        return code >= 48 && code <= 57;
+    }
+
+    private static Bool isLetter(Int code) {
+        return (code >= 97 && code <= 122) || (code >= 65 && code <= 90);
+    }
+
+    private static Bool isWordStart(Int code) {
+        return SublangTextLexer.isLetter(code) || code == 95;
+    }
+
+    private static Bool isWordPart(Int code) {
+        return SublangTextLexer.isWordStart(code) || SublangTextLexer.isDigit(code) || code == 45 || code == 46;
+    }
+}

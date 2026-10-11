@@ -1,0 +1,138 @@
+namespace sublang::text;
+
+// Encoding helpers shared by the printer and the parser. A string literal is a double-quoted run of
+// bytes: printable ASCII is written raw except backslash and quote, every other byte is an escape
+// (\\ \" \n \r \t or \xNN with two hex digits). Integers are signed decimal Int64 values, flags are
+// the words true and false, and lists are bracketed and comma separated.
+public class SublangTextCodec {
+    // The one-byte string whose byte value is code (0 to 255).
+    public static String byteText(Int code) {
+        return code.toChar().toString();
+    }
+
+    public static String hexDigit(Int nibble) {
+        return "0123456789abcdef".substring(nibble, nibble + 1);
+    }
+
+    // Value of one hex digit in either case, or -1 when the digit is not hexadecimal.
+    public static Int hexValue(String digit) {
+        return "0123456789abcdef".indexOf(digit.toLower());
+    }
+
+    public static Int digitValue(String digit) {
+        return "0123456789".indexOf(digit);
+    }
+
+    public static String flag(Bool value) {
+        if (value) { return "true"; }
+        return "false";
+    }
+
+    // Quoted literal of the bytes. Runs of raw printable bytes are copied in one piece.
+    public static String quote(String value) {
+        String out = "\"";
+        Int index = 0;
+        while (index < value.length()) {
+            Int code = value.charAt(index).code();
+            if (SublangTextCodec.rawByte(code)) {
+                Int end = SublangTextCodec.rawRunEnd(value, index);
+                out = out + value.substring(index, end);
+                index = end;
+            }
+            if (!SublangTextCodec.rawByte(code)) {
+                out = out + SublangTextCodec.escapeCode(code);
+                index = index + 1;
+            }
+        }
+        return out + "\"";
+    }
+
+    // A byte that may stand for itself inside a quoted literal.
+    public static Bool rawByte(Int code) {
+        return code >= 32 && code < 127 && code != 34 && code != 92;
+    }
+
+    // End (exclusive) of the run of raw bytes that starts at index.
+    public static Int rawRunEnd(String value, Int index) {
+        Int end = index;
+        while (end < value.length() && SublangTextCodec.rawAt(value, end)) {
+            end = end + 1;
+        }
+        return end;
+    }
+
+    private static Bool rawAt(String value, Int index) {
+        Int code = value.charAt(index).code();
+        return SublangTextCodec.rawByte(code);
+    }
+
+    // Text of one byte inside a quoted literal.
+    public static String escapeCode(Int code) {
+        if (code == 92) { return "\\\\"; }
+        if (code == 34) { return "\\\""; }
+        if (code == 10) { return "\\n"; }
+        if (code == 13) { return "\\r"; }
+        if (code == 9) { return "\\t"; }
+        if (code < 32 || code >= 127) {
+            return "\\x" + SublangTextCodec.hexDigit(code / 16) + SublangTextCodec.hexDigit(code % 16);
+        }
+        return SublangTextCodec.byteText(code);
+    }
+
+    // Accepts an optional minus sign followed by at least one decimal digit, and only values that fit
+    // in a signed 64-bit Int. The accumulation runs downwards, so the minimum value does not overflow.
+    public static Bool validInt(String token) {
+        Int index = 0;
+        Bool negative = token.startsWith("-");
+        if (negative) { index = 1; }
+        if (index >= token.length()) { return false; }
+        Int limit = 7;
+        if (negative) { limit = 8; }
+        Int result = 0;
+        while (index < token.length()) {
+            Int digit = SublangTextCodec.digitValue(token.substring(index, index + 1));
+            if (digit < 0) { return false; }
+            if (result < -922337203685477580) { return false; }
+            if (result == -922337203685477580 && digit > limit) { return false; }
+            result = result * 10 - digit;
+            index = index + 1;
+        }
+        return true;
+    }
+
+    // Value of a token that validInt accepted.
+    public static Int intValue(String token) {
+        Bool negative = token.startsWith("-");
+        Int index = 0;
+        if (negative) { index = 1; }
+        Int result = 0;
+        while (index < token.length()) {
+            result = result * 10 - SublangTextCodec.digitValue(token.substring(index, index + 1));
+            index = index + 1;
+        }
+        if (negative) { return result; }
+        return -result;
+    }
+
+    public static String intList(List<Int> values) {
+        String out = "[";
+        Int index = 0;
+        while (index < values.length()) {
+            if (index > 0) { out = out + ","; }
+            out = out + values.get(index).toString();
+            index = index + 1;
+        }
+        return out + "]";
+    }
+
+    public static String stringList(List<String> values) {
+        String out = "[";
+        Int index = 0;
+        while (index < values.length()) {
+            if (index > 0) { out = out + ","; }
+            out = out + SublangTextCodec.quote(values.get(index));
+            index = index + 1;
+        }
+        return out + "]";
+    }
+}

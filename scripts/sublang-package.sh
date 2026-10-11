@@ -4,6 +4,10 @@
 # scripts/sublang-bootstrap.sh first. The binary is executed only inside the capped
 # sandbox; the host copies, hashes and archives files, and never runs sublang itself.
 set -euo pipefail
+if [[ "${1:-}" = --with-llvm && $# = 1 ]]; then
+  exec bash "$(dirname -- "${BASH_SOURCE[0]}")/sublang-bundle.sh"
+fi
+if (($#)); then echo 'Usage: sublang-package.sh [--with-llvm]' >&2; exit 2; fi
 export LC_ALL=C
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${SUBLANG_SANDBOX_IMAGE:-emerald-selfhost-sandbox}"

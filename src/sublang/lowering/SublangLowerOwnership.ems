@@ -1,0 +1,236 @@
+namespace sublang::lowering;
+
+use sublang::body::SublangOperation;
+use sublang::hyperalloc::SublangRegionOrigins;
+use sublang::lowering::SublangLowerContext;
+
+// Scope owner heads, shard frames, pool and folded slots, and Bond roots of one function. All
+// slots are created in the Low entry block before the body is lowered, exactly where the
+// ownership contract needs them. Heads are keyed by (scope, class type): the visitor symbol of
+// the class supplies destruction without enlarging the 16-byte allocation header.
+public class SublangLowerOwnership {
+    private SublangLowerContext context;
+    private SublangRegionOrigins origins;
+    private Int shardOwner;
+    private Int depthSlot;
+    private List<Int> headKeys;
+    private List<Int> headSlots;
+    private List<Int> regionScopes;
+    private List<Int> regionSlots;
+    private List<Int> foldKeys;
+    private List<Int> foldSlots;
+    private List<Int> poolValues;
+    private List<Int> poolSlots;
+    private List<Int> bondValues;
+    private List<Int> bondRoots;
+    private List<Int> bondScopes;
+    private List<Int> bondScopeSlots;
+
+    public SublangLowerOwnership(SublangLowerContext lowering) {
+        this.context = lowering;
+        this.origins = SublangRegionOrigins(lowering.function);
+        this.shardOwner = lowering.plan.shardScope();
+        this.depthSlot = 0;
+        this.headKeys = List();
+        this.headSlots = List();
+        this.regionScopes = List();
+        this.regionSlots = List();
+        this.foldKeys = List();
+        this.foldSlots = List();
+        this.poolValues = List();
+        this.poolSlots = List();
+        this.bondValues = List();
+        this.bondRoots = List();
+        this.bondScopes = List();
+        this.bondScopeSlots = List();
+        this.createSlots();
+    }
+
+    private Void createSlots() {
+        Int index = 0;
+        while (index < this.context.function.paramCount()) {
+            if (this.context.function.paramAt(index).passing() == "owned" && this.kind(this.context.function.paramAt(index).typeId()) == "Ref") {
+                this.addHead(0, this.target(this.context.function.paramAt(index).typeId()));
+            }
+            if (this.context.function.paramAt(index).passing() == "owned" && this.kind(this.context.function.paramAt(index).typeId()) == "Bond") {
+                this.addBond(this.context.function.paramAt(index).value(), 0);
+            }
+            index = index + 1;
+        }
+        if (this.shardOwner > 0) {
+            this.depthSlot = this.context.slot("i64", "shard.depth", 0);
+            this.context.store("i64", this.depthSlot, this.context.constantInt(0));
+        }
+        Int block = 1;
+        while (block <= this.context.function.blockCount()) {
+            Int op = 0;
+            while (op < this.context.function.blockAt(block).operationCount()) {
+                this.scan(this.context.function.blockAt(block).operationAt(op));
+                op = op + 1;
+            }
+            block = block + 1;
+        }
+    }
+
+    private Void scan(SublangOperation operation) {
+        String code = operation.opcode();
+        if (code == "scope.begin" && this.shardOwner > 0 && !this.regionScopes.contains(operation.ref())) { this.addRegion(operation.ref()); }
+        if (code == "class.new" && this.context.plan.isFolded(operation.resultValue())) { this.addFolded(operation); }
+        if (code == "class.new" && this.context.plan.isPool(operation.resultValue())) { this.addPool(operation, this.context.plan.isGraphPool(operation.resultValue())); }
+        if (operation.hasResult() && this.kind(operation.resultType()) == "Ref" && operation.scope() > 0) {
+            this.addHead(operation.scope(), this.target(operation.resultType()));
+        }
+        if (operation.hasResult() && this.kind(operation.resultType()) == "Bond") { this.addBond(operation.resultValue(), operation.scope()); }
+    }
+
+    private String kind(Int typeId) { return this.context.module.types().kindOf(typeId); }
+    public Int target(Int reference) { return this.context.module.types().typeAt(reference).target(); }
+    private Int headKey(Int scope, Int type) { return scope * (this.context.module.types().typeCount() + 1) + type; }
+    public String visitor(Int type) { return "sublang.drop.t" + type.toString(); }
+
+    private Void addHead(Int scope, Int type) {
+        Int key = this.headKey(scope, type);
+        if (this.headKeys.contains(key)) { return; }
+        Int slot = this.context.slot("ptr", "scope" + scope.toString() + "_t" + type.toString(), 0);
+        this.context.store("ptr", slot, this.context.constantNull());
+        this.headKeys.add(key);
+        this.headSlots.add(slot);
+    }
+
+    private Void addRegion(Int scope) {
+        Int frame = this.context.slot("shard", "shard" + scope.toString(), 0);
+        this.context.store("shard", frame, this.context.constantZero("shard"));
+        this.regionScopes.add(scope);
+        this.regionSlots.add(frame);
+    }
+
+    private Void addFolded(SublangOperation operation) {
+        Int index = 0;
+        while (index < this.context.module.types().typeAt(operation.ref()).fieldCount()) {
+            Int field = this.context.module.types().typeAt(operation.ref()).fieldAt(index);
+            String type = this.context.lowType(this.context.module.types().fieldAt(field).typeId());
+            Int slot = this.context.slot(type, "fold" + operation.resultValue().toString() + "_" + field.toString(), 0);
+            this.foldKeys.add(operation.resultValue() * (this.context.module.types().fieldCount() + 1) + field);
+            this.foldSlots.add(slot);
+            index = index + 1;
+        }
+    }
+
+    private Void addPool(SublangOperation operation, Bool graph) {
+        String value = operation.resultValue().toString();
+        String payload = "%t" + operation.ref().toString();
+        if (!graph) {
+            this.poolValues.add(operation.resultValue());
+            this.poolSlots.add(this.context.slot(payload, "pool" + value, 0));
+            return;
+        }
+        String header = "hdr" + payload;
+        Int storage = this.context.slot(header, "pool.header" + value, 16);
+        this.context.store(header, storage, this.context.constantZero(header));
+        this.context.store("ptr", storage, this.context.constantPointer(1));
+        this.poolValues.add(operation.resultValue());
+        this.poolSlots.add(this.context.fieldAddress(header, 2, storage, "pool" + value));
+    }
+
+    private Void addBond(Int value, Int scope) {
+        this.bondValues.add(value);
+        Int root = this.context.slot("bondroot", "bond.root" + value.toString(), 0);
+        this.context.store("bondroot", root, this.context.constantZero("bondroot"));
+        this.bondRoots.add(root);
+        if (!this.bondScopes.contains(scope)) {
+            Int holder = this.context.slot("ptr", "bond.scope" + scope.toString(), 0);
+            this.context.store("ptr", holder, this.context.constantNull());
+            this.bondScopes.add(scope);
+            this.bondScopeSlots.add(holder);
+        }
+    }
+
+    // --- queries --------------------------------------------------------------------------
+
+    public Int head(Int scope, Int type) {
+        return this.headSlots.get(this.headKeys.indexOf(this.headKey(scope, type)));
+    }
+
+    public Int region(Int scope) { return this.regionSlots.get(this.regionScopes.indexOf(scope)); }
+    public Bool sharded() { return this.shardOwner > 0; }
+
+    public Int foldSlot(Int object, Int field) {
+        return this.foldSlots.get(this.foldKeys.indexOf(object * (this.context.module.types().fieldCount() + 1) + field));
+    }
+
+    public Int poolSlot(Int value) { return this.poolSlots.get(this.poolValues.indexOf(value)); }
+
+    // --- scope contract -------------------------------------------------------------------
+
+    public Void begin(Int scope) {
+        if (this.shardOwner == 0) { return; }
+        this.context.runtimeVoid("sublang.shard.begin", SublangLowerContext.two(this.region(scope), this.depthSlot));
+    }
+
+    // Ends every owner head of `scope` (or of all scopes), then regions, then the shard depth.
+    public Void end(Int scope, Bool all) {
+        Int index = 0;
+        while (index < this.headKeys.length()) {
+            Int key = this.headKeys.get(index);
+            Int width = this.context.module.types().typeCount() + 1;
+            if (all || key / width == scope) {
+                this.context.runtimeVoid("sublang.flow.end", SublangLowerContext.two(this.headSlots.get(index), this.context.symbol(this.visitor(key % width))));
+            }
+            index = index + 1;
+        }
+        Int region = 0;
+        while (region < this.regionScopes.length()) {
+            if (all || scope == this.regionScopes.get(region)) {
+                this.context.runtimeVoid("sublang.shard.end", SublangLowerContext.one(this.regionSlots.get(region)));
+            }
+            region = region + 1;
+        }
+        if (this.shardOwner > 0 && !all) { this.context.runtimeVoid("sublang.shard.leave", SublangLowerContext.one(this.depthSlot)); }
+    }
+
+    public Void join(SublangOperation operation) {
+        if (this.shardOwner == 0) { return; }
+        Int parent = this.origins.scopeOf(operation.operandAt(0));
+        Int child = this.origins.scopeOf(operation.operandAt(1));
+        if (parent == 0 || child == 0 || parent == child) { return; }
+        this.context.runtimeVoid("sublang.shard.join", SublangLowerContext.two(this.region(parent), this.region(child)));
+    }
+
+    public Void adoptParameters() {
+        Int index = 0;
+        while (index < this.context.function.paramCount()) {
+            Int value = this.context.function.paramAt(index).value();
+            if (this.context.function.paramAt(index).passing() == "owned" && this.kind(this.context.function.paramAt(index).typeId()) == "Ref") {
+                Int type = this.target(this.context.function.paramAt(index).typeId());
+                this.context.runtimeVoid("sublang.flow.adopt", SublangLowerContext.two(this.head(0, type), this.context.value(value)));
+            }
+            if (this.context.function.paramAt(index).passing() == "owned" && this.kind(this.context.function.paramAt(index).typeId()) == "Bond") {
+                this.bondAdopt(value, 0, this.context.value(value));
+            }
+            index = index + 1;
+        }
+    }
+
+    // --- bond roots -----------------------------------------------------------------------
+
+    public Void bondAdopt(Int value, Int scope, Int payload) {
+        Int root = this.bondRoots.get(this.bondValues.indexOf(value));
+        Int holder = this.bondScopeSlots.get(this.bondScopes.indexOf(scope));
+        this.context.runtimeVoid("sublang.bond.root.add", SublangLowerContext.three(holder, root, payload));
+    }
+
+    public Void bondTake(Int value) {
+        Int root = this.bondRoots.get(this.bondValues.indexOf(value));
+        this.context.runtime("sublang.bond.root.take", SublangLowerContext.one(root), "ptr");
+    }
+
+    public Void bondEnd(Int scope, Bool all) {
+        Int index = 0;
+        while (index < this.bondScopes.length()) {
+            if (all || scope == this.bondScopes.get(index)) {
+                this.context.runtimeVoid("sublang.bond.scope.end", SublangLowerContext.one(this.bondScopeSlots.get(index)));
+            }
+            index = index + 1;
+        }
+    }
+}

@@ -1,0 +1,182 @@
+namespace sublang::checks;
+
+use sublang::body::SublangFunction;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+
+// Module-level object contracts: class hierarchies (field prefix rule, no cycles) and the
+// closed-world dispatch table (registered tags, complete and signature-exact groups).
+// Codes: SUBLANG-O001 hierarchy, O002 dispatch registration, O003 group signature.
+public class SublangDispatchChecks {
+    private SublangReport findings;
+    private SublangModule module;
+
+    public SublangDispatchChecks(SublangReport report, SublangModule source) {
+        this.findings = report;
+        this.module = source;
+    }
+
+    public Void check() {
+        Int type = 1;
+        while (type <= this.module.types().typeCount()) {
+            if (this.module.types().isKind(type, "Class") && this.module.types().typeAt(type).target() != 0) { this.hierarchy(type); }
+            type = type + 1;
+        }
+        this.classes();
+        Int group = 1;
+        while (group <= this.module.dispatch().groupCount()) {
+            this.group(group);
+            group = group + 1;
+        }
+    }
+
+    // Base chain must be classes without a cycle; the derived class repeats the base fields first.
+    private Void hierarchy(Int type) {
+        Int base = this.module.types().typeAt(type).target();
+        if (!this.module.types().isKind(base, "Class")) {
+            this.findings.report("SUBLANG-O001", "class " + this.module.types().typeNameOf(type) + " extends a type that is not a class", this.module.types().typeAt(type).span());
+            return;
+        }
+        Int steps = 0;
+        Int walker = base;
+        while (walker != 0 && steps <= this.module.types().typeCount()) {
+            if (walker == type) {
+                this.findings.report("SUBLANG-O001", "class " + this.module.types().typeNameOf(type) + " is its own ancestor", this.module.types().typeAt(type).span());
+                return;
+            }
+            walker = this.module.types().typeAt(walker).target();
+            steps = steps + 1;
+        }
+        Int index = 0;
+        while (index < this.module.types().typeAt(base).fieldCount()) {
+            if (!this.samePrefixField(type, base, index)) {
+                this.findings.report("SUBLANG-O001", "class " + this.module.types().typeNameOf(type) + " must begin with the fields of " + this.module.types().typeNameOf(base), this.module.types().typeAt(type).span());
+                return;
+            }
+            index = index + 1;
+        }
+    }
+
+    private Bool samePrefixField(Int type, Int base, Int index) {
+        if (index >= this.module.types().typeAt(type).fieldCount()) { return false; }
+        Int own = this.module.types().typeAt(type).fieldAt(index);
+        Int inherited = this.module.types().typeAt(base).fieldAt(index);
+        return this.module.types().fieldAt(own).name() == this.module.types().fieldAt(inherited).name()
+            && this.module.types().fieldAt(own).typeId() == this.module.types().fieldAt(inherited).typeId()
+            && this.module.types().fieldAt(own).isMutable() == this.module.types().fieldAt(inherited).isMutable();
+    }
+
+    private Void classes() {
+        Int index = 0;
+        while (index < this.module.dispatch().classCount()) {
+            Int type = this.module.dispatch().classTypeAt(index);
+            if (!this.module.types().isKind(type, "Class")) {
+                this.findings.report("SUBLANG-O002", "dispatch registration " + index.toString() + " names a type that is not a class", 0);
+            }
+            Int other = 0;
+            while (other < index) {
+                if (this.module.dispatch().classTypeAt(other) == type) { this.findings.report("SUBLANG-O002", "class registered twice", 0); }
+                if (this.module.dispatch().classTagAt(other) == this.module.dispatch().classTagAt(index) && this.root(this.module.dispatch().classTypeAt(other)) == this.root(type)) {
+                    this.findings.report("SUBLANG-O002", "two classes of one hierarchy share a tag", 0);
+                }
+                other = other + 1;
+            }
+            index = index + 1;
+        }
+    }
+
+    public Int root(Int type) {
+        Int steps = 0;
+        while (this.module.types().isKind(type, "Class") && this.module.types().typeAt(type).target() != 0 && steps <= this.module.types().typeCount()) {
+            type = this.module.types().typeAt(type).target();
+            steps = steps + 1;
+        }
+        return type;
+    }
+
+    public Bool derivesFrom(Int type, Int ancestor) {
+        Int steps = 0;
+        while (type != 0 && steps <= this.module.types().typeCount()) {
+            if (type == ancestor) { return true; }
+            if (!this.module.types().isKind(type, "Class")) { return false; }
+            type = this.module.types().typeAt(type).target();
+            steps = steps + 1;
+        }
+        return false;
+    }
+
+    private Void group(Int group) {
+        String name = this.module.dispatch().groupName(group);
+        Int root = this.module.dispatch().groupRoot(group);
+        Int field = this.module.dispatch().groupTagField(group);
+        Int prototype = this.module.dispatch().groupPrototype(group);
+        if (!this.module.types().isKind(root, "Class") || this.module.types().typeAt(root).target() != 0) {
+            this.findings.report("SUBLANG-O002", "dispatch group " + name + " needs a hierarchy root class", 0);
+            return;
+        }
+        if (!this.module.types().hasField(field) || this.module.types().fieldAt(field).owner() != root || this.module.types().kindOf(this.module.types().fieldAt(field).typeId()) != "Int") {
+            this.findings.report("SUBLANG-O002", "dispatch group " + name + " needs an Int tag field of its root class", 0);
+        }
+        if (!this.module.hasFunction(prototype)) {
+            this.findings.report("SUBLANG-O003", "dispatch group " + name + " has no prototype function", 0);
+            return;
+        }
+        SublangFunction proto = this.module.functionAt(prototype);
+        if (proto.paramCount() == 0 || proto.paramAt(0).typeId() != this.module.types().refTypeOrZero(root)) {
+            this.findings.report("SUBLANG-O003", "the prototype of dispatch group " + name + " must take a reference to the root class as its first parameter", proto.span());
+            return;
+        }
+        this.entries(group, name, root, prototype);
+        this.coverage(group, name, root);
+    }
+
+    private Void entries(Int group, String name, Int root, Int prototype) {
+        SublangFunction proto = this.module.functionAt(prototype);
+        Int entry = 0;
+        while (entry < this.module.dispatch().entryCount(group)) {
+            Int function = this.module.dispatch().entryFunction(group, entry);
+            if (!this.module.hasFunction(function)) {
+                this.findings.report("SUBLANG-O003", "dispatch group " + name + " lists an unknown function", 0);
+            }
+            if (this.module.hasFunction(function) && !this.sameSignature(proto, this.module.functionAt(function))) {
+                this.findings.report("SUBLANG-O003", "implementation " + this.module.functionAt(function).name() + " does not match the signature of group " + name, this.module.functionAt(function).span());
+            }
+            Int other = 0;
+            while (other < entry) {
+                if (this.module.dispatch().entryTag(group, other) == this.module.dispatch().entryTag(group, entry)) {
+                    this.findings.report("SUBLANG-O003", "dispatch group " + name + " lists a tag twice", 0);
+                }
+                other = other + 1;
+            }
+            entry = entry + 1;
+        }
+    }
+
+    private Bool sameSignature(SublangFunction left, SublangFunction right) {
+        if (left.paramCount() != right.paramCount() || left.returnType() != right.returnType()) { return false; }
+        Int index = 0;
+        while (index < left.paramCount()) {
+            if (left.paramAt(index).typeId() != right.paramAt(index).typeId() || left.paramAt(index).passing() != right.paramAt(index).passing()) { return false; }
+            index = index + 1;
+        }
+        return true;
+    }
+
+    // Closed world: every registered class of the hierarchy must have an implementation.
+    private Void coverage(Int group, String name, Int root) {
+        Int index = 0;
+        while (index < this.module.dispatch().classCount()) {
+            Int type = this.module.dispatch().classTypeAt(index);
+            if (this.derivesFrom(type, root)) {
+                Bool found = false;
+                Int entry = 0;
+                while (entry < this.module.dispatch().entryCount(group)) {
+                    if (this.module.dispatch().entryTag(group, entry) == this.module.dispatch().classTagAt(index)) { found = true; }
+                    entry = entry + 1;
+                }
+                if (!found) { this.findings.report("SUBLANG-O002", "dispatch group " + name + " has no implementation for class " + this.module.types().typeNameOf(type), 0); }
+            }
+            index = index + 1;
+        }
+    }
+}

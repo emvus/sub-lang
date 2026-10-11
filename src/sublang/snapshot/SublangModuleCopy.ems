@@ -1,0 +1,175 @@
+namespace sublang::snapshot;
+
+use sublang::body::SublangFunction;
+use sublang::ir::SublangModule;
+use sublang::model::SublangType;
+use sublang::model::SublangField;
+use sublang::model::SublangSourceSpan;
+use sublang::proof::SublangProofReference;
+use sublang::semantics::SublangAliasFact;
+use sublang::semantics::SublangEffectFact;
+use sublang::semantics::SublangEffectSummary;
+use sublang::semantics::SublangFailureAction;
+use sublang::semantics::SublangSemanticProfile;
+use sublang::snapshot::SublangEntityMap;
+use sublang::snapshot::SublangFunctionCopy;
+
+// Deep rebuild of a frozen module into an unfrozen successor revision. Nothing is shared with the
+// source: every table entry and operation is a new object. A proven fact keeps neither its proof
+// reference nor its provenance across revisions: it is demoted to a declared fact whose label names
+// the stale analysis, so an old proof can never be mistaken for current evidence.
+public class SublangModuleCopy {
+    public static SublangModule copy(SublangModule source, Int revision, List<Int> removedFunctions, List<Int> removedOps, SublangEntityMap map) {
+        SublangModule next = SublangModule.derived(source, revision);
+        SublangModuleCopy.sources(source, next);
+        SublangModuleCopy.types(source, next);
+        SublangModuleCopy.semantics(source, next, revision);
+        SublangModuleCopy.aliases(source, next, revision);
+        SublangModuleCopy.dispatch(source, next);
+        Int function = 1;
+        while (function <= source.functionCount()) {
+            SublangFunctionCopy.copy(next, source.functionAt(function), SublangModuleCopy.opsOf(function, removedFunctions, removedOps), map);
+            function = function + 1;
+        }
+        return next;
+    }
+
+    // removedFunctions and removedOps are parallel: operation i is removed from function i.
+    private static List<Int> opsOf(Int function, List<Int> removedFunctions, List<Int> removedOps) {
+        List<Int> scoped = List();
+        Int index = 0;
+        while (index < removedFunctions.length()) {
+            if (removedFunctions.get(index) == function) { scoped.add(removedOps.get(index)); }
+            index = index + 1;
+        }
+        return scoped;
+    }
+
+    private static Void sources(SublangModule source, SublangModule next) {
+        Int index = 1;
+        while (index <= source.sourceCount()) {
+            next.addSource(source.sourceNameAt(index));
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= source.spanCount()) {
+            SublangSourceSpan span = source.spanAt(index);
+            next.addSpan(span.source(), span.line(), span.column(), span.origin());
+            index = index + 1;
+        }
+    }
+
+    private static Void types(SublangModule source, SublangModule next) {
+        Int index = 5;
+        while (index <= source.types().typeCount()) {
+            SublangType type = source.types().typeAt(index);
+            Int id = next.types().addType(type.kind(), type.name(), type.width(), type.isSigned(), type.target(), type.span());
+            next.types().typeAt(id).setNullable(type.nullable());
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= source.types().fieldCount()) {
+            SublangField field = source.types().fieldAt(index);
+            next.types().addField(field.owner(), field.name(), field.typeId(), field.isMutable(), field.span());
+            index = index + 1;
+        }
+        SublangModuleCopy.restoreFieldLists(source, next);
+    }
+
+    // addField registers every field with its owner; a draft repair may have removed some.
+    private static Void restoreFieldLists(SublangModule source, SublangModule next) {
+        Int index = 1;
+        while (index <= source.types().fieldCount()) {
+            Int owner = source.types().fieldAt(index).owner();
+            if (source.types().hasType(owner) && !source.types().typeAt(owner).fields().contains(index)) {
+                next.types().typeAt(owner).removeField(index);
+            }
+            index = index + 1;
+        }
+    }
+
+    private static Void semantics(SublangModule source, SublangModule next, Int revision) {
+        Int index = 1;
+        while (index <= source.semantics().profileCount()) {
+            SublangSemanticProfile profile = source.semantics().profileAt(index);
+            next.semantics().addProfile(profile.name(), profile.version(), profile.integerRules(), profile.floatRules(), profile.failureModel(), profile.unwindingModel());
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= source.semantics().failureCount()) {
+            SublangFailureAction action = source.semantics().failureActionAt(index);
+            next.semantics().addFailureAction(action.name(), action.behavior(), action.binding(), action.signature(), action.continues(), action.unwinding(), action.span());
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= source.semantics().effectSummaryCount()) {
+            SublangEffectSummary summary = source.semantics().effectSummaryAt(index);
+            Int id = next.semantics().addEffectSummary(summary.name(), summary.span());
+            SublangModuleCopy.facts(summary, next.semantics().effectSummaryAt(id));
+            index = index + 1;
+        }
+    }
+
+    private static Void facts(SublangEffectSummary from, SublangEffectSummary to) {
+        Int index = 0;
+        while (index < from.factCount()) {
+            SublangEffectFact fact = from.factAt(index);
+            List<Int> locations = List();
+            Int location = 0;
+            while (location < fact.locationCount()) {
+                locations.add(fact.locationAt(location));
+                location = location + 1;
+            }
+            String provenance = fact.provenance();
+            String label = fact.proof();
+            SublangProofReference evidence = fact.proofReference();
+            if (provenance == "proven") {
+                provenance = "declared";
+                label = "stale-proof:" + fact.proofReference().analysis() + "@r" + fact.proofReference().revision().toString();
+                evidence = SublangProofReference.missing();
+            }
+            to.importFact(fact.area(), fact.value(), provenance, fact.detail(), label, evidence, locations);
+            index = index + 1;
+        }
+    }
+
+    private static Void dispatch(SublangModule source, SublangModule next) {
+        Int index = 0;
+        while (index < source.dispatch().classCount()) {
+            next.dispatch().addClass(source.dispatch().classTypeAt(index), source.dispatch().classTagAt(index));
+            index = index + 1;
+        }
+        Int group = 1;
+        while (group <= source.dispatch().groupCount()) {
+            Int copy = next.dispatch().addGroup(source.dispatch().groupName(group), source.dispatch().groupRoot(group), source.dispatch().groupTagField(group), source.dispatch().groupPrototype(group));
+            Int entry = 0;
+            while (entry < source.dispatch().entryCount(group)) {
+                next.dispatch().addEntry(copy, source.dispatch().entryTag(group, entry), source.dispatch().entryFunction(group, entry));
+                entry = entry + 1;
+            }
+            group = group + 1;
+        }
+    }
+
+    private static Void aliases(SublangModule source, SublangModule next, Int revision) {
+        Int index = 1;
+        while (index <= source.aliases().locationCount()) {
+            next.aliases().addLocation(source.aliases().locationAt(index).kind(), source.aliases().locationAt(index).name(), source.aliases().locationAt(index).span());
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= source.aliases().aliasFactCount()) {
+            SublangAliasFact fact = source.aliases().aliasFactAt(index);
+            String origin = fact.origin();
+            String label = fact.proof();
+            SublangProofReference evidence = fact.proofReference();
+            if (origin == "proven") {
+                origin = "declared";
+                label = "stale-proof:" + evidence.analysis() + "@r" + evidence.revision().toString();
+                evidence = SublangProofReference.missing();
+            }
+            next.aliases().importAliasFact(fact.left(), fact.right(), fact.answer(), origin, label, evidence, fact.span());
+            index = index + 1;
+        }
+    }
+}

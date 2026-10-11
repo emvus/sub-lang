@@ -1,0 +1,109 @@
+namespace sublang::text;
+
+use sublang::body::SublangBlock;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::body::SublangParam;
+use sublang::ir::SublangModule;
+use sublang::text::SublangTextCodec;
+
+// Function records of the canonical text (see SublangTextPrinter for the grammar). Output order is
+// id order everywhere: func, its value lines, its param lines, then each block followed by its op
+// lines. Every op line carries every operation attribute, so no default is ever implied.
+public class SublangTextBodyPrinter {
+    public static String functions(SublangModule module) {
+        String out = "";
+        Int id = 1;
+        while (id <= module.functionCount()) {
+            out = out + (SublangTextBodyPrinter.function(module.functionAt(id)));
+            id = id + 1;
+        }
+        return out;
+    }
+
+    private static String function(SublangFunction fn) {
+        String out = "";
+        out = out + ("func id=" + fn.id().toString());
+        out = out + (" name=" + SublangTextCodec.quote(fn.name()));
+        out = out + (" returnType=" + fn.returnType().toString());
+        out = out + (" methodOf=" + fn.methodOf().toString());
+        out = out + (" span=" + fn.span().toString());
+        out = out + (" profile=" + fn.profile().toString());
+        out = out + (" effect=" + fn.effectSummary().toString());
+        out = out + (" linkage=" + SublangTextCodec.quote(fn.linkage()));
+        out = out + (" convention=" + SublangTextCodec.quote(fn.callingConvention()));
+        out = out + (" definition=" + SublangTextCodec.quote(fn.definition()) + "\n");
+        Int value = 1;
+        while (value <= fn.valueCount()) {
+            out = out + ("  value id=" + value.toString() + " type=" + fn.valueTypeAt(value).toString() + "\n");
+            value = value + 1;
+        }
+        Int index = 0;
+        while (index < fn.paramCount()) {
+            out = out + (SublangTextBodyPrinter.param(fn.paramAt(index)));
+            index = index + 1;
+        }
+        Int block = 1;
+        while (block <= fn.blockCount()) {
+            out = out + (SublangTextBodyPrinter.block(block, fn.blockAt(block)));
+            block = block + 1;
+        }
+        return out;
+    }
+
+    private static String param(SublangParam entry) {
+        String out = "";
+        out = out + ("  param id=" + entry.value().toString());
+        out = out + (" name=" + SublangTextCodec.quote(entry.name()));
+        out = out + (" type=" + entry.typeId().toString());
+        out = out + (" passing=" + SublangTextCodec.quote(entry.passing()));
+        out = out + (" noescape=" + SublangTextCodec.flag(entry.noEscape()) + "\n");
+        return out;
+    }
+
+    private static String block(Int id, SublangBlock entry) {
+        String out = "";
+        out = out + ("  block id=" + id.toString() + " params=" + SublangTextCodec.intList(entry.paramValues()) + "\n");
+        Int index = 0;
+        while (index < entry.operationCount()) {
+            out = out + (SublangTextBodyPrinter.operation(entry.operationAt(index)));
+            index = index + 1;
+        }
+        return out;
+    }
+
+    private static String operation(SublangOperation op) {
+        String out = "";
+        out = out + ("    op id=" + op.id().toString());
+        out = out + (" opcode=" + SublangTextCodec.quote(op.opcode()));
+        out = out + (" span=" + op.span().toString());
+        out = out + (" result=" + op.resultValue().toString());
+        out = out + (" type=" + op.resultType().toString());
+        out = out + (" ownership=" + SublangTextCodec.quote(op.resultOwnership()));
+        out = out + (" ref=" + op.ref().toString());
+        out = out + (" scope=" + op.scope().toString());
+        out = out + (" overflow=" + SublangTextCodec.quote(op.overflow()));
+        out = out + (" predicate=" + SublangTextCodec.quote(op.predicate()));
+        out = out + (" fpmode=" + SublangTextCodec.quote(op.fpMode()));
+        out = out + (" effect=" + op.effectSummary().toString());
+        out = out + (" int=" + op.constInt().toString());
+        out = out + (" bool=" + SublangTextCodec.flag(op.constBool()));
+        out = out + (" bits=" + op.constFloatBits().toString());
+        out = out + (" text=" + SublangTextCodec.quote(op.constText()));
+        out = out + (" operands=" + SublangTextCodec.intList(op.operands()));
+        out = out + (" modes=" + SublangTextCodec.stringList(SublangTextBodyPrinter.modes(op)));
+        out = out + (" targets=" + SublangTextCodec.intList(op.targets()));
+        out = out + (" trueargs=" + op.trueArgs().toString() + "\n");
+        return out;
+    }
+
+    private static List<String> modes(SublangOperation op) {
+        List<String> values = List();
+        Int index = 0;
+        while (index < op.modeCount()) {
+            values.add(op.modeAt(index));
+            index = index + 1;
+        }
+        return values;
+    }
+}

@@ -1,0 +1,150 @@
+namespace sublang::lowering;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::effects::SublangEffectReport;
+use sublang::effects::SublangEffectResult;
+use sublang::hyperalloc::SublangMemoryPlan;
+use sublang::ir::SublangModule;
+use sublang::low::SublangLowFunction;
+use sublang::low::SublangLowModule;
+use sublang::low::target::SublangLowLayout;
+use sublang::low::target::SublangLowTarget;
+use sublang::lowering::SublangLowerContext;
+use sublang::lowering::SublangLowerBond;
+use sublang::lowering::SublangLowerControl;
+use sublang::lowering::SublangLowerData;
+use sublang::lowering::SublangLowerMemory;
+use sublang::lowering::SublangLowerOwnership;
+use sublang::lowering::SublangLowerScalar;
+use sublang::optimind::SublangCallAnalysis;
+use sublang::optimind::SublangOptimind;
+use sublang::optimind::SublangValueFacts;
+
+// Lowers a frozen High snapshot, together with the memory plan made for that exact snapshot and
+// an explicit target, into a Low module. The plan decides every placement; lowering never
+// re-decides. Any operation family that is not lowered yet is reported, and a module with
+// reported problems must not be emitted from Low.
+public class SublangLowering {
+    private SublangLowModule lowModule;
+    private SublangLowLayout layoutValue;
+    private List<String> problems;
+    private List<String> noteList;
+
+    public SublangLowering(SublangModule module, SublangMemoryPlan plan, Bool optimize, SublangEffectResult effects, SublangLowTarget target) {
+        this.problems = List();
+        this.noteList = List();
+        this.layoutValue = SublangLowLayout(target, module);
+        this.lowModule = SublangLowModule(module.name(), target, module, module.revision(), plan.revision());
+        if (!target.supported()) { this.problems.add("SUBLANG-L010: target " + target.name() + " is not supported"); return; }
+        if (!plan.matches(module)) { this.problems.add("SUBLANG-L011: the memory plan was made for another snapshot or revision"); return; }
+        Int id = 1;
+        while (id <= module.functionCount() && this.problems.length() == 0) {
+            this.lowerFunction(module, plan, optimize, effects, id);
+            id = id + 1;
+        }
+    }
+
+    public SublangLowModule low() { return this.lowModule; }
+    public SublangLowLayout layout() { return this.layoutValue; }
+    public Bool ready() { return this.problems.length() == 0; }
+    public Int noteCount() { return this.noteList.length(); }
+    public String noteAt(Int index) { return this.noteList.get(index); }
+    public Int problemCount() { return this.problems.length(); }
+    public String problemAt(Int index) { return this.problems.get(index); }
+
+    private Void lowerFunction(SublangModule module, SublangMemoryPlan plan, Bool optimize, SublangEffectResult effects, Int id) {
+        SublangFunction function = module.functionAt(id);
+        if (function.definition() != "body") { this.problems.add("SUBLANG-L012: external function " + function.name() + " has no Low body"); return; }
+        SublangLowFunction low = SublangLowFunction(id, function.name(), this.layoutValue.lowOf(function.returnType()), id);
+        low.setAttributes(SublangEffectReport.attributes(module, effects, id));
+        Int param = 0;
+        while (param < function.paramCount()) {
+            low.addParam(this.layoutValue.lowOf(function.paramAt(param).typeId()), "");
+            param = param + 1;
+        }
+        low.addBlock();
+        SublangValueFacts facts = SublangOptimind.analyzeModule(module, function, optimize);
+        SublangLowerContext context = SublangLowerContext(module, function, plan.functionAt(id), low, this.layoutValue, facts);
+        param = 0;
+        while (param < function.paramCount()) {
+            context.bind(function.paramAt(param).value(), low.paramAt(param));
+            param = param + 1;
+        }
+        this.lowerBody(context);
+        Int note = 0;
+        while (note < context.noteCount()) {
+            this.noteList.add(context.noteAt(note));
+            note = note + 1;
+        }
+        Int index = 0;
+        while (index < context.problemCount()) {
+            this.problems.add("SUBLANG-L013: " + context.problemAt(index));
+            index = index + 1;
+        }
+        this.lowModule.add(low);
+    }
+
+    private Void lowerBody(SublangLowerContext context) {
+        SublangFunction function = context.function;
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            context.low.addBlock();
+            Int slot = 0;
+            while (slot < function.blockAt(block).paramCount()) {
+                Int value = function.blockAt(block).paramAt(slot);
+                context.bind(value, context.low.addBlockParam(context.blockOf(block), context.valueType(value), ""));
+                slot = slot + 1;
+            }
+            block = block + 1;
+        }
+        SublangLowerOwnership owners = SublangLowerOwnership(context);
+        owners.adoptParameters();
+        block = 1;
+        while (block <= function.blockCount()) {
+            context.enter(context.blockOf(block));
+            Int index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                this.lowerOperation(context, owners, function.blockAt(block).operationAt(index));
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        // Stack slots may be added while the body is lowered, so the entry block is closed last.
+        List<Int> none = SublangLowerContext.none();
+        context.enter(1);
+        context.branch(context.blockOf(1), none);
+    }
+
+    // Folded getters, proven constants and value aliases are resolved before the family dispatch.
+    private Void lowerOperation(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        context.origin(op.id());
+        Int field = SublangCallAnalysis.getterField(context.module, op);
+        if (field != 0 && context.plan.isFolded(op.operandAt(0))) {
+            String type = context.lowType(op.resultType());
+            context.bind(op.resultValue(), context.load(type, owners.foldSlot(op.operandAt(0), field), ""));
+            return;
+        }
+        if (op.hasResult() && context.facts.known(op.resultValue())) {
+            Int literal = context.facts.integer(op.resultValue());
+            if (context.module.types().kindOf(op.resultType()) == "Bool") { context.bind(op.resultValue(), context.constantBool(literal != 0)); }
+            if (context.module.types().kindOf(op.resultType()) != "Bool") { context.bind(op.resultValue(), context.constantInt(literal)); }
+            return;
+        }
+        if (op.hasResult() && context.facts.alias(op.resultValue()) != 0) {
+            context.bind(op.resultValue(), context.value(context.facts.alias(op.resultValue())));
+            return;
+        }
+        this.dispatch(context, owners, op);
+    }
+
+    private Void dispatch(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        String code = op.opcode();
+        if (code == "const.string" || code.startsWith("string.") || code.startsWith("list.") || code.startsWith("text.") || code.startsWith("byte.")) { SublangLowerData.lower(context, owners, op); return; }
+        if (code.startsWith("bond.")) { SublangLowerBond.lower(context, owners, op); return; }
+        if (code.startsWith("int.") || code.startsWith("float.") || code.startsWith("const.") || code == "compare" || code == "number.equal") { SublangLowerScalar.lower(context, op); return; }
+        if (code == "branch" || code == "cond_branch" || code == "return" || code == "fail" || code == "call.direct" || code == "invoke" || code == "throw" || code == "resume" || code == "call.virtual") { SublangLowerControl.lower(context, owners, op); return; }
+        if (code.startsWith("record.") || code.startsWith("field.") || code.startsWith("scope.") || code == "class.new" || code == "class.upcast" || code == "class.downcast") { SublangLowerMemory.lower(context, owners, op); return; }
+        context.unsupported("opcode " + code + " is not lowered");
+    }
+}

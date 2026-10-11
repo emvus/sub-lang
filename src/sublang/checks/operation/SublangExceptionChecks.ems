@@ -1,0 +1,55 @@
+namespace sublang::checks::operation;
+
+use sublang::body::SublangBlock;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+
+// Exception terminators. An exception is an Int code. invoke calls a function and has two edges:
+// the normal edge defines the call result as the first parameter of its target block, the unwind
+// edge defines the exception code as the only parameter of its target block. A result therefore
+// exists only on the edge that defines it. throw and resume have no successors.
+public class SublangExceptionChecks {
+    public static Void check(SublangReport report, SublangModule module, SublangFunction function, SublangOperation op) {
+        String error = SublangExceptionChecks.validate(module, function, op);
+        if (error != "") { report.report("SUBLANG-X001", error, op.span()); }
+    }
+
+    private static String validate(SublangModule module, SublangFunction function, SublangOperation op) {
+        if (op.hasResult() || op.scope() != 0 || op.resultOwnership() != "") { return op.opcode() + " defines no value; invoke results live on the normal edge"; }
+        if (op.opcode() == "invoke") { return SublangExceptionChecks.invoke(module, function, op); }
+        if (op.targetCount() != 0) { return op.opcode() + " has no successor blocks"; }
+        if (op.operandCount() != 1 || function.valueTypeOrZero(op.operandAt(0)) != module.types().intType() || op.modeAt(0) != "value") {
+            return op.opcode() + " requires one Int exception code";
+        }
+        return "";
+    }
+
+    private static String invoke(SublangModule module, SublangFunction function, SublangOperation op) {
+        if (!module.hasFunction(op.ref())) { return "invoke uses an unknown function"; }
+        SublangFunction callee = module.functionAt(op.ref());
+        if (callee.definition() != "body") { return "invoke of an external function needs a provider contract"; }
+        if (op.operandCount() != callee.paramCount()) { return "invoke of " + callee.name() + " passes the wrong number of arguments"; }
+        Int index = 0;
+        while (index < op.operandCount()) {
+            if (function.valueTypeOrZero(op.operandAt(index)) != callee.paramAt(index).typeId() || op.modeAt(index) != callee.paramAt(index).passing()) {
+                return "argument " + index.toString() + " of invoke of " + callee.name() + " has the wrong type or passing mode";
+            }
+            index = index + 1;
+        }
+        String kind = module.types().kindOf(callee.returnType());
+        if (kind != "Void" && kind != "Int" && kind != "Bool" && kind != "Float") { return "invoke results are limited to scalar or Void returns"; }
+        if (op.targetCount() != 2 || op.trueArgs() != 0) { return "invoke needs a normal and an unwind target and no extra arguments"; }
+        if (!function.hasBlock(op.targetAt(0)) || !function.hasBlock(op.targetAt(1))) { return "invoke target block is not defined"; }
+        SublangBlock normal = function.blockAt(op.targetAt(0));
+        SublangBlock unwind = function.blockAt(op.targetAt(1));
+        Int expected = 1;
+        if (kind == "Void") { expected = 0; }
+        if (normal.paramCount() != expected) { return "the normal target of invoke must take the call result as its only parameter"; }
+        if (expected == 1 && function.valueTypeOrZero(normal.paramAt(0)) != callee.returnType()) { return "the normal target parameter must have the callee return type"; }
+        if (unwind.paramCount() != 1 || function.valueTypeOrZero(unwind.paramAt(0)) != module.types().intType()) { return "the unwind target of invoke must take one Int exception code"; }
+        if (op.targetAt(0) == op.targetAt(1)) { return "invoke normal and unwind targets must differ"; }
+        return "";
+    }
+}

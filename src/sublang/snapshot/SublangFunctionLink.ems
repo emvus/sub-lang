@@ -1,0 +1,87 @@
+namespace sublang::snapshot;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::vocabulary::SublangVocabulary;
+
+// Copies one function of a module being linked into the merged module, rewriting every id that
+// is meaningful only inside its source module: type, field, function, failure and group
+// references, effect summaries, profile and spans. Value, block and scope ids are function-local
+// and stay unchanged. Maps are indexed by source id; 0 means "no counterpart".
+public class SublangFunctionLink {
+    public static Int copy(SublangModule target, SublangFunction source, Int mappedId, Int operationOffset, List<Int> types, List<Int> fields, List<Int> functions, List<Int> failures, List<Int> groups, List<Int> effects, List<Int> spans, List<Int> profiles) {
+        SublangFunction copy = target.functionAt(mappedId);
+        copy.setProfile(profiles.get(source.profile()));
+        copy.setEffectSummary(effects.get(source.effectSummary()));
+        copy.setLinkage(source.linkage());
+        copy.setDefinition(source.definition());
+        Int value = 1;
+        while (value <= source.valueCount()) {
+            copy.newValue(types.get(source.valueTypeAt(value)));
+            value = value + 1;
+        }
+        Int param = 0;
+        while (param < source.paramCount()) {
+            copy.addParamValue(source.paramAt(param).value(), source.paramAt(param).name(), types.get(source.paramAt(param).typeId()), source.paramAt(param).passing(), source.paramAt(param).noEscape());
+            param = param + 1;
+        }
+        copy.restoreScopeTotal(source.scopeTotal());
+        Int block = 1;
+        while (block <= source.blockCount()) {
+            copy.addBlock();
+            Int slot = 0;
+            while (slot < source.blockAt(block).paramCount()) {
+                copy.blockAt(block).addParam(source.blockAt(block).paramAt(slot));
+                slot = slot + 1;
+            }
+            Int index = 0;
+            while (index < source.blockAt(block).operationCount()) {
+                copy.blockAt(block).addOperation(SublangFunctionLink.operation(source.blockAt(block).operationAt(index), operationOffset, types, fields, functions, failures, groups, effects, spans));
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        return 0;
+    }
+
+    private static SublangOperation operation(SublangOperation op, Int operationOffset, List<Int> types, List<Int> fields, List<Int> functions, List<Int> failures, List<Int> groups, List<Int> effects, List<Int> spans) {
+        SublangOperation next = SublangOperation(op.id() + operationOffset, op.opcode(), spans.get(op.span()));
+        next.setOperands(op.operands(), SublangFunctionLink.modes(op));
+        if (op.hasResult()) { next.setResult(op.resultValue(), types.get(op.resultType())); }
+        next.setResultOwnership(op.resultOwnership());
+        next.setRef(SublangFunctionLink.reference(op, types, fields, functions, failures, groups));
+        next.setScope(op.scope());
+        next.setOverflow(op.overflow());
+        next.setPredicate(op.predicate());
+        next.setFpMode(op.fpMode());
+        next.setTargets(op.targets(), op.trueArgs());
+        next.setConstInt(op.constInt());
+        next.setConstBool(op.constBool());
+        next.setConstFloatBits(op.constFloatBits());
+        next.setEffectSummary(effects.get(op.effectSummary()));
+        next.setConstText(op.constText());
+        return next;
+    }
+
+    private static List<String> modes(SublangOperation op) {
+        List<String> modes = List();
+        Int index = 0;
+        while (index < op.modeCount()) {
+            modes.add(op.modeAt(index));
+            index = index + 1;
+        }
+        return modes;
+    }
+
+    private static Int reference(SublangOperation op, List<Int> types, List<Int> fields, List<Int> functions, List<Int> failures, List<Int> groups) {
+        String meaning = SublangVocabulary.refMeaning(op.opcode());
+        if (meaning == "type") { return types.get(op.ref()); }
+        if (meaning == "field") { return fields.get(op.ref()); }
+        if (meaning == "function") { return functions.get(op.ref()); }
+        if (meaning == "failure") { return failures.get(op.ref()); }
+        if (meaning == "group") { return groups.get(op.ref()); }
+        if (op.opcode() == "class.upcast" || op.opcode() == "class.downcast") { return types.get(op.ref()); }
+        return op.ref();
+    }
+}

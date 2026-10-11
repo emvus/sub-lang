@@ -13,6 +13,9 @@ if (($# != 1)); then
 fi
 if [[ ! -d "$1" ]]; then echo "Not a directory: $1" >&2; exit 2; fi
 DIST="$(realpath -- "$1")"
+if [[ -f "$DIST/libexec/sublang/llvm/manifest.txt" ]]; then
+  exec bash "$ROOT/scripts/sublang-bundle-smoke.sh" "$DIST"
+fi
 if [[ ! -f "$DIST/sublang" || -L "$DIST/sublang" || ! -x "$DIST/sublang" ]]; then
   echo 'Missing packaged sublang binary' >&2
   exit 2

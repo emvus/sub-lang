@@ -1,0 +1,81 @@
+namespace sublang::low;
+
+use sublang::low::SublangLowBlock;
+use sublang::low::SublangLowFunction;
+use sublang::low::SublangLowModule;
+use sublang::low::SublangLowOp;
+
+// Deterministic Low IR text: ids in table order, no addresses or host data. Equal modules always
+// render to equal text, so the dump can be diffed between runs and compared to a snapshot.
+public class SublangLowDump {
+    public static String render(SublangLowModule module) {
+        String text = "low-module " + module.name() + " " + module.target().describe() + "\n";
+        text = text + "from revision=" + module.sourceRevision().toString() + " plan-revision=" + module.planRevision().toString() + "\n";
+        Int id = 1;
+        while (id <= module.functionCount()) {
+            text = text + SublangLowDump.function(module.functionAt(id));
+            id = id + 1;
+        }
+        return text;
+    }
+
+    private static String function(SublangLowFunction function) {
+        String text = "func @" + function.name() + "(";
+        Int param = 0;
+        while (param < function.paramCount()) {
+            if (param > 0) { text = text + ", "; }
+            text = text + "v" + function.paramAt(param).toString() + ":" + function.valueType(function.paramAt(param));
+            param = param + 1;
+        }
+        text = text + ") -> " + function.returnType() + " origin=" + function.origin().toString();
+        if (function.attributes() != "") { text = text + " attrs=" + function.attributes(); }
+        text = text + "\n";
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            text = text + SublangLowDump.block(function, function.blockAt(block));
+            block = block + 1;
+        }
+        return text;
+    }
+
+    private static String block(SublangLowFunction function, SublangLowBlock block) {
+        String text = "  b" + block.id().toString() + "(";
+        Int slot = 0;
+        while (slot < block.paramCount()) {
+            if (slot > 0) { text = text + ", "; }
+            text = text + "v" + block.paramAt(slot).toString() + ":" + function.valueType(block.paramAt(slot));
+            slot = slot + 1;
+        }
+        text = text + ")\n";
+        Int index = 0;
+        while (index < block.opCount()) {
+            text = text + "    " + SublangLowDump.operation(block.opAt(index)) + "\n";
+            index = index + 1;
+        }
+        return text;
+    }
+
+    private static String operation(SublangLowOp op) {
+        String text = "";
+        if (op.result() != 0) { text = "v" + op.result().toString() + ":" + op.resultType() + " = "; }
+        text = text + op.opcode();
+        if (op.typeText() != "") { text = text + " <" + op.typeText() + ">"; }
+        if (op.text() != "") { text = text + " @" + op.text(); }
+        Int operand = 0;
+        while (operand < op.operandCount()) {
+            text = text + " v" + op.operandAt(operand).toString();
+            operand = operand + 1;
+        }
+        if (op.opcode().startsWith("const.") || op.opcode() == "stack.alloc" || op.opcode() == "field.addr" || op.opcode().startsWith("agg.") || op.opcode() == "call") {
+            text = text + " #" + op.immediate().toString() + "," + op.index().toString();
+        }
+        Int target = 0;
+        while (target < op.targetCount()) {
+            text = text + " ->b" + op.targetAt(target).toString();
+            target = target + 1;
+        }
+        if (op.opcode() == "cond_br") { text = text + " true-args=" + op.trueArguments().toString(); }
+        if (op.origin() != 0) { text = text + " ; op" + op.origin().toString(); }
+        return text;
+    }
+}

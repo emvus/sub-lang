@@ -1,0 +1,463 @@
+namespace sublang::lowering;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::hyperalloc::SublangFunctionMemoryPlan;
+use sublang::ir::SublangModule;
+use sublang::low::SublangLowFunction;
+use sublang::low::SublangLowOp;
+use sublang::low::target::SublangLowLayout;
+use sublang::optimind::SublangValueFacts;
+
+// State shared by the lowering classes while one High function becomes one Low function: the
+// value and block maps, the current Low block and small constructors for Low operations. Low
+// block 1 is a dedicated entry block (stack slots, parameter adoption); High block b becomes
+// Low block b + 1.
+public class SublangLowerContext {
+    public SublangModule module;
+    public SublangFunction function;
+    public SublangFunctionMemoryPlan plan;
+    public SublangLowFunction low;
+    public SublangLowLayout layout;
+    public SublangValueFacts facts;
+    private List<Int> valueMap;
+    private Int currentBlock;
+    private Int originId;
+    private List<String> problems;
+    private List<String> noteList;
+
+    public SublangLowerContext(SublangModule source, SublangFunction body, SublangFunctionMemoryPlan placement, SublangLowFunction target, SublangLowLayout sizes, SublangValueFacts known) {
+        this.module = source;
+        this.function = body;
+        this.plan = placement;
+        this.low = target;
+        this.layout = sizes;
+        this.facts = known;
+        this.valueMap = List();
+        this.currentBlock = 1;
+        this.originId = 0;
+        this.problems = List();
+        this.noteList = List();
+        Int value = 0;
+        while (value <= body.valueCount()) {
+            this.valueMap.add(0);
+            value = value + 1;
+        }
+    }
+
+    public Int current() { return this.currentBlock; }
+    public Void enter(Int block) { this.currentBlock = block; }
+    public Void origin(Int operationId) { this.originId = operationId; }
+    public Void unsupported(String message) { this.problems.add(message + ""); }
+    // Explanations of lowering decisions (e.g. a devirtualized call), reported in the plan.
+    public Void note(String message) { this.noteList.add(message + ""); }
+    public Int noteCount() { return this.noteList.length(); }
+    public String noteAt(Int index) { return this.noteList.get(index); }
+    public Int problemCount() { return this.problems.length(); }
+    public String problemAt(Int index) { return this.problems.get(index); }
+    public Int blockOf(Int highBlock) { return highBlock + 1; }
+
+    // Position of a field inside its owner's field list, which is its aggregate index.
+    public Int fieldIndex(Int field) {
+        Int owner = this.module.types().fieldAt(field).owner();
+        Int index = 0;
+        while (index < this.module.types().typeAt(owner).fieldCount()) {
+            if (this.module.types().typeAt(owner).fieldAt(index) == field) { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    public Bool bound(Int highValue) { return this.valueMap.get(highValue) != 0; }
+    public Void bind(Int highValue, Int lowValue) { this.valueMap.set(highValue, lowValue); }
+
+    // Low value of a High value; an unbound value is a lowering bug and is reported, not guessed.
+    public Int value(Int highValue) {
+        if (highValue < 1 || highValue >= this.valueMap.length() || this.valueMap.get(highValue) == 0) {
+            this.unsupported("unbound High value " + highValue.toString() + " in " + this.function.name());
+            return this.constantNull();
+        }
+        return this.valueMap.get(highValue);
+    }
+
+    public String lowType(Int highTypeId) { return this.layout.lowOf(highTypeId); }
+    public String valueType(Int highValue) { return this.lowType(this.function.valueTypeAt(highValue)); }
+
+    // --- operation constructors -------------------------------------------------------------
+
+    public Int constantInt(Int value) {
+        Int result = this.low.newValue("i64", "");
+        SublangLowOp op = SublangLowOp("const.i64", result, "i64");
+        op.immediateIs(value);
+        this.add(op);
+        return result;
+    }
+
+    public Int constantBool(Bool value) {
+        Int result = this.low.newValue("i1", "");
+        SublangLowOp op = SublangLowOp("const.i1", result, "i1");
+        if (value) { op.immediateIs(1); }
+        this.add(op);
+        return result;
+    }
+
+    public Int constantFloat(Int bits) {
+        Int result = this.low.newValue("f64", "");
+        SublangLowOp op = SublangLowOp("const.f64", result, "f64");
+        op.immediateIs(bits);
+        this.add(op);
+        return result;
+    }
+
+    public Int constantInt32(Int value) {
+        Int result = this.low.newValue("i32", "");
+        SublangLowOp op = SublangLowOp("const.i32", result, "i32");
+        op.immediateIs(value);
+        this.add(op);
+        return result;
+    }
+
+    public Int constantNull() {
+        Int result = this.low.newValue("ptr", "");
+        this.add(SublangLowOp("const.null", result, "ptr"));
+        return result;
+    }
+
+    public Int constantPointer(Int bits) {
+        Int result = this.low.newValue("ptr", "");
+        SublangLowOp op = SublangLowOp("const.ptr", result, "ptr");
+        op.immediateIs(bits);
+        this.add(op);
+        return result;
+    }
+
+    public Int constantZero(String type) {
+        Int result = this.low.newValue(type, "");
+        SublangLowOp op = SublangLowOp("const.zero", result, type);
+        op.typeIs(type);
+        this.add(op);
+        return result;
+    }
+
+    public Int constantSize(String type) {
+        Int result = this.low.newValue("i64", "");
+        SublangLowOp op = SublangLowOp("const.size", result, "i64");
+        op.typeIs(type);
+        op.immediateIs(this.layout.sizeOf(type));
+        this.add(op);
+        return result;
+    }
+
+    public Int symbol(String name) {
+        Int result = this.low.newValue("ptr", "");
+        SublangLowOp op = SublangLowOp("sym.addr", result, "ptr");
+        op.textIs(name);
+        this.add(op);
+        return result;
+    }
+
+    public Int string(String global, Int length) {
+        Int result = this.low.newValue("str", "");
+        SublangLowOp op = SublangLowOp("const.str", result, "str");
+        op.textIs(global);
+        op.immediateIs(length);
+        this.add(op);
+        return result;
+    }
+
+    // Stack slot in the entry block regardless of where lowering currently is.
+    public Int slot(String type, String hint, Int alignment) {
+        Int result = this.low.newValue("ptr", hint);
+        SublangLowOp op = SublangLowOp("stack.alloc", result, "ptr");
+        op.typeIs(type);
+        op.immediateIs(alignment);
+        this.low.emit(1, op);
+        return result;
+    }
+
+    public Int load(String type, Int pointer, String hint) {
+        Int result = this.low.newValue(type, hint);
+        SublangLowOp op = SublangLowOp("load", result, type);
+        op.typeIs(type);
+        op.operand(pointer);
+        this.add(op);
+        return result;
+    }
+
+    public Void store(String type, Int pointer, Int value) {
+        SublangLowOp op = SublangLowOp("store", 0, "void");
+        op.typeIs(type);
+        op.operand(pointer);
+        op.operand(value);
+        this.add(op);
+    }
+
+    public Int fieldAddress(String aggregate, Int index, Int pointer, String hint) {
+        Int result = this.low.newValue("ptr", hint);
+        SublangLowOp op = SublangLowOp("field.addr", result, "ptr");
+        op.typeIs(aggregate);
+        op.indexIs(index);
+        op.operand(pointer);
+        this.add(op);
+        return result;
+    }
+
+    public Int elementAddress(String elementType, Int pointer, Int index) {
+        Int result = this.low.newValue("ptr", "");
+        SublangLowOp op = SublangLowOp("elem.addr", result, "ptr");
+        op.typeIs(elementType);
+        op.operand(pointer);
+        op.operand(index);
+        this.add(op);
+        return result;
+    }
+
+    public Int byteAddress(Int pointer, Int index) {
+        Int result = this.low.newValue("ptr", "");
+        SublangLowOp op = SublangLowOp("byte.addr", result, "ptr");
+        op.operand(pointer);
+        op.operand(index);
+        this.add(op);
+        return result;
+    }
+
+    public Int binary(String opcode, String type, Int left, Int right) {
+        Int result = this.low.newValue(type, "");
+        SublangLowOp op = SublangLowOp(opcode, result, type);
+        op.operand(left);
+        op.operand(right);
+        this.add(op);
+        return result;
+    }
+
+    public Int negate(Int operand) {
+        Int result = this.low.newValue("i64", "");
+        SublangLowOp op = SublangLowOp("i64.neg", result, "i64");
+        op.operand(operand);
+        this.add(op);
+        return result;
+    }
+
+    public Int compare(String type, String predicate, Int left, Int right) {
+        Int result = this.low.newValue("i1", "");
+        SublangLowOp op = SublangLowOp("cmp", result, "i1");
+        op.typeIs(type);
+        op.textIs(predicate);
+        op.operand(left);
+        op.operand(right);
+        this.add(op);
+        return result;
+    }
+
+    public Int extract(String aggregate, Int index, Int value, String fieldType) {
+        Int result = this.low.newValue(fieldType, "");
+        SublangLowOp op = SublangLowOp("agg.extract", result, fieldType);
+        op.typeIs(aggregate);
+        op.indexIs(index);
+        op.operand(value);
+        this.add(op);
+        return result;
+    }
+
+    public Int insert(String aggregate, Int index, Int whole, Int part) {
+        Int result = this.low.newValue(aggregate, "");
+        SublangLowOp op = SublangLowOp("agg.insert", result, aggregate);
+        op.typeIs(aggregate);
+        op.indexIs(index);
+        op.operand(whole);
+        op.operand(part);
+        this.add(op);
+        return result;
+    }
+
+    public Int stringPart(String opcode, String type, Int value) {
+        Int result = this.low.newValue(type, "");
+        SublangLowOp op = SublangLowOp(opcode, result, type);
+        op.operand(value);
+        this.add(op);
+        return result;
+    }
+
+    // Float <-> Int conversions: "sitofp" rounds to nearest-even; "fptosi" is only emitted after
+    // the range/integrality guards, because it is poison for out-of-range input.
+    public Int convert(String opcode, String to, Int value) {
+        Int result = this.low.newValue(to, "");
+        SublangLowOp op = SublangLowOp(opcode, result, to);
+        op.operand(value);
+        this.add(op);
+        return result;
+    }
+
+    public Int narrow(String to, Int value) {
+        Int result = this.low.newValue(to, "");
+        SublangLowOp op = SublangLowOp("trunc", result, to);
+        op.typeIs(to);
+        op.operand(value);
+        this.add(op);
+        return result;
+    }
+
+    // Zero-extension; also widens an i8 byte or an i32 length to the language Int.
+    public Int widen(String from, Int value) {
+        Int result = this.low.newValue("i64", "");
+        SublangLowOp op = SublangLowOp("zext", result, "i64");
+        op.typeIs(from);
+        op.operand(value);
+        this.add(op);
+        return result;
+    }
+
+    // Runtime provider call. Returns the result value, or 0 for a void provider function.
+    public Int runtime(String symbol, List<Int> arguments, String resultType) {
+        return this.runtimeNamed(symbol, arguments, resultType, "");
+    }
+
+    // Same call with a readable name for the result (kept in the emitted text).
+    public Int runtimeNamed(String symbol, List<Int> arguments, String resultType, String hint) {
+        Int result = 0;
+        if (resultType != "void") { result = this.low.newValue(resultType, hint); }
+        SublangLowOp op = SublangLowOp("rt.call", result, resultType);
+        op.textIs(symbol);
+        Int index = 0;
+        while (index < arguments.length()) {
+            op.operand(arguments.get(index));
+            index = index + 1;
+        }
+        this.add(op);
+        return result;
+    }
+
+    public Void runtimeVoid(String symbol, List<Int> arguments) {
+        this.runtime(symbol, arguments, "void");
+    }
+
+    public Int call(Int functionId, List<Int> arguments, String resultType) {
+        Int result = 0;
+        if (resultType != "void") { result = this.low.newValue(resultType, ""); }
+        SublangLowOp op = SublangLowOp("call", result, resultType);
+        op.indexIs(functionId);
+        Int index = 0;
+        while (index < arguments.length()) {
+            op.operand(arguments.get(index));
+            index = index + 1;
+        }
+        this.add(op);
+        return result;
+    }
+
+    // invoke: the result (if any) is defined on the normal successor only.
+    public Int invoke(Int functionId, List<Int> arguments, String resultType, Int normal, Int unwind) {
+        Int result = 0;
+        if (resultType != "void") { result = this.low.newValue(resultType, ""); }
+        SublangLowOp op = SublangLowOp("invoke", result, resultType);
+        op.indexIs(functionId);
+        Int index = 0;
+        while (index < arguments.length()) {
+            op.operand(arguments.get(index));
+            index = index + 1;
+        }
+        op.target(normal);
+        op.target(unwind);
+        this.add(op);
+        return result;
+    }
+
+    // First operation of an unwind block; yields the Int exception code.
+    public Int caught() {
+        Int result = this.low.newValue("i64", "");
+        this.add(SublangLowOp("eh.catch", result, "i64"));
+        return result;
+    }
+
+    public Void raise(Int code) {
+        SublangLowOp op = SublangLowOp("throw", 0, "void");
+        op.operand(code);
+        this.add(op);
+    }
+
+    public Void branch(Int block, List<Int> arguments) {
+        SublangLowOp op = SublangLowOp("br", 0, "void");
+        Int index = 0;
+        while (index < arguments.length()) {
+            op.operand(arguments.get(index));
+            index = index + 1;
+        }
+        op.target(block);
+        this.add(op);
+    }
+
+    public Void conditional(Int condition, Int whenTrue, List<Int> trueArguments, Int whenFalse, List<Int> falseArguments) {
+        SublangLowOp op = SublangLowOp("cond_br", 0, "void");
+        op.operand(condition);
+        Int index = 0;
+        while (index < trueArguments.length()) {
+            op.operand(trueArguments.get(index));
+            index = index + 1;
+        }
+        index = 0;
+        while (index < falseArguments.length()) {
+            op.operand(falseArguments.get(index));
+            index = index + 1;
+        }
+        op.target(whenTrue);
+        op.target(whenFalse);
+        op.trueArgumentsAre(trueArguments.length());
+        this.add(op);
+    }
+
+    public Void ret(Int value) {
+        SublangLowOp op = SublangLowOp("ret", 0, "void");
+        if (value != 0) { op.operand(value); }
+        this.add(op);
+    }
+
+    public Void abort() {
+        this.add(SublangLowOp("abort", 0, "void"));
+    }
+
+    // Checked-failure idiom: when `failure` holds, abort; otherwise continue in a new block.
+    public Void guard(Int failure) {
+        Int bad = this.low.addBlock();
+        Int good = this.low.addBlock();
+        List<Int> none = List();
+        this.conditional(failure, bad, none, good, none);
+        this.enter(bad);
+        this.abort();
+        this.enter(good);
+    }
+
+    public Int newBlock() { return this.low.addBlock(); }
+
+    public Int blockParam(Int block, String type) { return this.low.addBlockParam(block, type, ""); }
+
+    private Void add(SublangLowOp op) {
+        op.originIs(this.originId);
+        this.low.emit(this.currentBlock, op);
+    }
+
+    public static List<Int> one(Int value) {
+        List<Int> values = List();
+        values.add(value);
+        return values;
+    }
+
+    public static List<Int> two(Int first, Int second) {
+        List<Int> values = List();
+        values.add(first);
+        values.add(second);
+        return values;
+    }
+
+    public static List<Int> three(Int first, Int second, Int third) {
+        List<Int> values = List();
+        values.add(first);
+        values.add(second);
+        values.add(third);
+        return values;
+    }
+
+    public static List<Int> none() {
+        List<Int> values = List();
+        return values;
+    }
+}

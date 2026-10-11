@@ -1,0 +1,460 @@
+namespace sublang::effects;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::effects::SublangEffectResult;
+use sublang::effects::SublangFunctionEffects;
+use sublang::effects::SublangRegionFlow;
+
+// Intraprocedural transfer function. Callee summaries come from `current`, so solving a recursive
+// component repeats this with growing inputs. Every opcode is classified; an opcode that is not
+// listed is treated as reading, writing, retaining and allocating everything it is given.
+public class SublangEffectTransfer {
+    private SublangModule module;
+    private SublangFunction function;
+    private SublangEffectResult current;
+    private Int paramTotal;
+    private Int tokenTotal;
+    private Int unknownToken;
+    private List<Int> siteTokens;
+    private SublangRegionFlow flow;
+    private SublangFunctionEffects out;
+    private List<Bool> readSeeds;
+    private List<Bool> writeSeeds;
+    private List<Int> returned;
+
+    public SublangEffectTransfer(SublangModule target, SublangFunction body, SublangEffectResult results) {
+        this.module = target;
+        this.function = body;
+        this.current = results;
+        this.paramTotal = body.paramCount();
+        this.siteTokens = List();
+        this.out = SublangFunctionEffects(body.paramCount());
+        this.returned = List();
+        this.readSeeds = List();
+        this.writeSeeds = List();
+    }
+
+    public SublangFunctionEffects run() {
+        this.discoverSites();
+        this.flow = SublangRegionFlow(this.function.valueCount(), this.tokenTotal);
+        Int param = 0;
+        while (param < this.paramTotal) {
+            if (this.carriesRegion(this.function.paramAt(param).typeId())) {
+                this.flow.addOrigin(this.function.paramAt(param).value(), param);
+            }
+            param = param + 1;
+        }
+        Int token = 0;
+        while (token < this.tokenTotal) {
+            this.readSeeds.add(false);
+            this.writeSeeds.add(false);
+            token = token + 1;
+        }
+        Int pass = 0;
+        Bool changed = true;
+        while (changed && pass < 64) {
+            changed = this.sweep();
+            pass = pass + 1;
+        }
+        if (changed) {
+            this.current.note("SUBLANG-E009: region flow of function " + this.function.name() + " did not converge in 64 sweeps; widened to unknown");
+            this.out.widenToUnknown();
+            return this.out;
+        }
+        this.finish();
+        return this.out;
+    }
+
+    // Only references point into memory regions. Scalars, records of scalars and static strings
+    // are values; a bare Int parameter can neither be written through nor escape.
+    private Bool carriesRegion(Int typeId) {
+        String kind = this.module.types().kindOf(typeId);
+        return kind == "Ref" || kind == "Bond" || kind == "List" || kind == "Class";
+    }
+
+    // Site tokens are numbered in operation order; sweep() walks the same order.
+    private Void discoverSites() {
+        Int sites = 0;
+        Int block = 1;
+        while (block <= this.function.blockCount()) {
+            Int index = 0;
+            while (index < this.function.blockAt(block).operationCount()) {
+                if (this.allocatesFresh(this.function.blockAt(block).operationAt(index))) {
+                    this.siteTokens.add(this.paramTotal + sites);
+                    sites = sites + 1;
+                }
+                if (!this.allocatesFresh(this.function.blockAt(block).operationAt(index))) { this.siteTokens.add(-1); }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        this.unknownToken = this.paramTotal + sites;
+        this.tokenTotal = this.paramTotal + sites + 1;
+    }
+
+    private Bool allocatesFresh(SublangOperation op) {
+        String code = op.opcode();
+        if (code == "class.new" || code == "list.new" || code == "bond.new") { return true; }
+        if (code == "call.direct" && this.module.hasFunction(op.ref()) && op.hasResult()) {
+            return this.current.functionAt(op.ref()).returnsFresh();
+        }
+        if (code == "call.virtual" && op.hasResult()) {
+            Int entry = 0;
+            while (entry < this.module.dispatch().entryCount(op.ref())) {
+                Int function = this.module.dispatch().entryFunction(op.ref(), entry);
+                if (this.module.hasFunction(function) && this.current.functionAt(function).returnsFresh()) { return true; }
+                entry = entry + 1;
+            }
+        }
+        return false;
+    }
+
+    private Bool sweep() {
+        Bool changed = false;
+        Int sequence = 0;
+        Int block = 1;
+        while (block <= this.function.blockCount()) {
+            Int index = 0;
+            while (index < this.function.blockAt(block).operationCount()) {
+                if (this.step(this.function.blockAt(block).operationAt(index), this.siteTokens.get(sequence))) { changed = true; }
+                sequence = sequence + 1;
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        return changed;
+    }
+
+    private Bool step(SublangOperation op, Int site) {
+        String code = op.opcode();
+        if (code == "branch" || code == "cond_branch") { return this.passBlockArguments(op); }
+        if (code == "return") { return this.noteReturn(op); }
+        if (code == "fail") { this.out.raise(SublangFunctionEffects.failure(), 1); return false; }
+        if (code == "call.direct" || code == "invoke") { return this.callFunction(op, op.ref(), site); }
+        if (code == "call.virtual") { return this.callVirtual(op, site); }
+        if (code == "class.upcast") { return this.uniteFirst(op); }
+        if (code == "class.downcast") {
+            this.out.raise(SublangFunctionEffects.failure(), 1);
+            return this.uniteFirst(op);
+        }
+        if (code == "throw" || code == "resume") { this.out.raise(SublangFunctionEffects.exceptions(), 1); return false; }
+        if (code == "scope.begin" || code == "scope.end") {
+            // Region open/close calls into the runtime, so it counts as allocation traffic.
+            this.out.raise(SublangFunctionEffects.allocation(), 1);
+            return false;
+        }
+        if (code.startsWith("const.") || code == "compare") { return false; }
+        if (code.startsWith("int.")) { this.integer(op); return false; }
+        if (code == "float.to_int") { this.out.raise(SublangFunctionEffects.failure(), 1); return false; }
+        if (code.startsWith("float.") || code.startsWith("number.")) { return false; }
+        return this.memoryOperation(op, site);
+    }
+
+    private Void integer(SublangOperation op) {
+        String code = op.opcode();
+        if (code == "int.div" || code == "int.rem" || op.overflow() == "trap") {
+            this.out.raise(SublangFunctionEffects.failure(), 1);
+        }
+    }
+
+    private Bool memoryOperation(SublangOperation op, Int site) {
+        String code = op.opcode();
+        Bool changed = false;
+        if (code == "string.length" || code == "string.equal") { this.out.raise(SublangFunctionEffects.memoryRead(), 1); return false; }
+        if (code == "string.byte") {
+            this.out.raise(SublangFunctionEffects.memoryRead(), 1);
+            this.out.raise(SublangFunctionEffects.failure(), 1);
+            return false;
+        }
+        if (code == "record.make" || code == "record.with") { return this.uniteOperands(op); }
+        if (code == "record.get") { return this.uniteFirst(op); }
+        if (code == "class.new" || code == "list.new" || code == "bond.new") {
+            this.out.raise(SublangFunctionEffects.allocation(), 1);
+            this.out.raise(SublangFunctionEffects.failure(), 1);
+            if (site >= 0) { return this.flow.addOrigin(op.resultValue(), site); }
+            return false;
+        }
+        if (code == "field.read" || code == "field.has" || code == "list.length") {
+            this.seedRead(op.operandAt(0));
+            if (code == "field.read") { return this.uniteFirst(op); }
+            return false;
+        }
+        if (code == "field.borrow" || code == "list.get" || code == "list.borrow" || code == "bond.get" || code == "bond.borrow") {
+            this.seedRead(op.operandAt(0));
+            this.out.raise(SublangFunctionEffects.failure(), 1);
+            return this.uniteFirst(op);
+        }
+        if (code == "field.take") {
+            this.seedRead(op.operandAt(0));
+            this.seedWrite(op.operandAt(0));
+            this.out.raise(SublangFunctionEffects.failure(), 1);
+            return this.uniteFirst(op);
+        }
+        if (code == "field.write" || code == "field.init" || code == "list.push" || code == "bond.write" || code == "bond.link" || code == "bond.retain") {
+            return this.store(op);
+        }
+        if (code == "field.clear" || code == "list.clear" || code == "bond.clear") {
+            this.seedWrite(op.operandAt(0));
+            if (code != "field.clear") { this.out.raise(SublangFunctionEffects.failure(), 1); }
+            return false;
+        }
+        return this.unclassified(op, site);
+    }
+
+    // Value stored into the memory of the receiver: the receiver's regions now hold the value's.
+    private Bool store(SublangOperation op) {
+        this.seedWrite(op.operandAt(0));
+        if (op.opcode() == "list.push") {
+            this.out.raise(SublangFunctionEffects.allocation(), 1);
+            this.out.raise(SublangFunctionEffects.failure(), 1);
+        }
+        if (op.opcode().startsWith("bond.")) { this.out.raise(SublangFunctionEffects.failure(), 1); }
+        if (op.operandCount() < 2) { return false; }
+        return this.flow.link(op.operandAt(0), op.operandAt(1));
+    }
+
+    private Bool unclassified(SublangOperation op, Int site) {
+        this.out.raise(SublangFunctionEffects.allocation(), 1);
+        this.out.raise(SublangFunctionEffects.failure(), 1);
+        Bool changed = false;
+        Int index = 0;
+        while (index < op.operandCount()) {
+            this.seedRead(op.operandAt(index));
+            this.seedWrite(op.operandAt(index));
+            if (this.flow.linkFrom(this.unknownToken, op.operandAt(index))) { changed = true; }
+            if (op.hasResult() && this.carriesRegion(op.resultType()) && this.flow.unite(op.resultValue(), op.operandAt(index))) { changed = true; }
+            index = index + 1;
+        }
+        if (op.hasResult() && this.carriesRegion(op.resultType()) && this.flow.addOrigin(op.resultValue(), this.unknownToken)) { changed = true; }
+        return changed;
+    }
+
+    private Bool uniteFirst(SublangOperation op) {
+        if (!op.hasResult() || op.operandCount() < 1 || !this.carriesRegion(op.resultType())) { return false; }
+        return this.flow.unite(op.resultValue(), op.operandAt(0));
+    }
+
+    private Bool uniteOperands(SublangOperation op) {
+        if (!op.hasResult() || !this.carriesRegion(op.resultType())) { return false; }
+        Bool changed = false;
+        Int index = 0;
+        while (index < op.operandCount()) {
+            if (this.flow.unite(op.resultValue(), op.operandAt(index))) { changed = true; }
+            index = index + 1;
+        }
+        return changed;
+    }
+
+    private Void seedRead(Int value) {
+        Int token = 0;
+        while (token < this.tokenTotal) {
+            if (this.flow.has(value, token)) { this.readSeeds.set(token, true); }
+            token = token + 1;
+        }
+    }
+
+    private Void seedWrite(Int value) {
+        Int token = 0;
+        while (token < this.tokenTotal) {
+            if (this.flow.has(value, token)) { this.writeSeeds.set(token, true); }
+            token = token + 1;
+        }
+    }
+
+    // A virtual call may reach any implementation of its group: their summaries are joined.
+    private Bool callVirtual(SublangOperation op, Int site) {
+        Bool changed = false;
+        Int entry = 0;
+        while (entry < this.module.dispatch().entryCount(op.ref())) {
+            if (this.callFunction(op, this.module.dispatch().entryFunction(op.ref(), entry), site)) { changed = true; }
+            entry = entry + 1;
+        }
+        if (this.module.dispatch().entryCount(op.ref()) == 0) { return this.unclassified(op, site); }
+        return changed;
+    }
+
+    private Bool callFunction(SublangOperation op, Int target, Int site) {
+        if (!this.module.hasFunction(target)) { return this.unclassified(op, site); }
+        SublangFunctionEffects callee = this.current.functionAt(target);
+        Int area = 0;
+        while (area < 9) {
+            this.out.raise(area, callee.area(area));
+            area = area + 1;
+        }
+        Bool changed = false;
+        Int index = 0;
+        while (index < op.operandCount()) {
+            if (this.callArgument(op, callee, index)) { changed = true; }
+            index = index + 1;
+        }
+        if (callee.readsOther()) { this.readSeeds.set(this.unknownToken, true); }
+        if (callee.writesOther()) { this.writeSeeds.set(this.unknownToken, true); }
+        if (op.hasResult()) {
+            if (this.carriesRegion(op.resultType()) && callee.returnsFresh() && site >= 0 && this.flow.addOrigin(op.resultValue(), site)) { changed = true; }
+            if (this.carriesRegion(op.resultType()) && callee.returnsUnknown() && this.flow.addOrigin(op.resultValue(), this.unknownToken)) { changed = true; }
+        }
+        return changed;
+    }
+
+    private Bool callArgument(SublangOperation op, SublangFunctionEffects callee, Int index) {
+        Bool changed = false;
+        Int value = op.operandAt(index);
+        if (index >= callee.paramCount()) {
+            this.seedRead(value);
+            this.seedWrite(value);
+            return this.flow.linkFrom(this.unknownToken, value);
+        }
+        if (callee.readsParam(index)) { this.seedRead(value); }
+        if (callee.writesParam(index)) { this.seedWrite(value); }
+        if (callee.escapesParam(index) && this.flow.linkFrom(this.unknownToken, value)) { changed = true; }
+        if (callee.returnsParam(index) && op.hasResult() && this.carriesRegion(op.resultType()) && this.flow.unite(op.resultValue(), value)) { changed = true; }
+        return changed;
+    }
+
+    private Bool noteReturn(SublangOperation op) {
+        if (op.operandCount() > 0 && !this.returned.contains(op.operandAt(0))) { this.returned.add(op.operandAt(0)); }
+        return false;
+    }
+
+    // Arguments flow into the parameters of the target blocks.
+    private Bool passBlockArguments(SublangOperation op) {
+        Bool changed = false;
+        if (op.opcode() == "branch" && op.targetCount() == 1) {
+            changed = this.passTo(op, op.targetAt(0), 0, op.operandCount());
+        }
+        if (op.opcode() == "cond_branch" && op.targetCount() == 2) {
+            changed = this.passTo(op, op.targetAt(0), 1, 1 + op.trueArgs());
+            if (this.passTo(op, op.targetAt(1), 1 + op.trueArgs(), op.operandCount())) { changed = true; }
+        }
+        return changed;
+    }
+
+    private Bool passTo(SublangOperation op, Int block, Int from, Int to) {
+        if (!this.function.hasBlock(block)) { return false; }
+        Bool changed = false;
+        Int slot = 0;
+        while (from + slot < to && slot < this.function.blockAt(block).paramCount()) {
+            if (this.flow.unite(this.function.blockAt(block).paramAt(slot), op.operandAt(from + slot))) { changed = true; }
+            slot = slot + 1;
+        }
+        return changed;
+    }
+
+    // Close the seeds over contents edges and publish the parameter-relative summary.
+    private Void finish() {
+        List<Bool> reads = this.flow.closure(this.readSeeds);
+        List<Bool> writes = this.flow.closure(this.writeSeeds);
+        Int param = 0;
+        while (param < this.paramTotal) {
+            if (reads.get(param)) { this.out.markReadsParam(param); }
+            if (writes.get(param)) { this.out.markWritesParam(param); }
+            param = param + 1;
+        }
+        if (reads.get(this.unknownToken)) { this.out.markReadsOther(); }
+        if (writes.get(this.unknownToken)) { this.out.markWritesOther(); }
+        this.publishReturns();
+        this.publishEscapes();
+        if (this.hasCycle()) { this.out.raise(SublangFunctionEffects.control(), 1); }
+    }
+
+    private Void publishReturns() {
+        Int index = 0;
+        while (index < this.returned.length()) {
+            Int param = 0;
+            while (param < this.paramTotal) {
+                if (this.flow.has(this.returned.get(index), param)) { this.out.markReturnsParam(param); }
+                param = param + 1;
+            }
+            Int token = this.paramTotal;
+            while (token < this.unknownToken) {
+                if (this.flow.has(this.returned.get(index), token)) { this.out.markReturnsFresh(); }
+                token = token + 1;
+            }
+            if (this.flow.has(this.returned.get(index), this.unknownToken)) { this.out.markReturnsUnknown(); }
+            index = index + 1;
+        }
+    }
+
+    // A parameter escapes when it is reachable from a returned region, from the unknown region, or
+    // from the memory of another parameter, which outlives the call.
+    private Void publishEscapes() {
+        List<Bool> roots = List();
+        Int token = 0;
+        while (token < this.tokenTotal) {
+            roots.add(token == this.unknownToken);
+            token = token + 1;
+        }
+        Int index = 0;
+        while (index < this.returned.length()) {
+            token = 0;
+            while (token < this.tokenTotal) {
+                if (this.flow.has(this.returned.get(index), token)) { roots.set(token, true); }
+                token = token + 1;
+            }
+            index = index + 1;
+        }
+        List<Bool> escaped = this.flow.closure(roots);
+        Int param = 0;
+        while (param < this.paramTotal) {
+            if (escaped.get(param)) { this.out.markEscapesParam(param); }
+            param = param + 1;
+        }
+        this.escapeThroughParams();
+    }
+
+    private Void escapeThroughParams() {
+        Int holder = 0;
+        while (holder < this.paramTotal) {
+            List<Bool> seed = List();
+            Int token = 0;
+            while (token < this.tokenTotal) {
+                seed.add(token == holder);
+                token = token + 1;
+            }
+            List<Bool> reached = this.flow.closure(seed);
+            Int other = 0;
+            while (other < this.paramTotal) {
+                if (other != holder && reached.get(other)) { this.out.markEscapesParam(other); }
+                other = other + 1;
+            }
+            holder = holder + 1;
+        }
+    }
+
+    // Any cycle of the block graph may not terminate; termination is never proved here.
+    private Bool hasCycle() {
+        List<Int> color = List();
+        Int block = 0;
+        while (block <= this.function.blockCount()) {
+            color.add(0);
+            block = block + 1;
+        }
+        Int start = 1;
+        while (start <= this.function.blockCount()) {
+            if (color.get(start) == 0 && this.cyclic(start, color)) { return true; }
+            start = start + 1;
+        }
+        return false;
+    }
+
+    private Bool cyclic(Int block, List<Int> color) {
+        color.set(block, 1);
+        SublangFunction body = this.function;
+        Int last = body.blockAt(block).operationCount() - 1;
+        if (last >= 0) {
+            Int target = 0;
+            while (target < body.blockAt(block).operationAt(last).targetCount()) {
+                Int next = body.blockAt(block).operationAt(last).targetAt(target);
+                if (body.hasBlock(next)) {
+                    if (color.get(next) == 1) { return true; }
+                    if (color.get(next) == 0 && this.cyclic(next, color)) { return true; }
+                }
+                target = target + 1;
+            }
+        }
+        color.set(block, 2);
+        return false;
+    }
+}

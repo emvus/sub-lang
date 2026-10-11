@@ -1,0 +1,34 @@
+namespace sublang::checks::operation;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+
+// Exact numeric conversions. int.to_float rounds to nearest-even; float.to_int and float.is_int
+// accept only finite, integral values inside the Int64 range; number.equal compares an Int and a
+// Float by value, so integers above 2^53 are never rounded before the comparison.
+public class SublangConversionChecks {
+    public static Void check(SublangReport report, SublangModule module, SublangFunction function, SublangOperation op) {
+        String error = SublangConversionChecks.validate(module, function, op);
+        if (error != "") { report.report("SUBLANG-T001", error, op.span()); }
+    }
+
+    private static String validate(SublangModule module, SublangFunction function, SublangOperation op) {
+        String code = op.opcode();
+        Int integer = module.types().intType();
+        Int number = module.types().floatType();
+        Int result = number;
+        if (code == "float.to_int") { result = integer; }
+        if (code == "float.is_int" || code == "number.equal") { result = module.types().boolType(); }
+        Int operands = 1;
+        if (code == "number.equal") { operands = 2; }
+        if (op.operandCount() != operands) { return code + " has the wrong operand count"; }
+        Int first = number;
+        if (code == "int.to_float" || code == "number.equal") { first = integer; }
+        if (function.valueTypeOrZero(op.operandAt(0)) != first || op.modeAt(0) != "value") { return code + " operand 0 has the wrong type"; }
+        if (operands == 2 && (function.valueTypeOrZero(op.operandAt(1)) != number || op.modeAt(1) != "value")) { return code + " operand 1 must be a Float value"; }
+        if (!op.hasResult() || op.resultType() != result || op.resultOwnership() != "" || op.scope() != 0) { return code + " has an invalid result contract"; }
+        return "";
+    }
+}

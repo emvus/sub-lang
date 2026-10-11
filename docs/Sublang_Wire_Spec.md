@@ -5,9 +5,11 @@ transport 1). Not a permanent public ABI. This document describes what the Emera
 codec in `src/sublang/wire/` reads and writes, so that a writer or reader can be
 implemented in another language without reading that source.
 
-Sources checked: `src/sublang/wire/` (SublangWire, SublangWireStream,
+Sources checked: `src/sublang/wire/` (SublangWire, SublangWireFeatures, SublangWireStream,
 SublangWireTables, SublangWireEffects, SublangWireBody, SublangWireSelection,
 SublangWireResult), `src/sublang/vocabulary/SublangVocabulary.ems`,
+`src/sublang/snapshot/SublangModuleLinker.ems` and `SublangFunctionLink.ems` (section 13.6),
+`src/sublang/checks/operation/` and `src/sublang/checks/data/` (extension operation contracts),
 `src/sublang/ir/` (table ID assignment), `src/sublang/checks/` (accepted tags),
 `src/sublang/cli/SublangCommand.ems`, and `examples/wire/*.sublang-wire`.
 
@@ -29,6 +31,9 @@ Anything not confirmed by that evidence or by direct source reading is marked
   integer syntax. It does not check opcode names, operand/mode parity, id ranges
   or ownership. Those belong to the verifier and native gate (section 7).
 - A reader rejects trailing bytes. Input is at most 16 MiB (16,777,216 bytes).
+- The core feature token covers only the core record set. Types and operations of the
+  extensions `ext.bytes.v1`, `ext.numeric.v1`, `ext.eh.v1` and `ext.oo.v1` need their own
+  feature token; see section 13.
 
 ## 1. Framing: netstring grammar
 
@@ -92,6 +97,7 @@ Scalar interpretation (applied to a token's payload bytes):
 | operands per operation | 4,096 |
 | passing modes per operation | 4,096 |
 | targets per operation | 2 |
+| dispatch classes; dispatch groups; entries per group | 4,096 each (section 13.3) |
 
 Count rule: a count token is an Int. It must be `0..limit`. Each accepted count is
 added to the running total. Id lists (operands, targets, proof dependencies, effect
@@ -115,15 +121,17 @@ Tokens in this exact order, none optional:
 | 2 | IR schema | Int | must be 1 |
 | 3 | stage | text | must be `High` |
 | 4 | revision | Int | must be 1 |
-| 5 | required-feature count | Int | 0..32 counted; must produce at least one feature |
+| 5 | required-feature count | Int | 0..32 counted; must produce at least one feature. Writer value = 1 + number of extensions. Reader limit: see section 13.1 |
 | 6..5+n | required features | text | see below |
 | 6+n | module name | text | any |
 | 7+n | entry FunctionId | Int | not range-checked by transport |
 
-Feature rule: every feature must equal `core.native64.v1` (transport 1) or
-`core.native64.v2` (transport 2). A duplicate, an unknown name, or a feature of the
-other version is rejected. If no core feature appears, the reader rejects with
-`missing core.native64 feature`. Writers emit one feature, `core.native64.v2`.
+Feature rule: token 6 must equal `core.native64.v1` (transport 1) or
+`core.native64.v2` (transport 2). A feature of the other version is rejected. If no
+core feature appears, the reader rejects with `missing core.native64 feature`.
+Tokens 7 and up are extension features (section 13.1), accepted only under transport 2.
+Writers emit `core.native64.v2` first, then each extension the module needs. A module
+that uses no extension has exactly one feature token.
 
 Example header (`arithmetic.sublang-wire`, transport 1):
 `12:SUBLANG-WIRE,1:1,1:1,4:High,1:1,1:1,16:core.native64.v1,10:arithmetic,1:1,`
@@ -146,9 +154,11 @@ section (1-based unless noted).
 | 4 | `aliases` | 4096 | alias facts |
 | 4 | `effects` | 4096 | effect summaries (each with a fact count) |
 | 5 | `functions` | 32 | functions with bodies |
+| 5b | `dispatch` | 4096 per count | only when `ext.oo.v1` is declared (section 13.3) |
 | 6 | `end` | - | then end of file |
 
 The section tags are text tokens and are checked with `expect`. The order is fixed.
+`dispatch` is the only section that is present conditionally.
 
 ### 4.1 Sources and spans
 
@@ -357,8 +367,9 @@ by the semantic layer (`SublangVocabulary`, `checks/`), not by the transport.
 
 ### 6.1 Type kinds (codec: any text; verifier: list below)
 
-`Void`, `Bool`, `Int`, `Float`, `Record`, `Class`, `Ref`, `String`, `List`, `Bond`.
-The codec rejects `String`, `List` and `Bond` only in transport 1.
+`Void`, `Bool`, `Int`, `Float`, `Record`, `Class`, `Ref`, `String`, `List`, `Bond`, `Byte`.
+The codec rejects `String`, `List`, `Bond` and `Byte` only in transport 1. `Byte` is
+an extension kind (`ext.bytes.v1`, section 13.2).
 
 ### 6.2 Passing modes (for params and operations)
 
@@ -379,7 +390,9 @@ Verifier: `SublangVocabulary.isKnownPassing`.
 
 Notes from `SublangVocabulary`: `const.string`, `string.*`, `list.*` and `bond.*`
 require transport 2 (codec checks `const.string` only). `call.direct` does not
-produce a value by itself.
+produce a value by itself. The opcodes above are the core set. The extension opcodes
+(`byte.*`, `text.*`, `list.set`, `list.replace`, numeric conversions, `invoke`, `throw`,
+`resume`, `class.upcast`, `class.downcast`, `call.virtual`) are listed in section 13.4.
 
 ### 6.4 Result ownership (observed and checked, full set UNVERIFIED)
 
@@ -418,7 +431,10 @@ Calling convention: codec requires exactly `sublang`.
 Per opcode: `field` (field.*, record.get/with, bond.get/link/clear/write, bond.own,
 field.borrow), `type` (record.make, class.new, bond.new, list.new), `function`
 (call.direct), `scope` (scope.begin/end), `failure` (fail and int arithmetic
-opcodes), `none` otherwise. The example `int.add` has ref `1`, which is failure
+opcodes), `none` otherwise. Extension opcodes: `function` for `invoke`, `group` for
+`call.virtual`, `type` for `text.from_str`/`concat`/`slice`. Section 13.4 gives the
+ref of each extension opcode; `refMeaning` returns `none` for `class.upcast` and
+`class.downcast` although their ref is a type ID, as section 13.4 describes. The example `int.add` has ref `1`, which is failure
 action 1 (`test.abort`).
 
 ### 6.10 Overflow modes (verifier: `allowsOverflow`)
@@ -471,7 +487,8 @@ The writer runs the same count and limit logic and additionally:
 - Rejects nominal field order mismatches: `incomplete nominal field order`,
   `noncanonical nominal field order`, `inconsistent nominal field table`.
 
-The writer always emits transport `2` and feature `core.native64.v2`.
+The writer always emits transport `2`, the feature `core.native64.v2`, and each
+extension feature the module needs (section 13.1).
 
 ## 9. Diagnostics
 
@@ -503,13 +520,20 @@ Reason strings from the codec:
 | `total table budget exceeded` | running total above 262,144 |
 | `unsupported transport version` | transport not 1 or 2 |
 | `unsupported IR schema, stage or revision` | schema not 1, stage not `High`, revision not 1 |
-| `unknown or duplicate required feature` | feature not the version's core name, or repeated |
+| `unknown or duplicate required feature` | core token (index 0) not the version's core name; a repeated token; a name that is not one of the four extension tokens; any extension token under transport 1 |
 | `missing core.native64 feature` | no feature accepted |
-| `type requires transport v2` | transport 1 with String/List/Bond kind |
+| `type requires transport v2` | transport 1 with String/List/Bond/Byte kind |
 | `const.string requires transport v2` | transport 1 with `const.string` |
 | `alias revision mismatch` | alias revision not 1 |
 | `unsupported calling convention` | convention not `sublang` |
+| `module uses ext.oo.v1 without declaring the feature` | after the body is read: dispatch table, object type or object opcode present, token not declared |
+| `module uses ext.bytes.v1 without declaring the feature` | same rule for `Byte` types and byte-text opcodes |
+| `module uses ext.eh.v1 without declaring the feature` | same rule for exception opcodes |
+| `module uses ext.numeric.v1 without declaring the feature` | same rule for numeric-conversion opcodes |
 | `trailing data` | bytes remain after `end` |
+
+The `count budget exceeded` reason also fires for the required-feature count on
+extension modules; see the defect in section 13.1.
 
 CLI (`sublang emit-llvm`): prints the W001 text and exits 1 for a decode failure.
 `SUBLANG-CLI001` (invalid Optimind mode, exit 2), `SUBLANG-CLI002` (input not a regular
@@ -703,7 +727,8 @@ Operation ids must be unique across the whole module, not merely per function or
 block. The native backend rejects a repeated id with `SUBLANG-B008: duplicate
 operation id` and requires every id to be in `1..32768`. A writer should therefore
 number operations with one module-wide counter (the Tiny frontend in
-`examples/frontend/tiny` does).
+`examples/frontend/tiny` does). `sublang link` renumbers the consumer's operation IDs
+to keep them unique (section 13.5).
 
 ## 11. Versioning and compatibility
 
@@ -711,6 +736,7 @@ number operations with one module-wide counter (the Tiny frontend in
 - Feature names pin the transport: a reader must reject a feature that does not
   match the transport.
 - Header schema, stage and revision are fixed in this version.
+- Extension features (section 13) exist only in transport 2.
 
 ## 12. UNVERIFIED list
 
@@ -725,3 +751,142 @@ number operations with one module-wide counter (the Tiny frontend in
   type (the code path was not traced).
 - UNVERIFIED: whether Emerald `String.length()` is byte-based in every code path. The
   examples show byte counts for the emitted files, but the codec was not executed.
+- UNVERIFIED: the required-feature count defect of section 13.1 (reader limit 1 for any
+  extension module). Source reading only; no extension module was decoded.
+- UNVERIFIED: whether any module other than the object checks reads the `ref` of
+  `class.upcast` or `class.downcast` (`SublangObjectChecks` does not read it).
+- UNVERIFIED: no file under `examples/wire/` declares an extension feature (checked by
+  grep for `ext.` in `examples/`). No extension module was decoded by the Python mirror.
+
+## 13. Extension features
+
+Extensions add types and operations to the transport 2 record set. Each extension is
+one required-feature token. A module that uses an extension must declare its token, and
+a reader that does not know the token rejects the module. Sources: `SublangWire.ems`,
+`SublangWireFeatures.ems`, `SublangWireTables.ems`, `SublangVocabulary.ems`,
+`checks/operation/` and `checks/data/`.
+
+### 13.1 Feature tokens
+
+| Token | Required when the module has | Opcodes that need it (13.4) |
+| --- | --- | --- |
+| `ext.bytes.v1` | a `Byte` type, or any byte-text opcode | `byte.from_int`, `byte.to_int`, `list.set`, `list.replace`, `text.from_str`, `text.append`, `text.concat`, `text.slice`, `text.equal` |
+| `ext.numeric.v1` | any numeric-conversion opcode | `int.to_float`, `float.to_int`, `float.is_int`, `number.equal` |
+| `ext.eh.v1` | any exception opcode | `invoke`, `throw`, `resume` |
+| `ext.oo.v1` | a non-empty dispatch table, a `Class` type with a base (its `target` is not 0), or an object opcode | `class.upcast`, `class.downcast`, `call.virtual`. Also enables the `dispatch` section (13.3) |
+
+Header rules (`SublangWire.features`, `SublangWire.extension`):
+
+- The core token comes first. The writer then emits each extension the module needs, in
+  the canonical order `ext.bytes.v1`, `ext.numeric.v1`, `ext.eh.v1`, `ext.oo.v1`.
+- The writer count is 1 + the number of extensions.
+- Extension tokens are accepted only under transport 2. Under transport 1 an extension
+  token is rejected with `unknown or duplicate required feature`.
+- Also rejected with that reason: a name that is none of the four tokens, and a repeated
+  token.
+- The reader accepts extension tokens in any order. Canonical order is a writer rule
+  only. The reader does not reject a declared extension that the module does not use.
+- Use without declaration is rejected after the body is read, with the
+  `module uses <token> without declaring the feature` reasons of section 9.
+
+Reader count limit: the second argument of `stream.count` is the limit (32 for the
+required-feature count); the first is the value written. The extension round trips of
+`scripts/sublang-backend-sandbox.sh` and the wire feature checks of
+`scripts/sublang-pass-sandbox.sh` read headers with up to four extension tokens.
+
+### 13.2 Type kind `Byte`
+
+- Descriptor: kind `Byte`, name `Byte`, width `8`, signed `0`, target `0`, span `0`.
+  This is the descriptor `SublangTypeTable.byteType()` creates
+  (`src/sublang/ir/SublangTypeTable.ems`, `addType("Byte", "Byte", 8, false, 0, 0)`).
+- It is a non-primitive descriptor, so it is serialized at an ID of 5 or higher.
+- A list of bytes is a normal `List` type whose target is the `Byte` type.
+- Transport 1: rejected with `type requires transport v2`.
+
+### 13.3 The `dispatch` section (`ext.oo.v1` only)
+
+It sits between `functions` and `end`. The reader and writer call it only when `ext.oo.v1`
+is among the declared features (`SublangWire.transfer`). Layout:
+
+```text
+8:dispatch,
+C:classes count,                      C <= 4096
+  C times: type ID, tag               two Int tokens
+G:groups count,                       G <= 4096
+  G times:
+    name (text), root type ID, tag field ID, prototype function ID,
+    E:entry count,                    E <= 4096
+    E times: tag, function ID         two Int tokens
+```
+
+- The reader registers classes with `addClass(type, tag)`. It registers groups with
+  `addGroup(name, root, field, prototype)` (group IDs are 1-based, in order), then each
+  entry with `addEntry(group, tag, function)`.
+- Each count is added to the total entry budget (262,144).
+- The transport does not check ID ranges. The verifier checks hierarchy (`SUBLANG-O001`),
+  registrations and group roots and tag fields (`SUBLANG-O002`), and group prototypes and
+  implementations (`SUBLANG-O003`). See `docs/Sublang_Diagnostics.md`.
+
+### 13.4 Extension opcodes
+
+Operands are listed in order. Each operand has one passing mode from section 6.2. The
+`ref` column is the Int stored in the operation's `ref` field. Targets are the block IDs
+of the `targets` list. "Scope > 0" means a destination scope is required.
+
+| Opcode | Feature | Operands (mode) | Result (ownership, scope) | ref | Targets | Extra rules (verifier) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `byte.from_int` | bytes | 1: `Int` (value) | `Byte` (empty, 0) | 0 | 0 | none |
+| `byte.to_int` | bytes | 1: `Byte` (value) | `Int` (empty, 0) | 0 | 0 | none |
+| `list.set` | bytes | 3: `Ref<List>` (borrow_write), `Int` index (value), element (value) | none | 0 | 0 | element type must not be a `Class`; class elements use `list.replace` |
+| `list.replace` | bytes | 3: `Ref<List>` (borrow_write), `Int` index (value), `Ref<C>` (owned) | none | 0 | 0 | element must be a non-inline `Class`; the owned operand is a reference to that class |
+| `text.from_str` | bytes | 1: `String` (value) | `Ref<List>` (owned, scope > 0) | the byte-list type | 0 | `ref` must be a `List` of `Byte` |
+| `text.append` | bytes | 2: `Ref<List>` (borrow_write), `String` (value) | none (0) | 0 | 0 | no result |
+| `text.concat` | bytes | 2: `Ref<List>` (borrow_read), `Ref<List>` (borrow_read) | `Ref<List>` (owned, scope > 0) | the byte-list type | 0 | both operands are byte lists |
+| `text.slice` | bytes | 3: `Ref<List>` (borrow_read), `Int` start (value), `Int` length (value) | `Ref<List>` (owned, scope > 0) | the byte-list type | 0 | out-of-range arguments abort at run time |
+| `text.equal` | bytes | 2: `Ref<List>` (borrow_read), `Ref<List>` (borrow_read) | `Bool` (empty, 0) | 0 | 0 | none |
+| `int.to_float` | numeric | 1: `Int` (value) | `Float` (empty, 0) | 0 | 0 | none |
+| `float.to_int` | numeric | 1: `Float` (value) | `Int` (empty, 0) | 0 | 0 | none |
+| `float.is_int` | numeric | 1: `Float` (value) | `Bool` (empty, 0) | 0 | 0 | none |
+| `number.equal` | numeric | 2: `Int` (value), `Float` (value) | `Bool` (empty, 0) | 0 | 0 | none |
+| `invoke` | eh | one per callee parameter, same passing mode as the parameter | none on this op; the result is the first parameter of the normal target | function ID (callee must have a `body`) | 2: normal, unwind | normal target takes one parameter of the return type, or none for `Void`; unwind target takes one `Int`; return type is `Void`, `Int`, `Bool` or `Float`; targets differ; true args 0 |
+| `throw` | eh | 1: `Int` code (value) | none | 0 | 0 | terminator; no successors |
+| `resume` | eh | 1: `Int` code (value) | none | 0 | 0 | terminator; no successors |
+| `class.upcast` | oo | 1: `Ref<derived>` (borrow_read, or owned) | `Ref<base>`: borrow_read with scope 0, or owned with scope > 0 | base class type ID | 0 | base must be an ancestor of the source class |
+| `class.downcast` | oo | 1: `Ref<base>` (borrow_read) | `Ref<derived>` (borrow_read, scope 0) | derived class type ID | 0 | derived must be a proper descendant with a registered tag |
+| `call.virtual` | oo | one per group prototype parameter, same passing mode | prototype return type; none for `Void`; a `Ref` or `Bond` result needs owned and scope >= 1 | dispatch group ID | 0 | arguments must match the group prototype; group must have an implementation |
+
+Notes:
+
+- The ref of `class.upcast`, `class.downcast` and the `text.*` list ops is a type ID.
+  `SublangOperationBuilder` and `SublangFunctionLink` both treat it that way.
+  `SublangVocabulary.refMeaning` returns `none` for `class.upcast`, `class.downcast`,
+  `text.append`, `text.equal`, `list.set`, `list.replace`, `throw` and `resume`. The object
+  checks do not read the ref of `class.upcast` or `class.downcast`. They take the base or
+  derived class from the result type.
+- Operand count and passing-mode count must match. The writer does not check this
+  (section 7). The verifier does.
+- Operation IDs must stay unique across the module. Section 10.4 gives the rule and its
+  `SUBLANG-B008` gate. The transport does not check it.
+
+### 13.5 Linking and operation IDs
+
+`sublang link OUT PROVIDER CONSUMER [MORE...]` (`SublangCommand.link`) merges the consumer
+into the provider with `SublangModuleLinker`. Operation IDs of the consumer are renumbered
+on copy: each consumer operation ID is increased by the largest operation ID already in the
+merged module (`SublangModuleLinker.copyBodies`, `SublangFunctionLink.operation`, which adds
+`operationOffset` to `op.id()`). Provider IDs are unchanged. The offset is found by scanning
+the module, because a module read from Wire does not track its ID counter
+(`largestOperationId`).
+
+Value, block and scope IDs are function-local and are not renumbered
+(`SublangFunctionLink.ems`, header comment). Type, field, function, failure, group, effect
+and span IDs are remapped to the merged module. A consumer that was dumped before linking
+therefore has different operation IDs after linking. Linking one consumer after another
+keeps IDs unique, because each offset is taken from the module built so far.
+
+### 13.6 Diagnostics for extension features
+
+- Transport: `SUBLANG-W001` with the reasons of section 9 (feature and extension reasons).
+- Compile: `SUBLANG-B009` is printed by `SublangCompiler.ems` when a module that uses
+  `ext.bytes.v1`, `ext.numeric.v1` or `ext.eh.v1` is not produced from Low IR. It does not
+  test `ext.oo.v1`. See `docs/Sublang_Diagnostics.md`.

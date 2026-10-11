@@ -1,0 +1,96 @@
+namespace sublang::checks::data;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+use sublang::ir::data::SublangCollectionLayout;
+
+// Contracts of the byte-text extension: Byte conversions, list element replacement and dynamic
+// strings stored as byte lists. Dynamic strings are owned lists; they are never views, so a text
+// result is always an independent owner and no borrowed slice exists in this extension.
+public class SublangTextChecks {
+    public static Void check(SublangReport report, SublangModule module, SublangFunction function, SublangOperation op) {
+        String error = SublangTextChecks.validate(module, function, op);
+        if (error != "") { report.report("SUBLANG-T003", error, op.span()); }
+    }
+
+    private static String validate(SublangModule module, SublangFunction function, SublangOperation op) {
+        String code = op.opcode();
+        Int integer = module.types().intType();
+        if (code == "byte.from_int" || code == "byte.to_int") {
+            Int input = integer;
+            Int output = module.types().byteType();
+            if (code == "byte.to_int") { input = module.types().byteType(); output = integer; }
+            if (op.operandCount() != 1 || function.valueTypeOrZero(op.operandAt(0)) != input || op.modeAt(0) != "value") { return code + " requires one value operand of the source type"; }
+            if (!op.hasResult() || op.resultType() != output || op.resultOwnership() != "" || op.scope() != 0) { return code + " requires a plain " + module.types().kindOf(output) + " result"; }
+            return "";
+        }
+        if (code == "list.set" || code == "list.replace") { return SublangTextChecks.element(module, function, op); }
+        return SublangTextChecks.text(module, function, op);
+    }
+
+    // Receiver type of a list operand: the List type id, or 0 when the operand is not Ref<List>.
+    private static Int listOf(SublangModule module, SublangFunction function, SublangOperation op, Int position) {
+        Int reference = function.valueTypeOrZero(op.operandAt(position));
+        if (!module.types().isKind(reference, "Ref")) { return 0; }
+        Int type = module.types().typeAt(reference).target();
+        if (!module.types().isKind(type, "List")) { return 0; }
+        return type;
+    }
+
+    private static String element(SublangModule module, SublangFunction function, SublangOperation op) {
+        if (op.operandCount() != 3) { return op.opcode() + " requires a list, an index and an element"; }
+        Int list = SublangTextChecks.listOf(module, function, op, 0);
+        if (list == 0) { return op.opcode() + " receiver requires Ref<List>"; }
+        if (op.modeAt(0) != "borrow_write") { return op.opcode() + " requires a mutable list borrow"; }
+        if (function.valueTypeOrZero(op.operandAt(1)) != module.types().intType() || op.modeAt(1) != "value") { return op.opcode() + " index requires an Int value"; }
+        if (op.hasResult() || op.scope() != 0 || op.resultOwnership() != "") { return op.opcode() + " has no result"; }
+        Int element = module.types().typeAt(list).target();
+        Bool owned = module.types().isKind(element, "Class") && !SublangCollectionLayout.inlineClass(module, element);
+        if (op.opcode() == "list.set") {
+            if (module.types().isKind(element, "Class")) { return "list.set replaces values; class elements use list.replace"; }
+            if (function.valueTypeOrZero(op.operandAt(2)) != element || op.modeAt(2) != "value") { return "list.set requires an element value of the list element type"; }
+            return "";
+        }
+        if (!owned) { return "list.replace requires owned class elements"; }
+        if (function.valueTypeOrZero(op.operandAt(2)) != module.types().refTypeOrZero(element) || op.modeAt(2) != "owned") { return "list.replace consumes an owned element reference"; }
+        return "";
+    }
+
+    private static Bool byteList(SublangModule module, Int list) {
+        return list != 0 && module.types().isKind(module.types().typeAt(list).target(), "Byte");
+    }
+
+    private static String text(SublangModule module, SublangFunction function, SublangOperation op) {
+        String code = op.opcode();
+        Int operands = 2;
+        if (code == "text.from_str") { operands = 1; }
+        if (code == "text.slice") { operands = 3; }
+        if (op.operandCount() != operands) { return code + " has the wrong operand count"; }
+        if (code == "text.from_str" || code == "text.concat" || code == "text.slice") {
+            if (!SublangTextChecks.byteList(module, op.ref()) || !op.hasResult()) { return code + " requires a byte list layout and a result"; }
+            if (op.resultType() != module.types().refTypeOrZero(op.ref()) || op.resultOwnership() != "owned" || op.scope() <= 0) { return code + " requires an owned result and destination scope"; }
+        }
+        if (code == "text.from_str" || code == "text.append") {
+            Int position = operands - 1;
+            if (!module.types().isKind(function.valueTypeOrZero(op.operandAt(position)), "String") || op.modeAt(position) != "value") { return code + " requires a String value"; }
+        }
+        if (code != "text.from_str") {
+            Int list = SublangTextChecks.listOf(module, function, op, 0);
+            if (!SublangTextChecks.byteList(module, list)) { return code + " requires a Ref<List<Byte>> receiver"; }
+            String mode = "borrow_read";
+            if (code == "text.append") { mode = "borrow_write"; }
+            if (op.modeAt(0) != mode) { return code + " has an invalid receiver access mode"; }
+        }
+        if (code == "text.concat" || code == "text.equal") {
+            if (!SublangTextChecks.byteList(module, SublangTextChecks.listOf(module, function, op, 1)) || op.modeAt(1) != "borrow_read") { return code + " requires a second byte list borrowed for reading"; }
+        }
+        if (code == "text.slice") {
+            if (function.valueTypeOrZero(op.operandAt(1)) != module.types().intType() || function.valueTypeOrZero(op.operandAt(2)) != module.types().intType() || op.modeAt(1) != "value" || op.modeAt(2) != "value") { return "text.slice requires Int start and length values"; }
+        }
+        if (code == "text.append" && (op.hasResult() || op.scope() != 0)) { return "text.append has no result"; }
+        if (code == "text.equal" && (!op.hasResult() || op.resultType() != module.types().boolType() || op.resultOwnership() != "" || op.scope() != 0)) { return "text.equal requires a plain Bool result"; }
+        return "";
+    }
+}

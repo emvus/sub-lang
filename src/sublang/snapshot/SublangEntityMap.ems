@@ -1,0 +1,75 @@
+namespace sublang::snapshot;
+
+// Explicit origin mapping between two snapshots. Entities that are not recorded keep their id;
+// an erased entity maps to 0. Kinds: "op", "value", "function", "type", "field".
+public class SublangEntityMap {
+    private String fromKey;
+    private String toKey;
+    private List<String> kinds;
+    private List<Int> functionIds;
+    private List<Int> oldIds;
+    private List<Int> newIds;
+
+    public SublangEntityMap(String from, String to) {
+        this.fromKey = from + "";
+        this.toKey = to + "";
+        this.kinds = List();
+        this.functionIds = List();
+        this.oldIds = List();
+        this.newIds = List();
+    }
+
+    public String from() { return this.fromKey; }
+    public String to() { return this.toKey; }
+    public Int count() { return this.kinds.length(); }
+
+    public Void record(String kind, Int functionId, Int oldId, Int newId) {
+        this.kinds.add(kind + "");
+        this.functionIds.add(functionId);
+        this.oldIds.add(oldId);
+        this.newIds.add(newId);
+    }
+
+    // New id of an old entity: the recorded id (0 = erased), or the same id when unrecorded.
+    public Int lookup(String kind, Int functionId, Int oldId) {
+        Int index = 0;
+        while (index < this.kinds.length()) {
+            if (this.kinds.get(index) == kind && this.functionIds.get(index) == functionId && this.oldIds.get(index) == oldId) {
+                return this.newIds.get(index);
+            }
+            index = index + 1;
+        }
+        return oldId;
+    }
+
+    // Entries of any kind that belong to one function; used for per-function decision reports.
+    public Int countFor(Int functionId) {
+        Int total = 0;
+        Int index = 0;
+        while (index < this.kinds.length()) {
+            if (this.functionIds.get(index) == functionId && (this.kinds.get(index) == "op" || this.kinds.get(index) == "op-replaced")) { total = total + 1; }
+            index = index + 1;
+        }
+        return total;
+    }
+
+    public Int erasedCount(String kind) {
+        Int total = 0;
+        Int index = 0;
+        while (index < this.kinds.length()) {
+            if (this.kinds.get(index) == kind && this.newIds.get(index) == 0) { total = total + 1; }
+            index = index + 1;
+        }
+        return total;
+    }
+
+    public Int replacedCount(String kind) {
+        Int total = 0;
+        Int index = 0;
+        while (index < this.kinds.length()) {
+            if (this.kinds.get(index) == kind && this.newIds.get(index) != 0) { total = total + 1; }
+            index = index + 1;
+        }
+        return total;
+    }
+}

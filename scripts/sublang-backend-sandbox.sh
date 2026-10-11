@@ -20,26 +20,32 @@ docker run --rm --init --network=none --read-only --cap-drop=ALL \
     mkdir /tmp/backend
     timeout 180s /emerald/emerald-stable/emerald-compiler build /project/src/SublangBackendSmoke.ems -o /tmp/backend-generator
     timeout 20s /tmp/backend-generator
-    for spec in static-string:200 inline-list:199 owned-list:199 value-list:42 inline-local:42 nested-regions:28 bond-cycle:55 bond-component:4242 arithmetic:4000000000 loop:5072 record:41 floating:1 object:43 object-cfg:89 scoped-runtime:36 borrowed-calls:82 owned-transfers:82 root-graph:43 root-deep:10000 folded-fields:42 shard-mixed:5085 root-churn:5085 pool-borrow:100 integer-parity:47 division:0 constant-calls:49 folded-getter:42 borrowed-graph:42 pool-graph-inner:2100 pool-graph-outer:2100; do
+    for spec in static-string:200 inline-list:199 owned-list:199 value-list:42 inline-local:42 nested-regions:28 bond-cycle:55 bond-component:4242 arithmetic:4000000000 loop:5072 record:41 floating:1 object:43 object-cfg:89 scoped-runtime:36 borrowed-calls:82 owned-transfers:82 root-graph:43 root-deep:10000 folded-fields:42 shard-mixed:5085 root-churn:5085 pool-borrow:100 integer-parity:47 division:0 constant-calls:49 folded-getter:42 borrowed-graph:42 pool-graph-inner:2100 pool-graph-outer:2100 text-loop:2021 text-utf8:195164 list-set:139 list-replace:5 text-churn:400000000 numbers:7034 exceptions:311 objects:19 objects-solo:2; do
       name=${spec%:*}
       expected=${spec#*:}
       for variant in base opt; do
         file=/tmp/backend/$name-$variant
         llvm-as "$file.ll" -o "$file.bc"
         opt -passes="mem2reg,instcombine,simplifycfg" "$file.bc" -o "$file.checked.bc"
-        interpreted=$(timeout 10s lli "$file.bc")
-        test "$interpreted" = "$expected"
-        clang -Wno-override-module -O2 "$file.checked.bc" -o "$file.bin"
+        eh=""
+        if grep -q "__gxx_personality_v0" "$file.ll"; then eh="-lstdc++"; fi
+        if [ -z "$eh" ]; then
+          interpreted=$(timeout 10s lli "$file.bc")
+          test "$interpreted" = "$expected"
+        fi
+        clang -Wno-override-module -O2 "$file.checked.bc" $eh -o "$file.bin"
         actual=$(timeout 10s "$file.bin")
         test "$actual" = "$expected"
         echo "PASS native+LLVM $name-$variant = $actual"
       done
     done
-    for name in string-bounds overflow mul-overflow div-zero div-overflow call-overflow; do
+    for name in string-bounds overflow mul-overflow div-zero div-overflow call-overflow set-bounds slice-bounds byte-range toint-fraction toint-range uncaught bad-downcast; do
     for variant in base opt; do
       file=/tmp/backend/$name-$variant
       llvm-as "$file.ll" -o "$file.bc"
-      clang -Wno-override-module -O2 "$file.bc" -o "$file.bin"
+      eh=""
+      if grep -q "__gxx_personality_v0" "$file.ll"; then eh="-lstdc++"; fi
+      clang -Wno-override-module -O2 "$file.bc" $eh -o "$file.bin"
       set +e
       timeout 10s "$file.bin" >/tmp/overflow.stdout 2>/tmp/overflow.stderr
       status=$?
@@ -104,7 +110,51 @@ docker run --rm --init --network=none --read-only --cap-drop=ALL \
     /tmp/backend/sublang capabilities > /tmp/backend/capabilities.txt
     grep -qx "wire.read=1,2" /tmp/backend/capabilities.txt
     grep -qx "feature=core.native64.v2" /tmp/backend/capabilities.txt
+    grep -qx "feature=ext.eh.v1" /tmp/backend/capabilities.txt
+    grep -qx "low-ir=low.native64.v1" /tmp/backend/capabilities.txt
     /tmp/backend/sublang capabilities | cmp -s - /tmp/backend/capabilities.txt
+    for name in text-loop text-utf8 list-set list-replace text-churn; do
+      for variant in base opt; do
+        clang -Wno-override-module -O1 -fsanitize=address /tmp/backend/$name-$variant.ll -o /tmp/backend/text-asan
+        timeout 60s /tmp/backend/text-asan >/tmp/text-result
+      done
+    done
+    for variant in base opt; do
+      clang -Wno-override-module -O1 -fsanitize=address /tmp/backend/exceptions-$variant.ll -lstdc++ -o /tmp/backend/eh-asan
+      test "$(timeout 20s /tmp/backend/eh-asan)" = 311
+    done
+    echo "PASS exceptional cleanup runs exactly once on throw, rethrow and catch (ASan/LeakSanitizer)"
+    for name in objects objects-solo; do
+      for variant in base opt; do
+        clang -Wno-override-module -O1 -fsanitize=address /tmp/backend/$name-$variant.ll -o /tmp/backend/oo-asan
+        timeout 20s /tmp/backend/oo-asan >/tmp/oo-result
+      done
+    done
+    grep -q "switch i64 %tag" /tmp/backend/objects-opt.ll
+    grep -q "one implementation, lowered to a direct call" /tmp/backend/objects-solo-opt.plan
+    echo "PASS closed-world dispatch, base-type destruction and devirtualization (ASan/LeakSanitizer)"
+    echo "PASS byte text and list replacement under ASan/LeakSanitizer"
+    for variant in base opt; do
+      ( ulimit -v 150000; test "$(timeout 30s /tmp/backend/text-churn-$variant.bin)" = 400000000 )
+    done
+    echo "PASS repeated temporary text work is released (150 MB address-space limit)"
+    timeout 30s /tmp/backend/sublang link /tmp/backend/linked.sublang-wire /tmp/backend/link-0.sublang-wire /tmp/backend/link-1.sublang-wire
+    timeout 30s /tmp/backend/sublang emit-llvm /tmp/backend/linked.sublang-wire /tmp/backend/linked.ll on on
+    llvm-as /tmp/backend/linked.ll -o /tmp/backend/linked.bc
+    clang -Wno-override-module -O1 -fsanitize=address /tmp/backend/linked.bc -o /tmp/backend/linked-asan
+    test "$(timeout 10s /tmp/backend/linked-asan)" = 42
+    echo "PASS two modules link into one program and transfer an owner under one runtime (ASan/LeakSanitizer)"
+    for bad in 2:"signature that differs" 3:"unresolved import" 4:"incompatible structure"; do
+      kind=${bad%%:*}; message=${bad#*:}
+      set +e
+      timeout 30s /tmp/backend/sublang link /tmp/backend/bad.sublang-wire /tmp/backend/link-0.sublang-wire /tmp/backend/link-$kind.sublang-wire > /tmp/backend/link-error.txt
+      status=$?
+      set -e
+      test "$status" = 1
+      grep -q "SUBLANG-K001" /tmp/backend/link-error.txt
+      grep -q "$message" /tmp/backend/link-error.txt
+    done
+    echo "PASS incompatible, missing and structurally different imports fail the link with explicit diagnostics"
     echo "PASS capability discovery is deterministic"
     timeout 30s /tmp/backend/sublang dump /tmp/backend/borrowed-graph.sublang-wire > /tmp/backend/dump1.txt
     timeout 30s /tmp/backend/sublang dump /tmp/backend/borrowed-graph.sublang-wire | cmp -s - /tmp/backend/dump1.txt
@@ -121,6 +171,15 @@ docker run --rm --init --network=none --read-only --cap-drop=ALL \
     grep -q "^optimind: fn1 main: [1-9][0-9]* decisions" /tmp/backend/rep-on.ll.plan
     grep -q "^optimind: disabled" /tmp/backend/rep-off.ll.plan
     echo "PASS Optimind decision report is present in the plan and respects --optimind=off"
+    for plan in /tmp/backend/*.plan; do
+      grep -q "^lowering: Low IR" "$plan" || { echo "FAIL $plan did not use the Low route"; exit 1; }
+    done
+    echo "PASS every bundled module is lowered through verified Low IR"
+    timeout 30s /tmp/backend/sublang dump-low /tmp/backend/borrowed-graph.sublang-wire on on > /tmp/backend/low1.txt
+    timeout 30s /tmp/backend/sublang dump-low /tmp/backend/borrowed-graph.sublang-wire on on | cmp -s - /tmp/backend/low1.txt
+    grep -q "^low-module " /tmp/backend/low1.txt
+    grep -q "target=native64-host-libc triple=x86_64-unknown-linux-gnu" /tmp/backend/low1.txt
+    echo "PASS Low IR dump is deterministic and names the explicit target"
     for variant in base opt; do
       clang -Wno-override-module -O1 -fsanitize=address /tmp/backend/shard-mixed-$variant.ll -o /tmp/backend/shard-asan
       test "$(timeout 10s /tmp/backend/shard-asan)" = 5085

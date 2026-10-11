@@ -13,6 +13,10 @@ use sublang::harness::flow::SublangWireChecks;
 use sublang::harness::flow::SublangGraphPoolFixture;
 use sublang::harness::flow::SublangFullFlowFixtures;
 use sublang::harness::flow::SublangBondComponentFixture;
+use sublang::harness::pass::SublangExceptionFixtures;
+use sublang::harness::pass::SublangLinkFixtures;
+use sublang::harness::pass::SublangObjectFixtures;
+use sublang::harness::pass::SublangTextFixtures;
 use sublang::wire::SublangWire;
 use sublang::wire::SublangWireResult;
 use Std::Native::NativeFile;
@@ -536,6 +540,19 @@ public class SublangBackendSmoke {
         return !result.codegenReady() && result.error().startsWith("SUBLANG-B008");
     }
 
+    // Wire files for the CLI linker checks: one provider and four consumers.
+    public static Void writeLinkInputs() {
+        Int kind = 0;
+        while (kind <= 4) {
+            SublangModule module = SublangLinkFixtures.build(kind);
+            module.freeze();
+            SublangWireResult wire = SublangWire.write(module);
+            if (!wire.valid()) { println(wire.error()); Processes.exit(1); return; }
+            NativeFile.writeText("/tmp/backend/link-" + kind.toString() + ".sublang-wire", wire.text());
+            kind = kind + 1;
+        }
+    }
+
     public static Void rejectInvalidMemory() {
         SublangModule invalidListView = SublangFullFlowFixtures.invalidView(false); invalidListView.freeze();
         SublangModule invalidBondView = SublangFullFlowFixtures.invalidView(true); invalidBondView.freeze();
@@ -565,6 +582,22 @@ public class SublangBackendSmoke {
             Processes.exit(1);
         }
         SublangBackendSmoke.rejectInvalidCfg();
+        SublangModule staleView = SublangTextFixtures.replace(true);
+        staleView.freeze();
+        if (SublangCompiler.compile(staleView, true, "on").codegenReady()) { println("FAIL stale list view after replace"); Processes.exit(1); }
+        println("PASS list.replace invalidates borrowed element views");
+        SublangModule throwWithScope = SublangExceptionFixtures.build(2);
+        throwWithScope.freeze();
+        SublangModule plainCallWithScope = SublangExceptionFixtures.build(3);
+        plainCallWithScope.freeze();
+        if (SublangCompiler.compile(throwWithScope, true, "on").codegenReady() || SublangCompiler.compile(plainCallWithScope, true, "on").codegenReady()) {
+            println("FAIL exceptional cleanup obligations are not enforced"); Processes.exit(1);
+        }
+        println("PASS throw and throwing calls require pending cleanup to run first");
+        SublangModule wrongOverride = SublangObjectFixtures.build(1);
+        wrongOverride.freeze();
+        if (SublangCompiler.compile(wrongOverride, true, "on").codegenReady()) { println("FAIL override signature mismatch accepted"); Processes.exit(1); }
+        println("PASS dispatch implementations must match the group signature");
         SublangBackendSmoke.rejectInvalidScopes();
         SublangBackendSmoke.rejectInvalidBorrows();
         SublangBackendSmoke.rejectInvalidTransfers();
@@ -609,6 +642,23 @@ main() {
     SublangBackendSmoke.emit("borrowed-graph", SublangViewFixture.graph(0));
     SublangBackendSmoke.emit("pool-graph-inner", SublangGraphPoolFixture().build(false));
     SublangBackendSmoke.emit("pool-graph-outer", SublangGraphPoolFixture().build(true));
+    SublangBackendSmoke.emit("text-loop", SublangTextFixtures.loop());
+    SublangBackendSmoke.emit("text-utf8", SublangTextFixtures.utf8());
+    SublangBackendSmoke.emit("list-set", SublangTextFixtures.listSet());
+    SublangBackendSmoke.emit("list-replace", SublangTextFixtures.replace(false));
+    SublangBackendSmoke.emit("text-churn", SublangTextFixtures.churn());
+    SublangBackendSmoke.emit("numbers", SublangTextFixtures.numbers());
+    SublangBackendSmoke.emit("toint-fraction", SublangTextFixtures.inexact(0));
+    SublangBackendSmoke.emit("toint-range", SublangTextFixtures.inexact(1));
+    SublangBackendSmoke.emit("exceptions", SublangExceptionFixtures.build(0));
+    SublangBackendSmoke.emit("uncaught", SublangExceptionFixtures.uncaught());
+    SublangBackendSmoke.emit("objects", SublangObjectFixtures.build(0));
+    SublangBackendSmoke.emit("objects-solo", SublangObjectFixtures.build(2));
+    SublangBackendSmoke.emit("bad-downcast", SublangObjectFixtures.build(3));
+    SublangBackendSmoke.emit("set-bounds", SublangTextFixtures.abort(0));
+    SublangBackendSmoke.emit("slice-bounds", SublangTextFixtures.abort(1));
+    SublangBackendSmoke.emit("byte-range", SublangTextFixtures.abort(2));
     SublangBackendSmoke.emit("overflow", SublangBackendSmoke.arithmetic(true));
+    SublangBackendSmoke.writeLinkInputs();
     SublangBackendSmoke.rejectInvalidMemory();
 }

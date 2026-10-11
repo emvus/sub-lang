@@ -1,5 +1,7 @@
 # Sublang packaging and reproducibility
 
+**Full LLVM bundle:** `bash scripts/sublang-package.sh --with-llvm` constructs the Linux x86-64 distribution with a pinned LLVM toolchain, private libraries, C sysroot and build launcher. See [Bundled LLVM](Sublang_Bundled_LLVM.md) for usage and limits, and [distribution policy](Sublang_Toolchain_Distribution.md) for the newest-stable release requirement. The rest of this document describes the legacy thin package produced without `--with-llvm`.
+
 This document covers the release artifact produced from an existing standalone
 `build/sublang` binary, its manifest, the runtime assumptions it records, and the
 package smoke check. It is the first slice of roadmap section 1 ("Binary packaging
@@ -130,7 +132,7 @@ memory and swap cap, two CPUs, 128 pids, no core dumps, and a tmpfs `/tmp`.
   separate question for the bootstrap phase.
 - The sandbox image is pinned by its local image ID only. The packaging step does not
   check the image's contents or provenance.
-- `dist/` is not listed in `.gitignore`. Add it before committing a package tree.
+- `dist/` is excluded from Git; built toolchain payloads and release archives are not source commits.
 - The smoke check covers one representative program (`bond-component`, expected `4242`).
   It does not cover the rest of `examples/wire` or the backend suite in
   `sublang-backend-sandbox.sh`.

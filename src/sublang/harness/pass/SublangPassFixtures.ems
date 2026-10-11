@@ -1,0 +1,234 @@
+namespace sublang::harness::pass;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+use sublang::proof::SublangProofReference;
+use sublang::semantics::SublangEffectSummary;
+
+// Small deterministic modules for the snapshot, pass and effect checks.
+public class SublangPassFixtures {
+    public static List<Int> one(Int value) {
+        List<Int> values = List();
+        values.add(value);
+        return values;
+    }
+
+    public static List<Int> two(Int first, Int second) {
+        List<Int> values = List();
+        values.add(first);
+        values.add(second);
+        return values;
+    }
+
+    private static Void entry(SublangBuilder builder, Int span) {
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+    }
+
+    // Structurally valid, but the borrowed parameter cannot become an owned return.
+    public static SublangModule danglingReturn() {
+        SublangBuilder builder = SublangBuilder("dangling-return");
+        Int span = builder.syntheticSpan("pass:dangling-return");
+        Int object = builder.classType("Object", span);
+        builder.beginFunction("leak", builder.refType(object), 0, span);
+        Int borrowed = builder.addParam("borrowed", builder.refType(object), "borrow_read", false);
+        builder.beginBlock();
+        builder.ops().returnOwned(borrowed, span);
+        SublangPassFixtures.entry(builder, span);
+        builder.ops().returnValue(builder.ops().constInt(0, span), span);
+        builder.freeze();
+        return builder.module();
+    }
+
+    // main = 2000000000 + 2000000000, with a stale-able proven alias fact attached.
+    public static SublangModule foldable(String name, Bool withProof) {
+        SublangBuilder builder = SublangBuilder(name);
+        Int span = builder.syntheticSpan("pass:foldable");
+        Int failure = builder.failure("test.abort");
+        if (withProof) {
+            Int left = builder.addLocation("argument-region", "left", span);
+            Int right = builder.addLocation("argument-region", "right", span);
+            builder.module().aliases().addProvenAliasFact(left, right, "NoAlias", SublangProofReference("fixture.analysis", 1, SublangPassFixtures.two(left, right)), span);
+        }
+        SublangPassFixtures.entry(builder, span);
+        Int first = builder.ops().constInt(2000000000, span);
+        Int second = builder.ops().constInt(2000000000, span);
+        Int sum = builder.ops().intBinary("int.add", first, second, "trap", failure, span);
+        builder.ops().returnValue(sum, span);
+        builder.freeze();
+        return builder.module();
+    }
+
+    // The overflowing addition has an unused result and must still abort at run time.
+    public static SublangModule discardedOverflow() {
+        SublangBuilder builder = SublangBuilder("discarded-overflow");
+        Int span = builder.syntheticSpan("pass:discarded");
+        Int failure = builder.failure("test.abort");
+        SublangPassFixtures.entry(builder, span);
+        Int big = builder.ops().constInt(9223372036854775807, span);
+        Int one = builder.ops().constInt(1, span);
+        builder.ops().intBinary("int.add", big, one, "trap", failure, span);
+        builder.ops().returnValue(builder.ops().constInt(7, span), span);
+        builder.freeze();
+        return builder.module();
+    }
+
+    // Helpers with distinct effect shapes; main calls the pure one and keeps its result unused
+    // next to a call whose callee writes memory.
+    public static SublangModule effects() {
+        SublangBuilder builder = SublangBuilder("effects");
+        Int span = builder.syntheticSpan("pass:effects");
+        Int type = builder.classType("Counter", span);
+        Int field = builder.classField(type, "x", builder.intType(), true, span);
+        Int pure = builder.beginFunction("pure", builder.intType(), 0, span);
+        Int a = builder.addParam("a", builder.intType(), "value", false);
+        Int b = builder.addParam("b", builder.intType(), "value", false);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.ops().intBinary("int.add", a, b, "wrap", 0, span), span);
+        Int bump = builder.beginFunction("bump", builder.intType(), 0, span);
+        Int target = builder.addParam("target", builder.refType(type), "borrow_write", false);
+        builder.beginBlock();
+        Int five = builder.ops().constInt(5, span);
+        builder.ops().fieldWrite(target, field, five, span);
+        builder.ops().returnValue(five, span);
+        Int peek = builder.beginFunction("peek", builder.intType(), 0, span);
+        Int source = builder.addParam("source", builder.refType(type), "borrow_read", false);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.ops().fieldRead(source, field, span), span);
+        Int make = builder.beginFunction("make", builder.intType(), 0, span);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int object = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(object, field, builder.ops().constInt(9, span), span);
+        Int made = builder.ops().fieldRead(object, field, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(made, span);
+        Int fact = builder.beginFunction("fact", builder.intType(), 0, span);
+        Int n = builder.addParam("n", builder.intType(), "value", false);
+        builder.beginBlock();
+        Int stop = builder.newBlock();
+        Int more = builder.newBlock();
+        Int zero = builder.ops().constInt(0, span);
+        List<Int> empty = List();
+        builder.ops().condBranch(builder.ops().compare("le", n, zero, span), stop, empty, more, empty, span);
+        builder.enterBlock(stop);
+        builder.ops().returnValue(builder.ops().constInt(1, span), span);
+        builder.enterBlock(more);
+        Int below = builder.ops().intBinary("int.sub", n, builder.ops().constInt(1, span), "wrap", 0, span);
+        List<String> valueMode = List();
+        valueMode.add("value");
+        Int inner = builder.ops().callDirect(fact, SublangPassFixtures.one(below), valueMode, span);
+        builder.ops().returnValue(builder.ops().intBinary("int.mul", n, inner, "wrap", 0, span), span);
+        SublangPassFixtures.entryCalls(builder, span, pure, bump, peek, make, fact, type, field);
+        builder.freeze();
+        return builder.module();
+    }
+
+    private static Void entryCalls(SublangBuilder builder, Int span, Int pure, Int bump, Int peek, Int make, Int fact, Int type, Int field) {
+        SublangPassFixtures.entry(builder, span);
+        List<String> valueModes = List();
+        valueModes.add("value");
+        valueModes.add("value");
+        Int three = builder.ops().constInt(3, span);
+        Int four = builder.ops().constInt(4, span);
+        Int total = builder.ops().callDirect(pure, SublangPassFixtures.two(three, four), valueModes, span);
+        List<String> noModes = List();
+        List<Int> noArguments = List();
+        Int fromMake = builder.ops().callDirect(make, noArguments, noModes, span);
+        List<String> factMode = List();
+        factMode.add("value");
+        Int fromFact = builder.ops().callDirect(fact, SublangPassFixtures.one(three), factMode, span);
+        Int sum = builder.ops().intBinary("int.add", total, fromMake, "wrap", 0, span);
+        builder.ops().returnValue(builder.ops().intBinary("int.add", sum, fromFact, "wrap", 0, span), span);
+    }
+
+    // A function that claims every effect area is none while its body writes memory.
+    public static SublangModule lyingDeclaration() {
+        SublangBuilder builder = SublangBuilder("lying");
+        Int span = builder.syntheticSpan("pass:lying");
+        Int type = builder.classType("Counter", span);
+        Int field = builder.classField(type, "x", builder.intType(), true, span);
+        Int none = builder.module().semantics().addEffectSummary("declared-none", span);
+        SublangEffectSummary summary = builder.module().semantics().effectSummaryAt(none);
+        List<String> areas = SublangPassFixtures.areaNames();
+        Int index = 0;
+        while (index < areas.length()) {
+            String value = "none";
+            if (areas.get(index) == "control") { value = "returns"; }
+            summary.addFact(areas.get(index), value, "declared", "", "");
+            index = index + 1;
+        }
+        Int liar = builder.beginFunction("liar", builder.intType(), 0, span);
+        Int target = builder.addParam("target", builder.refType(type), "borrow_write", true);
+        builder.module().functionAt(liar).setEffectSummary(none);
+        builder.beginBlock();
+        Int seven = builder.ops().constInt(7, span);
+        builder.ops().fieldWrite(target, field, seven, span);
+        builder.ops().returnValue(seven, span);
+        SublangPassFixtures.entry(builder, span);
+        builder.ops().returnValue(builder.ops().constInt(0, span), span);
+        builder.freeze();
+        return builder.module();
+    }
+
+    // An external contract that receives an argument: its effects must be unknown to the caller.
+    public static SublangModule externalCall() {
+        SublangBuilder builder = SublangBuilder("external-call");
+        Int span = builder.syntheticSpan("pass:external");
+        Int type = builder.classType("Counter", span);
+        Int outside = builder.declareExternal("outside", builder.intType(), span);
+        Int passer = builder.beginFunction("passer", builder.intType(), 0, span);
+        Int target = builder.addParam("target", builder.refType(type), "borrow_read", false);
+        builder.beginBlock();
+        List<String> modes = List();
+        modes.add("borrow_read");
+        builder.ops().returnValue(builder.ops().callDirect(outside, SublangPassFixtures.one(target), modes, span), span);
+        SublangPassFixtures.entry(builder, span);
+        builder.ops().returnValue(builder.ops().constInt(0, span), span);
+        builder.freeze();
+        return builder.module();
+    }
+
+    // pure() has no effect and its call result is unused: removable. trapper() may abort: kept.
+    public static SublangModule deadCalls() {
+        SublangBuilder builder = SublangBuilder("dead-calls");
+        Int span = builder.syntheticSpan("pass:dead-calls");
+        Int failure = builder.failure("test.abort");
+        Int pure = builder.beginFunction("pure", builder.intType(), 0, span);
+        Int a = builder.addParam("a", builder.intType(), "value", false);
+        Int b = builder.addParam("b", builder.intType(), "value", false);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.ops().intBinary("int.add", a, b, "wrap", 0, span), span);
+        Int trapper = builder.beginFunction("trapper", builder.intType(), 0, span);
+        Int c = builder.addParam("c", builder.intType(), "value", false);
+        Int d = builder.addParam("d", builder.intType(), "value", false);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.ops().intBinary("int.add", c, d, "trap", failure, span), span);
+        SublangPassFixtures.entry(builder, span);
+        List<String> modes = List();
+        modes.add("value");
+        modes.add("value");
+        Int three = builder.ops().constInt(3, span);
+        Int four = builder.ops().constInt(4, span);
+        builder.ops().callDirect(pure, SublangPassFixtures.two(three, four), modes, span);
+        builder.ops().callDirect(trapper, SublangPassFixtures.two(three, four), modes, span);
+        builder.ops().returnValue(builder.ops().constInt(1, span), span);
+        builder.freeze();
+        return builder.module();
+    }
+
+    private static List<String> areaNames() {
+        List<String> areas = List();
+        areas.add("allocation");
+        areas.add("escape");
+        areas.add("failure");
+        areas.add("exceptions");
+        areas.add("memory-read");
+        areas.add("memory-write");
+        areas.add("synchronization");
+        areas.add("observable");
+        areas.add("control");
+        return areas;
+    }
+}

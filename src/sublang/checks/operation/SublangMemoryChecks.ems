@@ -302,11 +302,25 @@ public class SublangMemoryChecks {
     // init for construction, borrow_read for reads and borrow_write for writes.
     private Void checkFieldReceiver(SublangFunction fnEntry, SublangOperation op, SublangField fieldEntry, String requiredMode) {
         Int refId = this.module.types().refTypeOrZero(fieldEntry.owner());
-        if (refId == 0 || fnEntry.valueTypeOrZero(op.operandAt(0)) != refId) {
+        if (refId == 0 || !this.receiverFits(fnEntry.valueTypeOrZero(op.operandAt(0)), fieldEntry.owner())) {
             this.findings.report("SUBLANG-T003", op.opcode() + " receiver must be Ref<" + this.module.types().typeNameOf(fieldEntry.owner()) + ">", op.span());
         }
         if (op.modeAt(0) != requiredMode) {
             this.findings.report("SUBLANG-T002", op.opcode() + " receiver must use passing mode " + requiredMode, op.span());
         }
+    }
+
+    // The receiver is a reference to the field's owner or to one of its descendants, whose
+    // layout repeats the owner's fields first.
+    private Bool receiverFits(Int valueType, Int owner) {
+        if (!this.module.types().isKind(valueType, "Ref")) { return false; }
+        Int walker = this.module.types().typeAt(valueType).target();
+        Int steps = 0;
+        while (walker != 0 && steps <= this.module.types().typeCount()) {
+            if (walker == owner) { return true; }
+            walker = this.module.types().typeAt(walker).target();
+            steps = steps + 1;
+        }
+        return false;
     }
 }

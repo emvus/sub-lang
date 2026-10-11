@@ -1,0 +1,253 @@
+namespace sublang::text;
+
+use sublang::text::SublangTextCodec;
+
+// Token stream of one record line with typed readers. A record is read in the order the printer
+// writes it: the keyword, then key=value attributes (or positional values). The first failure is
+// kept as one line of text, SUBLANG-CODE: line L column C: reason, and every later reader then does
+// nothing. Token kinds: 1 word, 2 integer, 3 string, 4 '=', 5 '[', 6 ']', 7 ','.
+public class SublangTextCursor {
+    private Int lineNumber;
+    private Int lineLength;
+    private List<Int> kindList;
+    private List<String> textList;
+    private List<Int> columnList;
+    private Int position;
+    private String failureText;
+
+    public SublangTextCursor(Int line, Int length) {
+        this.lineNumber = line;
+        this.lineLength = length;
+        this.kindList = List();
+        this.textList = List();
+        this.columnList = List();
+        this.position = 0;
+        this.failureText = "";
+    }
+
+    public static Int wordKind() { return 1; }
+    public static Int intKind() { return 2; }
+    public static Int stringKind() { return 3; }
+    public static Int equalsKind() { return 4; }
+    public static Int openKind() { return 5; }
+    public static Int closeKind() { return 6; }
+    public static Int commaKind() { return 7; }
+
+    public Void push(Int kind, String text, Int column) {
+        this.kindList.add(kind);
+        this.textList.add(text + "");
+        this.columnList.add(column);
+    }
+
+    public Bool failed() {
+        return this.failureText != "";
+    }
+
+    public String error() {
+        return this.failureText;
+    }
+
+    public Bool atEnd() {
+        return this.position >= this.kindList.length();
+    }
+
+    public Int line() {
+        return this.lineNumber;
+    }
+
+    public Void failAt(String code, Int column, String reason) {
+        if (this.failed()) { return; }
+        this.failureText = "SUBLANG-" + code + ": line " + this.lineNumber.toString() + " column " + column.toString() + ": " + reason + "";
+    }
+
+    // Reports at the next unread token, or just past the end of the line when none is left.
+    public Void fail(String code, String reason) {
+        if (this.atEnd()) {
+            this.failAt(code, this.lineLength + 1, reason);
+            return;
+        }
+        this.failAt(code, this.columnList.get(this.position), reason);
+    }
+
+    // Reports at the token that was read last.
+    public Void failLast(String code, String reason) {
+        if (this.position == 0) {
+            this.fail(code, reason);
+            return;
+        }
+        this.failAt(code, this.columnList.get(this.position - 1), reason);
+    }
+
+    public String keyword() {
+        if (!this.kindIs(SublangTextCursor.wordKind())) {
+            this.fail("TX001", "expected a record keyword");
+            return "";
+        }
+        return this.take();
+    }
+
+    public Int intPositional() {
+        if (!this.kindIs(SublangTextCursor.intKind())) {
+            this.fail("TX001", "expected an integer");
+            return 0;
+        }
+        return SublangTextCodec.intValue(this.take());
+    }
+
+    public String strPositional() {
+        if (!this.kindIs(SublangTextCursor.stringKind())) {
+            this.fail("TX001", "expected a quoted string");
+            return "";
+        }
+        return this.take();
+    }
+
+    public Int intAttr(String name) {
+        if (!this.key(name)) { return 0; }
+        if (!this.kindIs(SublangTextCursor.intKind())) {
+            this.fail("TX001", "attribute " + name + " expects an integer");
+            return 0;
+        }
+        return SublangTextCodec.intValue(this.take());
+    }
+
+    public String strAttr(String name) {
+        if (!this.key(name)) { return ""; }
+        if (!this.kindIs(SublangTextCursor.stringKind())) {
+            this.fail("TX001", "attribute " + name + " expects a quoted string");
+            return "";
+        }
+        return this.take();
+    }
+
+    public String wordAttr(String name) {
+        if (!this.key(name)) { return ""; }
+        if (!this.kindIs(SublangTextCursor.wordKind())) {
+            this.fail("TX001", "attribute " + name + " expects a word");
+            return "";
+        }
+        return this.take();
+    }
+
+    public Bool boolAttr(String name) {
+        if (!this.key(name)) { return false; }
+        if (!this.kindIs(SublangTextCursor.wordKind())) {
+            this.fail("TX001", "attribute " + name + " expects true or false");
+            return false;
+        }
+        String word = this.take();
+        if (word == "true") { return true; }
+        if (word == "false") { return false; }
+        this.failLast("TX001", "attribute " + name + " expects true or false");
+        return false;
+    }
+
+    public List<Int> intListAttr(String name) {
+        List<Int> values = List();
+        if (!this.key(name) || !this.expect(SublangTextCursor.openKind(), "'[' to open the list")) { return values; }
+        if (this.kindIs(SublangTextCursor.closeKind())) {
+            this.position = this.position + 1;
+            return values;
+        }
+        Bool more = true;
+        while (more && !this.failed()) {
+            if (!this.kindIs(SublangTextCursor.intKind())) {
+                this.fail("TX001", "expected an integer in list " + name);
+                return values;
+            }
+            values.add(SublangTextCodec.intValue(this.take()));
+            more = this.listStep();
+        }
+        return values;
+    }
+
+    public List<String> strListAttr(String name) {
+        List<String> values = List();
+        if (!this.key(name) || !this.expect(SublangTextCursor.openKind(), "'[' to open the list")) { return values; }
+        if (this.kindIs(SublangTextCursor.closeKind())) {
+            this.position = this.position + 1;
+            return values;
+        }
+        Bool more = true;
+        while (more && !this.failed()) {
+            if (!this.kindIs(SublangTextCursor.stringKind())) {
+                this.fail("TX001", "expected a quoted string in list " + name);
+                return values;
+            }
+            values.add(this.take() + "");
+            more = this.listStep();
+        }
+        return values;
+    }
+
+    // Checks that an id attribute names the next ordinal of its table. Reported at the id token.
+    public Bool sequential(Int id, Int expected) {
+        if (this.failed()) { return false; }
+        if (id != expected) {
+            this.failLast("TX003", "id " + id.toString() + " is not the next ordinal " + expected.toString());
+            return false;
+        }
+        return true;
+    }
+
+    public Void expectEnd() {
+        if (this.failed()) { return; }
+        if (!this.atEnd()) {
+            this.fail("TX001", "unexpected token " + this.textList.get(this.position));
+        }
+    }
+
+    private Bool kindIs(Int kind) {
+        return !this.atEnd() && this.kindList.get(this.position) == kind;
+    }
+
+    private String take() {
+        String text = this.textList.get(this.position);
+        this.position = this.position + 1;
+        return text;
+    }
+
+    private Bool expect(Int kind, String what) {
+        if (this.failed()) { return false; }
+        if (!this.kindIs(kind)) {
+            this.fail("TX001", "expected " + what);
+            return false;
+        }
+        this.position = this.position + 1;
+        return true;
+    }
+
+    // Consumes `name=`. Any other word in that place is an unknown or misplaced attribute.
+    private Bool key(String name) {
+        if (this.failed()) { return false; }
+        if (this.atEnd()) {
+            this.fail("TX001", "missing attribute " + name);
+            return false;
+        }
+        if (!this.kindIs(SublangTextCursor.wordKind())) {
+            this.fail("TX001", "expected attribute " + name);
+            return false;
+        }
+        String found = this.textList.get(this.position);
+        if (found != name) {
+            this.fail("TX002", "unknown or misplaced attribute " + found + " (expected " + name + ")");
+            return false;
+        }
+        this.position = this.position + 1;
+        return this.expect(SublangTextCursor.equalsKind(), "'=' after " + name);
+    }
+
+    // After a list element: a comma means another element follows, a closing bracket ends the list.
+    private Bool listStep() {
+        if (this.kindIs(SublangTextCursor.commaKind())) {
+            this.position = this.position + 1;
+            return true;
+        }
+        if (this.kindIs(SublangTextCursor.closeKind())) {
+            this.position = this.position + 1;
+            return false;
+        }
+        this.fail("TX001", "expected ',' or ']' in list");
+        return false;
+    }
+}

@@ -1,0 +1,76 @@
+namespace sublang::effects;
+
+use sublang::body::SublangFunction;
+use sublang::ir::SublangModule;
+use sublang::semantics::SublangEffectFact;
+use sublang::semantics::SublangEffectSummary;
+use sublang::vocabulary::SublangVocabulary;
+use sublang::effects::SublangEffectResult;
+use sublang::effects::SublangFunctionEffects;
+
+// Compares declared claims with the derived facts of a body. A declaration cannot lower what the
+// body derives: derived facts are the effective upper bound, and a contradiction is reported as
+// SUBLANG-E008 rather than silently trusted.
+public class SublangEffectChecks {
+    public static List<String> contradictions(SublangModule module, SublangEffectResult result) {
+        List<String> found = List();
+        Int id = 1;
+        while (id <= module.functionCount()) {
+            if (module.functionAt(id).definition() == "body") {
+                SublangEffectChecks.declared(module, id, result, found);
+                SublangEffectChecks.parameters(module, id, result, found);
+            }
+            id = id + 1;
+        }
+        return found;
+    }
+
+    private static Void declared(SublangModule module, Int id, SublangEffectResult result, List<String> found) {
+        SublangFunction function = module.functionAt(id);
+        if (!module.semantics().hasEffectSummary(function.effectSummary())) { return; }
+        SublangEffectSummary summary = module.semantics().effectSummaryAt(function.effectSummary());
+        List<String> areas = SublangVocabulary.effectAreas();
+        Int index = 0;
+        while (index < summary.factCount()) {
+            SublangEffectFact fact = summary.factAt(index);
+            Int area = SublangEffectChecks.areaIndex(areas, fact.area());
+            Int claimed = SublangEffectChecks.claimed(fact);
+            if (area >= 0 && claimed >= 0 && claimed < result.functionAt(id).area(area)) {
+                found.add("SUBLANG-E008: function " + function.name() + " declares " + fact.area() + "=" + fact.value() + " but its body derives " + result.functionAt(id).areaText(area));
+            }
+            index = index + 1;
+        }
+    }
+
+    // -1 means the fact makes no claim: unknown and assumed-conservative facts bound nothing.
+    private static Int claimed(SublangEffectFact fact) {
+        if (fact.provenance() == "assumed-conservative") { return -1; }
+        if (fact.value() == "none" || fact.value() == "returns") { return 0; }
+        if (fact.value() == "may" || fact.value() == "may-diverge") { return 1; }
+        return -1;
+    }
+
+    private static Int areaIndex(List<String> areas, String name) {
+        Int index = 0;
+        while (index < areas.length()) {
+            if (areas.get(index) == name) { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    private static Void parameters(SublangModule module, Int id, SublangEffectResult result, List<String> found) {
+        SublangFunction function = module.functionAt(id);
+        Int param = 0;
+        while (param < function.paramCount()) {
+            String name = function.paramAt(param).name();
+            if (function.paramAt(param).noEscape() && result.functionAt(id).escapesParam(param)) {
+                found.add("SUBLANG-E008: parameter " + name + " of " + function.name() + " is declared noescape but its body lets it escape");
+            }
+            if (function.paramAt(param).passing() == "borrow_read" && result.functionAt(id).writesParam(param)) {
+                found.add("SUBLANG-E008: borrow_read parameter " + name + " of " + function.name() + " is written by its body");
+            }
+            param = param + 1;
+        }
+    }
+}

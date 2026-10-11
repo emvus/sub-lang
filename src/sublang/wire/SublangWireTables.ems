@@ -43,7 +43,7 @@ public class SublangWireTables {
         while (index < count + 5 && stream.valid()) {
             SublangType type = SublangWireSelection.type(stream, module, index);
             String kind = stream.text(type.kind());
-            if (stream.version() == 1 && (kind == "String" || kind == "List" || kind == "Bond")) { stream.reject("type requires transport v2"); }
+            if (stream.version() == 1 && (kind == "String" || kind == "List" || kind == "Bond" || kind == "Byte")) { stream.reject("type requires transport v2"); }
             String name = stream.text(type.name());
             Int width = stream.number(type.width());
             Bool signed = stream.flag(type.isSigned());
@@ -130,6 +130,61 @@ public class SublangWireTables {
             Int span = stream.number(action.span());
             if (stream.isReading()) { module.semantics().addFailureAction(name, behavior, binding, signature, continues, unwind, span); }
             index = index + 1;
+        }
+    }
+
+    // Closed-world dispatch tables, present only when ext.oo.v1 is declared: registered classes
+    // (type, tag) and groups (name, root, tag field, prototype) with their (tag, function) entries.
+    public static Void dispatch(SublangWireStream stream, SublangModule module) {
+        stream.expect("dispatch");
+        Int classes = stream.count(module.dispatch().classCount(), 4096);
+        Int index = 0;
+        while (index < classes && stream.valid()) {
+            Int type = 0;
+            Int tag = 0;
+            if (!stream.isReading()) { type = module.dispatch().classTypeAt(index); tag = module.dispatch().classTagAt(index); }
+            type = stream.number(type);
+            tag = stream.number(tag);
+            if (stream.isReading()) { module.dispatch().addClass(type, tag); }
+            index = index + 1;
+        }
+        Int groups = stream.count(module.dispatch().groupCount(), 4096);
+        Int group = 1;
+        while (group <= groups && stream.valid()) {
+            SublangWireTables.group(stream, module, group);
+            group = group + 1;
+        }
+    }
+
+    private static Void group(SublangWireStream stream, SublangModule module, Int group) {
+        String name = "";
+        Int root = 0;
+        Int field = 0;
+        Int prototype = 0;
+        Int entries = 0;
+        if (!stream.isReading()) {
+            name = module.dispatch().groupName(group);
+            root = module.dispatch().groupRoot(group);
+            field = module.dispatch().groupTagField(group);
+            prototype = module.dispatch().groupPrototype(group);
+            entries = module.dispatch().entryCount(group);
+        }
+        name = stream.text(name);
+        root = stream.number(root);
+        field = stream.number(field);
+        prototype = stream.number(prototype);
+        entries = stream.count(entries, 4096);
+        Int created = group;
+        if (stream.isReading()) { created = module.dispatch().addGroup(name, root, field, prototype); }
+        Int entry = 0;
+        while (entry < entries && stream.valid()) {
+            Int tag = 0;
+            Int function = 0;
+            if (!stream.isReading()) { tag = module.dispatch().entryTag(group, entry); function = module.dispatch().entryFunction(group, entry); }
+            tag = stream.number(tag);
+            function = stream.number(function);
+            if (stream.isReading()) { module.dispatch().addEntry(created, tag, function); }
+            entry = entry + 1;
         }
     }
 }

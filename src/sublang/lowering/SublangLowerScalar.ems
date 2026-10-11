@@ -1,0 +1,128 @@
+namespace sublang::lowering;
+
+use sublang::body::SublangOperation;
+use sublang::lowering::SublangLowerContext;
+
+// Constants, integer and float arithmetic and comparisons. Checked integer arithmetic calls the
+// provider helpers, which abort on overflow or a zero divisor; wrapping modes become plain
+// Low arithmetic. The overflow mode of the High operation decides, never a global setting.
+public class SublangLowerScalar {
+    public static Void lower(SublangLowerContext context, SublangOperation op) {
+        String code = op.opcode();
+        if (code == "const.int") { context.bind(op.resultValue(), context.constantInt(op.constInt())); return; }
+        if (code == "const.bool") { context.bind(op.resultValue(), context.constantBool(op.constBool())); return; }
+        if (code == "const.float") { context.bind(op.resultValue(), context.constantFloat(op.constFloatBits())); return; }
+        if (code == "compare") {
+            String type = context.valueType(op.operandAt(0));
+            context.bind(op.resultValue(), context.compare(type, op.predicate(), context.value(op.operandAt(0)), context.value(op.operandAt(1))));
+            return;
+        }
+        if (code == "int.to_float") { context.bind(op.resultValue(), context.convert("sitofp", "f64", context.value(op.operandAt(0)))); return; }
+        if (code == "float.to_int") { SublangLowerScalar.exactInt(context, op); return; }
+        if (code == "float.is_int") { SublangLowerScalar.integral(context, op); return; }
+        if (code == "number.equal") { SublangLowerScalar.mixedEqual(context, op); return; }
+        if (code.startsWith("float.")) {
+            context.bind(op.resultValue(), context.binary("f64." + code.substring(6, code.length()), "f64", context.value(op.operandAt(0)), context.value(op.operandAt(1))));
+            return;
+        }
+        SublangLowerScalar.integer(context, op);
+    }
+
+    private static Void integer(SublangLowerContext context, SublangOperation op) {
+        String code = op.opcode();
+        Int left = context.value(op.operandAt(0));
+        if (code == "int.neg") {
+            if (op.overflow() == "wrap") { context.bind(op.resultValue(), context.negate(left)); return; }
+            List<Int> arguments = SublangLowerContext.two(context.constantInt(0), left);
+            context.bind(op.resultValue(), context.runtime("sublang.sub", arguments, "i64"));
+            return;
+        }
+        Int right = context.value(op.operandAt(1));
+        String name = code.substring(4, code.length());
+        if (name == "div" || name == "rem") {
+            context.bind(op.resultValue(), context.runtime("sublang." + name + "." + op.overflow(), SublangLowerContext.two(left, right), "i64"));
+            return;
+        }
+        if (op.overflow() == "wrap") { context.bind(op.resultValue(), context.binary("i64." + name, "i64", left, right)); return; }
+        context.bind(op.resultValue(), context.runtime("sublang." + name, SublangLowerContext.two(left, right), "i64"));
+    }
+
+    // 2^63 and -2^63 as IEEE-754 bit patterns; every Int64 lies in [-2^63, 2^63).
+    private static Int upperBits() { return 4890909195324358656; }
+    private static Int lowerBits() { return -4332462841530417152; }
+
+    // Branching range test: ordered compares are false for NaN, and the upper bound is exclusive,
+    // so infinities, NaN and out-of-range values go to the `outside` block with a false flag.
+    private static Void inRange(SublangLowerContext context, Int value, Int inside, Int outside) {
+        Int low = context.constantFloat(SublangLowerScalar.lowerBits());
+        Int high = context.constantFloat(SublangLowerScalar.upperBits());
+        Int above = context.compare("f64", "oge", value, low);
+        Int step = context.newBlock();
+        List<Int> none = SublangLowerContext.none();
+        context.conditional(above, step, none, outside, none);
+        context.enter(step);
+        context.conditional(context.compare("f64", "olt", value, high), inside, none, outside, none);
+    }
+
+    // is_int: in range and the truncated value converts back to exactly the same Float. -0.0 is
+    // accepted as zero because comparing -0.0 with +0.0 is equal.
+    private static Void integral(SublangLowerContext context, SublangOperation op) {
+        Int value = context.value(op.operandAt(0));
+        Int inside = context.newBlock();
+        Int outside = context.newBlock();
+        Int done = context.newBlock();
+        Int answer = context.blockParam(done, "i1");
+        SublangLowerScalar.inRange(context, value, inside, outside);
+        context.enter(inside);
+        Int truncated = context.convert("fptosi", "i64", value);
+        Int back = context.convert("sitofp", "f64", truncated);
+        context.branch(done, SublangLowerContext.one(context.compare("f64", "oeq", back, value)));
+        context.enter(outside);
+        context.branch(done, SublangLowerContext.one(context.constantBool(false)));
+        context.enter(done);
+        context.bind(op.resultValue(), answer);
+    }
+
+    // to_int: the same guard, then abort unless the value is exactly an integer.
+    private static Void exactInt(SublangLowerContext context, SublangOperation op) {
+        Int value = context.value(op.operandAt(0));
+        Int inside = context.newBlock();
+        Int bad = context.newBlock();
+        Int good = context.newBlock();
+        SublangLowerScalar.inRange(context, value, inside, bad);
+        context.enter(inside);
+        Int truncated = context.convert("fptosi", "i64", value);
+        Int back = context.convert("sitofp", "f64", truncated);
+        List<Int> none = SublangLowerContext.none();
+        context.conditional(context.compare("f64", "oeq", back, value), good, SublangLowerContext.one(truncated), bad, none);
+        context.enter(bad);
+        context.abort();
+        context.enter(good);
+        context.bind(op.resultValue(), context.blockParam(good, "i64"));
+    }
+
+    // number.equal(i, f): true only when f is an integral in-range value equal to i exactly.
+    private static Void mixedEqual(SublangLowerContext context, SublangOperation op) {
+        Int integer = context.value(op.operandAt(0));
+        Int value = context.value(op.operandAt(1));
+        Int inside = context.newBlock();
+        Int outside = context.newBlock();
+        Int done = context.newBlock();
+        Int answer = context.blockParam(done, "i1");
+        SublangLowerScalar.inRange(context, value, inside, outside);
+        context.enter(inside);
+        Int truncated = context.convert("fptosi", "i64", value);
+        Int back = context.convert("sitofp", "f64", truncated);
+        Int whole = context.compare("f64", "oeq", back, value);
+        Int same = context.compare("i64", "eq", truncated, integer);
+        Int check = context.newBlock();
+        List<Int> none = SublangLowerContext.none();
+        context.conditional(whole, check, none, done, SublangLowerContext.one(context.constantBool(false)));
+        context.enter(check);
+        context.branch(done, SublangLowerContext.one(same));
+        context.enter(outside);
+        context.branch(done, SublangLowerContext.one(context.constantBool(false)));
+        context.enter(done);
+        context.bind(op.resultValue(), answer);
+    }
+}

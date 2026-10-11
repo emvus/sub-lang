@@ -1,0 +1,62 @@
+namespace sublang::low;
+
+// One typed Low operation. result() is a function-local value id (0 for none) of type
+// resultType(). operands() are value ids. immediate(), text(), typeText() and index() carry the
+// opcode-specific attributes: an integer constant or float bit pattern, a symbol/predicate/name
+// hint, an aggregate or element type, and a field/function index. targets() are block ids; for
+// cond_branch the operand list is the condition, then the true arguments, then the false ones.
+public class SublangLowOp {
+    private String opcodeText;
+    private Int resultValue;
+    private String resultTypeText;
+    private List<Int> operandList;
+    private Int immediateValue;
+    private String textValue;
+    private String typeValue;
+    private Int indexValue;
+    private List<Int> targetList;
+    private Int trueCount;
+    private Int originId;
+
+    public SublangLowOp(String opcode, Int result, String resultType) {
+        this.opcodeText = opcode + "";
+        this.resultValue = result;
+        this.resultTypeText = resultType + "";
+        this.operandList = List();
+        this.immediateValue = 0;
+        this.textValue = "";
+        this.typeValue = "";
+        this.indexValue = 0;
+        this.targetList = List();
+        this.trueCount = 0;
+        this.originId = 0;
+    }
+
+    public String opcode() { return this.opcodeText; }
+    public Int result() { return this.resultValue; }
+    public String resultType() { return this.resultTypeText; }
+    public Int operandCount() { return this.operandList.length(); }
+    public Int operandAt(Int index) { return this.operandList.get(index); }
+    public Int immediate() { return this.immediateValue; }
+    public String text() { return this.textValue; }
+    public String typeText() { return this.typeValue; }
+    public Int index() { return this.indexValue; }
+    public Int targetCount() { return this.targetList.length(); }
+    public Int targetAt(Int index) { return this.targetList.get(index); }
+    public Int trueArguments() { return this.trueCount; }
+    // High operation id this operation came from; 0 for operations without a single source.
+    public Int origin() { return this.originId; }
+
+    public Bool isTerminator() {
+        return this.opcodeText == "ret" || this.opcodeText == "br" || this.opcodeText == "cond_br" || this.opcodeText == "abort" || this.opcodeText == "invoke" || this.opcodeText == "throw";
+    }
+
+    public SublangLowOp operand(Int value) { this.operandList.add(value); return this; }
+    public SublangLowOp immediateIs(Int value) { this.immediateValue = value; return this; }
+    public SublangLowOp textIs(String value) { this.textValue = value + ""; return this; }
+    public SublangLowOp typeIs(String value) { this.typeValue = value + ""; return this; }
+    public SublangLowOp indexIs(Int value) { this.indexValue = value; return this; }
+    public SublangLowOp target(Int block) { this.targetList.add(block); return this; }
+    public SublangLowOp trueArgumentsAre(Int count) { this.trueCount = count; return this; }
+    public SublangLowOp originIs(Int id) { this.originId = id; return this; }
+}

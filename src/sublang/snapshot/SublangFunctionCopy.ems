@@ -1,0 +1,125 @@
+namespace sublang::snapshot;
+
+use sublang::body::SublangBlock;
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::snapshot::SublangEntityMap;
+
+// Copies one function body into a successor module, dropping the listed operations and
+// renumbering SSA values densely. Operation ids, block ids, type/field/function ids and scope ids
+// are preserved. The value remap is applied to every operand, result, parameter and block argument.
+public class SublangFunctionCopy {
+    public static Void copy(SublangModule target, SublangFunction source, List<Int> removedOps, SublangEntityMap map) {
+        Int id = target.addFunction(source.name(), source.returnType(), source.methodOf(), source.span());
+        SublangFunction copy = target.functionAt(id);
+        copy.setProfile(source.profile());
+        copy.setEffectSummary(source.effectSummary());
+        copy.setLinkage(source.linkage());
+        copy.setDefinition(source.definition());
+        List<Int> remap = SublangFunctionCopy.valueRemap(source, removedOps);
+        Int value = 1;
+        while (value <= source.valueCount()) {
+            if (remap.get(value) != 0) { copy.newValue(source.valueTypeAt(value)); }
+            if (remap.get(value) != value) { map.record("value", id, value, remap.get(value)); }
+            value = value + 1;
+        }
+        Int param = 0;
+        while (param < source.paramCount()) {
+            copy.addParamValue(remap.get(source.paramAt(param).value()), source.paramAt(param).name(), source.paramAt(param).typeId(), source.paramAt(param).passing(), source.paramAt(param).noEscape());
+            param = param + 1;
+        }
+        copy.restoreScopeTotal(source.scopeTotal());
+        Int block = 1;
+        while (block <= source.blockCount()) {
+            SublangFunctionCopy.copyBlock(copy, source, block, removedOps, remap, map, id);
+            block = block + 1;
+        }
+    }
+
+    // Dense numbering of the surviving values; 0 marks a value defined by a removed operation.
+    private static List<Int> valueRemap(SublangFunction source, List<Int> removedOps) {
+        List<Bool> gone = List();
+        Int value = 0;
+        while (value <= source.valueCount()) {
+            gone.add(false);
+            value = value + 1;
+        }
+        Int block = 1;
+        while (block <= source.blockCount()) {
+            Int index = 0;
+            while (index < source.blockAt(block).operationCount()) {
+                SublangOperation op = source.blockAt(block).operationAt(index);
+                if (op.hasResult() && SublangFunctionCopy.removed(removedOps, op.id())) { gone.set(op.resultValue(), true); }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        List<Int> remap = List();
+        remap.add(0);
+        Int next = 0;
+        value = 1;
+        while (value <= source.valueCount()) {
+            if (gone.get(value)) { remap.add(0); }
+            if (!gone.get(value)) { next = next + 1; remap.add(next); }
+            value = value + 1;
+        }
+        return remap;
+    }
+
+    private static Bool removed(List<Int> removedOps, Int opId) {
+        return removedOps.contains(opId);
+    }
+
+    private static Void copyBlock(SublangFunction copy, SublangFunction source, Int blockId, List<Int> removedOps, List<Int> remap, SublangEntityMap map, Int functionId) {
+        copy.addBlock();
+        SublangBlock from = source.blockAt(blockId);
+        Int param = 0;
+        while (param < from.paramCount()) {
+            copy.blockAt(blockId).addParam(remap.get(from.paramAt(param)));
+            param = param + 1;
+        }
+        Int index = 0;
+        while (index < from.operationCount()) {
+            SublangOperation op = from.operationAt(index);
+            if (SublangFunctionCopy.removed(removedOps, op.id())) {
+                map.record("op", functionId, op.id(), 0);
+            }
+            if (!SublangFunctionCopy.removed(removedOps, op.id())) {
+                copy.blockAt(blockId).addOperation(SublangFunctionCopy.operation(op, remap));
+            }
+            index = index + 1;
+        }
+    }
+
+    private static SublangOperation operation(SublangOperation op, List<Int> remap) {
+        SublangOperation next = SublangOperation(op.id(), op.opcode(), op.span());
+        List<Int> operands = List();
+        List<String> modes = List();
+        Int index = 0;
+        while (index < op.operandCount()) {
+            operands.add(remap.get(op.operandAt(index)));
+            index = index + 1;
+        }
+        index = 0;
+        while (index < op.modeCount()) {
+            modes.add(op.modeAt(index));
+            index = index + 1;
+        }
+        next.setOperands(operands, modes);
+        if (op.hasResult()) { next.setResult(remap.get(op.resultValue()), op.resultType()); }
+        next.setResultOwnership(op.resultOwnership());
+        next.setRef(op.ref());
+        next.setScope(op.scope());
+        next.setOverflow(op.overflow());
+        next.setPredicate(op.predicate());
+        next.setFpMode(op.fpMode());
+        next.setTargets(op.targets(), op.trueArgs());
+        next.setConstInt(op.constInt());
+        next.setConstBool(op.constBool());
+        next.setConstFloatBits(op.constFloatBits());
+        next.setEffectSummary(op.effectSummary());
+        next.setConstText(op.constText());
+        return next;
+    }
+}

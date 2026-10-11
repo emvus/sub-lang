@@ -1,0 +1,67 @@
+namespace sublang::snapshot;
+
+use sublang::ir::SublangModule;
+use sublang::snapshot::SublangSnapshotKey;
+
+// Assigns lineage instance ids by object identity and tracks each lineage's newest revision. A
+// module name is not identity: two modules with equal names are different instances. Snapshots
+// are never unfrozen; a transformation derives a new revision and commits it here. Keys of two
+// stores are unrelated, so a store is the unit of analysis and plan isolation.
+public class SublangSnapshotStore {
+    private List<SublangModule> snapshots;
+    private List<Int> snapshotInstances;
+    private List<Int> headRevisions;
+
+    public SublangSnapshotStore() {
+        this.snapshots = List();
+        this.snapshotInstances = List();
+        this.headRevisions = List();
+    }
+
+    // Admits a frozen module as a new lineage, or returns its key if it is already known here.
+    public SublangSnapshotKey admit(SublangModule module) {
+        if (!module.isFrozen()) { return SublangSnapshotKey(0, 0); }
+        Int found = this.snapshots.indexOf(module);
+        if (found >= 0) { return SublangSnapshotKey(this.snapshotInstances.get(found), module.revision()); }
+        this.headRevisions.add(module.revision());
+        this.snapshots.add(module);
+        this.snapshotInstances.add(this.headRevisions.length());
+        return SublangSnapshotKey(this.headRevisions.length(), module.revision());
+    }
+
+    public SublangSnapshotKey keyOf(SublangModule module) {
+        Int found = this.snapshots.indexOf(module);
+        if (found < 0) { return SublangSnapshotKey(0, 0); }
+        return SublangSnapshotKey(this.snapshotInstances.get(found), module.revision());
+    }
+
+    public Int headRevision(Int instance) {
+        if (instance < 1 || instance > this.headRevisions.length()) { return 0; }
+        return this.headRevisions.get(instance - 1);
+    }
+
+    // A superseded snapshot is still valid data; results bound to it just may not be applied to a
+    // newer one.
+    public Bool isHead(SublangSnapshotKey key) {
+        return key.valid() && this.headRevision(key.instance()) == key.revision();
+    }
+
+    public Int nextInstance() { return this.headRevisions.length() + 1; }
+
+    public Int nextRevision(Int instance) {
+        return this.headRevision(instance) + 1;
+    }
+
+    // Registers `derived` as the next revision of the lineage that `parent` belongs to.
+    public Bool commit(SublangModule derived, SublangModule parent) {
+        SublangSnapshotKey origin = this.keyOf(parent);
+        if (!derived.isFrozen() || !origin.valid()) { return false; }
+        if (!this.isHead(origin) || this.snapshots.contains(derived)) { return false; }
+        if (derived.revision() != this.headRevision(origin.instance()) + 1) { return false; }
+        if (derived.parentRevision() != parent.revision()) { return false; }
+        this.snapshots.add(derived);
+        this.snapshotInstances.add(origin.instance());
+        this.headRevisions.set(origin.instance() - 1, derived.revision());
+        return true;
+    }
+}

@@ -38,6 +38,90 @@ public class SublangCollectionBuilder {
         this.cursor.currentBlock().addOperation(op);
     }
 
+    // --- byte-text extension -------------------------------------------------------------
+
+    public Int byteFromInt(Int value, Int span) { return this.convert("byte.from_int", value, this.cursor.module().types().byteType(), span); }
+    public Int byteToInt(Int value, Int span) { return this.convert("byte.to_int", value, this.cursor.module().types().intType(), span); }
+
+    private Int convert(String opcode, Int value, Int result, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation(opcode, span);
+        List<Int> args = List(); args.add(value);
+        List<String> modes = List(); modes.add("value");
+        op.setOperands(args, modes);
+        return this.value(op, result);
+    }
+
+    // list[index] = element for primitive, String and Record elements.
+    public Void set(Int list, Int index, Int element, Int span) {
+        if (!this.ready()) { return; }
+        SublangOperation op = this.operation("list.set", span);
+        List<Int> args = List(); args.add(list); args.add(index); args.add(element);
+        List<String> modes = List(); modes.add("borrow_write"); modes.add("value"); modes.add("value");
+        op.setOperands(args, modes);
+        this.cursor.currentBlock().addOperation(op);
+    }
+
+    // Consumes `child`, drops the previous element exactly once and invalidates borrowed views.
+    public Void replace(Int list, Int index, Int child, Int span) {
+        if (!this.ready()) { return; }
+        SublangOperation op = this.operation("list.replace", span);
+        List<Int> args = List(); args.add(list); args.add(index); args.add(child);
+        List<String> modes = List(); modes.add("borrow_write"); modes.add("value"); modes.add("owned");
+        op.setOperands(args, modes);
+        this.cursor.currentBlock().addOperation(op);
+    }
+
+    // Owned byte list holding a copy of a String value; listType is List<Byte>.
+    public Int textFrom(Int listType, Int text, Int scope, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.from_str", span);
+        List<Int> args = List(); args.add(text);
+        List<String> modes = List(); modes.add("value");
+        op.setOperands(args, modes);
+        op.setRef(listType); op.setScope(scope); op.setResultOwnership("owned");
+        return this.value(op, this.cursor.module().types().refTypeFor(listType));
+    }
+
+    public Void textAppend(Int list, Int text, Int span) {
+        if (!this.ready()) { return; }
+        SublangOperation op = this.operation("text.append", span);
+        List<Int> args = List(); args.add(list); args.add(text);
+        List<String> modes = List(); modes.add("borrow_write"); modes.add("value");
+        op.setOperands(args, modes);
+        this.cursor.currentBlock().addOperation(op);
+    }
+
+    public Int textConcat(Int listType, Int left, Int right, Int scope, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.concat", span);
+        List<Int> args = List(); args.add(left); args.add(right);
+        List<String> modes = List(); modes.add("borrow_read"); modes.add("borrow_read");
+        op.setOperands(args, modes);
+        op.setRef(listType); op.setScope(scope); op.setResultOwnership("owned");
+        return this.value(op, this.cursor.module().types().refTypeFor(listType));
+    }
+
+    // Independent copy of bytes [start, start + length); out-of-range arguments abort.
+    public Int textSlice(Int listType, Int source, Int start, Int length, Int scope, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.slice", span);
+        List<Int> args = List(); args.add(source); args.add(start); args.add(length);
+        List<String> modes = List(); modes.add("borrow_read"); modes.add("value"); modes.add("value");
+        op.setOperands(args, modes);
+        op.setRef(listType); op.setScope(scope); op.setResultOwnership("owned");
+        return this.value(op, this.cursor.module().types().refTypeFor(listType));
+    }
+
+    public Int textEqual(Int left, Int right, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.equal", span);
+        List<Int> args = List(); args.add(left); args.add(right);
+        List<String> modes = List(); modes.add("borrow_read"); modes.add("borrow_read");
+        op.setOperands(args, modes);
+        return this.value(op, this.cursor.module().types().boolType());
+    }
+
     private Int read(String opcode, Int list, Int index, Int span) {
         if (!this.ready()) { return 0; }
         SublangOperation op = this.operation(opcode, span);

@@ -1,0 +1,72 @@
+namespace sublang::effects;
+
+use sublang::ir::SublangModule;
+use sublang::vocabulary::SublangVocabulary;
+use sublang::effects::SublangEffectChecks;
+use sublang::effects::SublangEffectResult;
+use sublang::effects::SublangFunctionEffects;
+
+// Deterministic text of derived effects for the plan, and the LLVM function attributes that the
+// effective guarantees justify. An attribute is only produced from a full memory-free summary.
+public class SublangEffectReport {
+    public static String render(SublangModule module, SublangEffectResult result) {
+        String text = "";
+        List<String> areas = SublangVocabulary.effectAreas();
+        Int id = 1;
+        while (id <= module.functionCount()) {
+            SublangFunctionEffects summary = result.functionAt(id);
+            text = text + "effects: fn" + id.toString() + " " + module.functionAt(id).name() + ":";
+            Int area = 0;
+            while (area < areas.length()) {
+                text = text + " " + areas.get(area) + "=" + summary.areaText(area);
+                area = area + 1;
+            }
+            text = text + SublangEffectReport.parameters(summary);
+            if (SublangEffectReport.attributes(module, result, id) != "") { text = text + " llvm=" + SublangEffectReport.attributes(module, result, id); }
+            text = text + "\n";
+            id = id + 1;
+        }
+        return text;
+    }
+
+    // Contradictions between declared and derived facts and analysis-budget widenings, one line each.
+    public static String diagnostics(SublangModule module, SublangEffectResult result) {
+        String text = "";
+        List<String> found = SublangEffectChecks.contradictions(module, result);
+        Int index = 0;
+        while (index < found.length()) {
+            text = text + "effects: " + found.get(index) + "\n";
+            index = index + 1;
+        }
+        index = 0;
+        while (index < result.noteCount()) {
+            text = text + "effects: " + result.noteAt(index) + "\n";
+            index = index + 1;
+        }
+        return text;
+    }
+
+    private static String parameters(SublangFunctionEffects summary) {
+        String text = "";
+        Int param = 0;
+        while (param < summary.paramCount()) {
+            String flags = "";
+            if (summary.readsParam(param)) { flags = flags + "r"; }
+            if (summary.writesParam(param)) { flags = flags + "w"; }
+            if (summary.escapesParam(param)) { flags = flags + "e"; }
+            if (summary.returnsParam(param)) { flags = flags + "R"; }
+            if (flags != "") { text = text + " arg" + param.toString() + "=" + flags; }
+            param = param + 1;
+        }
+        return text;
+    }
+
+    // Empty unless the derived summary is sufficient: body present, no memory access, no failure,
+    // no allocation, no observable or synchronizing effect and guaranteed to return.
+    public static String attributes(SublangModule module, SublangEffectResult result, Int id) {
+        if (module.functionAt(id).definition() != "body") { return ""; }
+        if (module.entryFunction() == id) { return ""; }
+        if (!result.functionAt(id).memoryFree()) { return ""; }
+        return "nounwind willreturn memory(none)";
+    }
+}

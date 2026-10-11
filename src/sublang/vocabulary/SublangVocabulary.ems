@@ -89,12 +89,29 @@ public class SublangVocabulary {
     }
 
     public static Bool isKnownTypeKind(String kind) {
-        if (kind == "String" || kind == "List" || kind == "Bond") { return true; }
+        if (kind == "String" || kind == "List" || kind == "Bond" || kind == "Byte") { return true; }
         return kind == "Void" || kind == "Bool" || kind == "Int" || kind == "Float" || kind == "Record" || kind == "Class" || kind == "Ref";
     }
 
     public static Bool isPrimitiveKind(String kind) {
-        return kind == "Bool" || kind == "Int" || kind == "Float";
+        return kind == "Bool" || kind == "Int" || kind == "Float" || kind == "Byte";
+    }
+
+    // Operations of the object extension (Wire feature ext.oo.v1): hierarchy upcasts and
+    // closed-world virtual calls through a dispatch group.
+    public static Bool isObjectOpcode(String opcode) {
+        return opcode == "class.upcast" || opcode == "class.downcast" || opcode == "call.virtual";
+    }
+
+    // Operations of the numeric-conversion extension (Wire feature ext.numeric.v1).
+    public static Bool isNumericOpcode(String opcode) {
+        return opcode == "int.to_float" || opcode == "float.to_int" || opcode == "float.is_int" || opcode == "number.equal";
+    }
+
+    // Operations of the byte-text extension (Wire feature ext.bytes.v1).
+    public static Bool isTextOpcode(String opcode) {
+        return opcode == "byte.from_int" || opcode == "byte.to_int" || opcode == "list.set" || opcode == "list.replace"
+            || opcode == "text.from_str" || opcode == "text.append" || opcode == "text.concat" || opcode == "text.slice" || opcode == "text.equal";
     }
 
     public static Bool isKnownPassing(String mode) {
@@ -119,7 +136,13 @@ public class SublangVocabulary {
     }
 
     public static Bool isTerminator(String opcode) {
-        return opcode == "return" || opcode == "branch" || opcode == "cond_branch" || opcode == "fail";
+        return opcode == "return" || opcode == "branch" || opcode == "cond_branch" || opcode == "fail" || SublangVocabulary.isExceptionOpcode(opcode);
+    }
+
+    // Terminators of the exception extension (Wire feature ext.eh.v1): invoke has a normal and an
+    // unwind edge, throw raises an Int code, resume rethrows a caught code.
+    public static Bool isExceptionOpcode(String opcode) {
+        return opcode == "invoke" || opcode == "throw" || opcode == "resume";
     }
 
     public static Bool isIntOpcode(String opcode) {
@@ -136,6 +159,7 @@ public class SublangVocabulary {
         if (opcode == "list.new" || opcode == "list.push" || opcode == "list.length" || opcode == "list.get" || opcode == "list.borrow" || opcode == "list.clear") { return true; }
         if (opcode == "const.string" || opcode == "string.length" || opcode == "string.byte" || opcode == "string.equal") { return true; }
         if (opcode == "field.borrow") { return true; }
+        if (SublangVocabulary.isTextOpcode(opcode) || SublangVocabulary.isNumericOpcode(opcode) || SublangVocabulary.isObjectOpcode(opcode)) { return true; }
         if (SublangVocabulary.isTerminator(opcode) || SublangVocabulary.isIntOpcode(opcode) || SublangVocabulary.isFloatOpcode(opcode)) {
             return true;
         }
@@ -148,6 +172,8 @@ public class SublangVocabulary {
         if (opcode == "list.new" || opcode == "list.length" || opcode == "list.get" || opcode == "list.borrow") { return true; }
         if (opcode == "const.string" || opcode == "string.length" || opcode == "string.byte" || opcode == "string.equal") { return true; }
         if (opcode == "field.borrow") { return true; }
+        if (opcode == "byte.from_int" || opcode == "byte.to_int" || opcode == "text.from_str" || opcode == "text.concat" || opcode == "text.slice" || opcode == "text.equal") { return true; }
+        if (SublangVocabulary.isNumericOpcode(opcode) || opcode == "class.upcast" || opcode == "class.downcast") { return true; }
         if (SublangVocabulary.isIntOpcode(opcode) || SublangVocabulary.isFloatOpcode(opcode)) {
             return true;
         }
@@ -167,7 +193,7 @@ public class SublangVocabulary {
         if (opcode == "bond.own") { return "field"; }
         if (opcode == "bond.new") { return "type"; }
         if (opcode == "bond.get" || opcode == "bond.link" || opcode == "bond.clear" || opcode == "bond.write") { return "field"; }
-        if (opcode == "list.new") { return "type"; }
+        if (opcode == "list.new" || opcode == "text.from_str" || opcode == "text.concat" || opcode == "text.slice") { return "type"; }
         if (opcode == "field.borrow") { return "field"; }
         if (opcode == "record.make" || opcode == "class.new") {
             return "type";
@@ -175,9 +201,11 @@ public class SublangVocabulary {
         if (opcode == "record.get" || opcode == "record.with" || opcode == "field.init" || opcode == "field.clear" || opcode == "field.has" || opcode == "field.take" || opcode == "field.read" || opcode == "field.write") {
             return "field";
         }
-        if (opcode == "call.direct") {
+        if (opcode == "call.direct" || opcode == "invoke") {
             return "function";
         }
+        if (opcode == "call.virtual") { return "group"; }
+        if (opcode == "class.upcast" || opcode == "class.downcast") { return "type"; }
         if (opcode == "scope.begin" || opcode == "scope.end") {
             return "scope";
         }
@@ -189,7 +217,7 @@ public class SublangVocabulary {
 
     // Verification dimension of a diagnostic code: S and T are structure, everything else is semantics.
     public static String dimensionOf(String code) {
-        if (code.startsWith("SUBLANG-S") || code.startsWith("SUBLANG-T")) {
+        if (code.startsWith("SUBLANG-S") || code.startsWith("SUBLANG-T") || code.startsWith("SUBLANG-X") || code.startsWith("SUBLANG-O")) {
             return "structure";
         }
         return "semantics";

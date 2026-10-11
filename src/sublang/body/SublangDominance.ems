@@ -46,7 +46,7 @@ public class SublangDominance {
             return result;
         }
         SublangOperation last = blockEntry.operationAt(count - 1);
-        if (last.opcode() != "branch" && last.opcode() != "cond_branch") {
+        if (last.opcode() != "branch" && last.opcode() != "cond_branch" && last.opcode() != "invoke") {
             return result;
         }
         Int index = 0;

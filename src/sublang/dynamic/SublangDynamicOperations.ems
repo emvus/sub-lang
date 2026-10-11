@@ -1,0 +1,170 @@
+namespace sublang::dynamic;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangOperationBuilder;
+use sublang::dynamic::SublangDynamicLayout;
+use sublang::dynamic::SublangDynamicBranch;
+
+// Read-only operations on borrowed Dyn values: dyn_truthy, dyn_equal and dyn_to_int. None of them
+// allocates, so none opens a scope. Every impossible tag reaches a fail with dyn.internal or
+// dyn.type_error, and no Bool is ever coerced to Int.
+public class SublangDynamicOperations {
+    private SublangBuilder builder;
+    private SublangDynamicLayout layout;
+    private SublangDynamicBranch branch;
+    private Int span;
+
+    public SublangDynamicOperations(SublangBuilder builder, SublangDynamicLayout layout, Int span) {
+        this.builder = builder;
+        this.layout = layout;
+        this.branch = SublangDynamicBranch(builder, span);
+        this.span = span;
+    }
+
+    // nil: false; bool and int: num != 0; float: real is not zero and not NaN (`one` is ordered, so
+    // NaN compares false); text: byte length > 0.
+    public Int defineTruthy() {
+        Int function = this.builder.beginFunction("dyn_truthy", this.builder.boolType(), 0, this.span);
+        Int value = this.builder.addParam("value", this.layout.dynRef(), "borrow_read", false);
+        this.builder.beginBlock();
+        SublangOperationBuilder ops = this.builder.ops();
+        Int tag = ops.fieldRead(value, this.layout.tagField(), this.span);
+        Int num = ops.fieldRead(value, this.layout.numField(), this.span);
+        Int real = ops.fieldRead(value, this.layout.realField(), this.span);
+        Int zeroInt = ops.constInt(0, this.span);
+
+        Int nilBlock = this.builder.newBlock();
+        Int restNil = this.branch.test(this.branch.equalsConstant(tag, 0), nilBlock);
+        this.builder.enterBlock(nilBlock);
+        ops.returnValue(ops.constBool(false, this.span), this.span);
+        this.builder.enterBlock(restNil);
+
+        Int boolBlock = this.builder.newBlock();
+        Int restBool = this.branch.test(this.branch.equalsConstant(tag, 1), boolBlock);
+        this.builder.enterBlock(boolBlock);
+        ops.returnValue(ops.compare("ne", num, zeroInt, this.span), this.span);
+        this.builder.enterBlock(restBool);
+
+        Int intBlock = this.builder.newBlock();
+        Int restInt = this.branch.test(this.branch.equalsConstant(tag, 2), intBlock);
+        this.builder.enterBlock(intBlock);
+        ops.returnValue(ops.compare("ne", num, zeroInt, this.span), this.span);
+        this.builder.enterBlock(restInt);
+
+        Int floatBlock = this.builder.newBlock();
+        Int restFloat = this.branch.test(this.branch.equalsConstant(tag, 3), floatBlock);
+        this.builder.enterBlock(floatBlock);
+        ops.returnValue(ops.compare("one", real, ops.constFloatBits(0, this.span), this.span), this.span);
+        this.builder.enterBlock(restFloat);
+
+        Int textBlock = this.builder.newBlock();
+        Int restText = this.branch.test(this.branch.equalsConstant(tag, 4), textBlock);
+        this.builder.enterBlock(textBlock);
+        Int bytes = ops.fieldBorrow(value, this.layout.textField(), this.span);
+        Int length = this.builder.collections().length(bytes, this.span);
+        ops.returnValue(ops.compare("gt", length, ops.constInt(0, this.span), this.span), this.span);
+        this.builder.enterBlock(restText);
+
+        this.branch.fail(this.layout.internalFailure());
+        return function;
+    }
+
+    // Same tags compare their payloads (text by bytes, float with IEEE oeq, so NaN is unequal and
+    // -0.0 equals 0.0). An Int and a Float compare with number.equal, which is exact and never
+    // rounds the Int. Every other pair of tags is unequal.
+    public Int defineEqual() {
+        Int function = this.builder.beginFunction("dyn_equal", this.builder.boolType(), 0, this.span);
+        Int left = this.builder.addParam("left", this.layout.dynRef(), "borrow_read", false);
+        Int right = this.builder.addParam("right", this.layout.dynRef(), "borrow_read", false);
+        this.builder.beginBlock();
+        SublangOperationBuilder ops = this.builder.ops();
+        Int leftTag = ops.fieldRead(left, this.layout.tagField(), this.span);
+        Int rightTag = ops.fieldRead(right, this.layout.tagField(), this.span);
+        Int key = ops.intBinary("int.add", ops.intBinary("int.mul", leftTag, ops.constInt(10, this.span), "wrap", 0, this.span), rightTag, "wrap", 0, this.span);
+
+        Int intFloatBlock = this.builder.newBlock();
+        Int restIntFloat = this.branch.test(this.branch.equalsConstant(key, 23), intFloatBlock);
+        this.builder.enterBlock(intFloatBlock);
+        Int leftNum = ops.fieldRead(left, this.layout.numField(), this.span);
+        Int rightReal = ops.fieldRead(right, this.layout.realField(), this.span);
+        ops.returnValue(ops.numberEqual(leftNum, rightReal, this.span), this.span);
+        this.builder.enterBlock(restIntFloat);
+
+        Int floatIntBlock = this.builder.newBlock();
+        Int restFloatInt = this.branch.test(this.branch.equalsConstant(key, 32), floatIntBlock);
+        this.builder.enterBlock(floatIntBlock);
+        Int rightNum = ops.fieldRead(right, this.layout.numField(), this.span);
+        Int leftReal = ops.fieldRead(left, this.layout.realField(), this.span);
+        ops.returnValue(ops.numberEqual(rightNum, leftReal, this.span), this.span);
+        this.builder.enterBlock(restFloatInt);
+
+        Int nilBlock = this.builder.newBlock();
+        Int restNil = this.branch.test(this.branch.equalsConstant(key, 0), nilBlock);
+        this.builder.enterBlock(nilBlock);
+        ops.returnValue(ops.constBool(true, this.span), this.span);
+        this.builder.enterBlock(restNil);
+
+        Int boolBlock = this.builder.newBlock();
+        Int restBool = this.branch.test(this.branch.equalsConstant(key, 11), boolBlock);
+        this.builder.enterBlock(boolBlock);
+        ops.returnValue(this.numbersEqual(left, right), this.span);
+        this.builder.enterBlock(restBool);
+
+        Int intBlock = this.builder.newBlock();
+        Int restInt = this.branch.test(this.branch.equalsConstant(key, 22), intBlock);
+        this.builder.enterBlock(intBlock);
+        ops.returnValue(this.numbersEqual(left, right), this.span);
+        this.builder.enterBlock(restInt);
+
+        Int floatBlock = this.builder.newBlock();
+        Int restFloat = this.branch.test(this.branch.equalsConstant(key, 33), floatBlock);
+        this.builder.enterBlock(floatBlock);
+        Int leftFloat = ops.fieldRead(left, this.layout.realField(), this.span);
+        Int rightFloat = ops.fieldRead(right, this.layout.realField(), this.span);
+        ops.returnValue(ops.compare("oeq", leftFloat, rightFloat, this.span), this.span);
+        this.builder.enterBlock(restFloat);
+
+        Int textBlock = this.builder.newBlock();
+        Int restText = this.branch.test(this.branch.equalsConstant(key, 44), textBlock);
+        this.builder.enterBlock(textBlock);
+        Int leftBytes = ops.fieldBorrow(left, this.layout.textField(), this.span);
+        Int rightBytes = ops.fieldBorrow(right, this.layout.textField(), this.span);
+        ops.returnValue(this.builder.collections().textEqual(leftBytes, rightBytes, this.span), this.span);
+        this.builder.enterBlock(restText);
+
+        ops.returnValue(ops.constBool(false, this.span), this.span);
+        return function;
+    }
+
+    // Both operands are Int (tag 2) or both Bool (tag 1): compare num.
+    private Int numbersEqual(Int left, Int right) {
+        Int leftNum = this.builder.ops().fieldRead(left, this.layout.numField(), this.span);
+        Int rightNum = this.builder.ops().fieldRead(right, this.layout.numField(), this.span);
+        return this.builder.ops().compare("eq", leftNum, rightNum, this.span);
+    }
+
+    // int returns num; float uses the exact float.to_int, which aborts unless the value is integral
+    // and in range; every other tag aborts with dyn.type_error (no Bool-to-Int coercion).
+    public Int defineToInt() {
+        Int function = this.builder.beginFunction("dyn_to_int", this.builder.intType(), 0, this.span);
+        Int value = this.builder.addParam("value", this.layout.dynRef(), "borrow_read", false);
+        this.builder.beginBlock();
+        SublangOperationBuilder ops = this.builder.ops();
+        Int tag = ops.fieldRead(value, this.layout.tagField(), this.span);
+
+        Int intBlock = this.builder.newBlock();
+        Int restInt = this.branch.test(this.branch.equalsConstant(tag, 2), intBlock);
+        this.builder.enterBlock(intBlock);
+        ops.returnValue(ops.fieldRead(value, this.layout.numField(), this.span), this.span);
+        this.builder.enterBlock(restInt);
+
+        Int floatBlock = this.builder.newBlock();
+        Int restFloat = this.branch.test(this.branch.equalsConstant(tag, 3), floatBlock);
+        this.builder.enterBlock(floatBlock);
+        ops.returnValue(ops.floatToInt(ops.fieldRead(value, this.layout.realField(), this.span), this.span), this.span);
+        this.builder.enterBlock(restFloat);
+
+        this.branch.fail(this.layout.typeError());
+        return function;
+    }
+}

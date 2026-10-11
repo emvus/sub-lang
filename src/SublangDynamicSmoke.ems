@@ -1,0 +1,66 @@
+use sublang::backend::SublangCompiler;
+use sublang::backend::SublangCompilation;
+use sublang::ir::SublangModule;
+use sublang::harness::pass::SublangDynamicFixtures;
+use Std::Native::NativeFile;
+use Std::Process::Processes;
+
+// Bundled generator for the Dyn library acceptance programs, built only inside the capped sandbox.
+// It writes /tmp/dyn/<name>-<flow>.ll and .plan for flow off and on, and asserts the D6 gates.
+public class SublangDynamicSmoke {
+    public static Void emit(String name, SublangModule module) {
+        module.freeze();
+        SublangDynamicSmoke.variant(name, module, "off");
+        SublangDynamicSmoke.variant(name, module, "on");
+        println("EMIT " + name);
+    }
+
+    private static Void variant(String name, SublangModule module, String flow) {
+        SublangCompilation compiled = SublangCompiler.compile(module, true, flow);
+        if (!compiled.codegenReady()) {
+            println("FAIL " + name + " flow=" + flow + ": " + compiled.error());
+            Processes.exit(1);
+            return;
+        }
+        NativeFile.writeText("/tmp/dyn/" + name + "-" + flow + ".ll", compiled.llvm());
+        NativeFile.writeText("/tmp/dyn/" + name + "-" + flow + ".plan", compiled.explainMemory());
+    }
+
+    // D6: a borrowed parameter returned as owned must be rejected by the lifetime gate.
+    private static Void rejectDangling() {
+        SublangModule module = SublangDynamicFixtures.d6();
+        module.freeze();
+        SublangCompilation result = SublangCompiler.compile(module, true, "on");
+        if (result.codegenReady() || result.error().indexOf("borrowed reference cannot be returned as owned") < 0) {
+            println("FAIL dangling borrowed return was not rejected: " + result.error());
+            Processes.exit(1);
+            return;
+        }
+        println("PASS dangling borrowed return is rejected by the backend gate");
+    }
+
+    // D6: the plan of the D1 module, with Flow on, names the owned-return blocker.
+    private static Void checkPlan() {
+        SublangModule module = SublangDynamicFixtures.d1();
+        module.freeze();
+        SublangCompilation result = SublangCompiler.compile(module, true, "on");
+        if (!result.codegenReady() || result.explainMemory().indexOf("may leave the region") < 0) {
+            println("FAIL D1 plan does not explain the blocker 'may leave the region'");
+            Processes.exit(1);
+            return;
+        }
+        println("PASS D1 plan (Flow on) explains the blocker 'may leave the region'");
+    }
+}
+
+main() {
+    SublangDynamicSmoke.emit("dyn-d1", SublangDynamicFixtures.d1());
+    SublangDynamicSmoke.emit("dyn-d2", SublangDynamicFixtures.d2());
+    SublangDynamicSmoke.emit("dyn-d3", SublangDynamicFixtures.d3());
+    SublangDynamicSmoke.emit("dyn-d4-type", SublangDynamicFixtures.d4Type());
+    SublangDynamicSmoke.emit("dyn-d4-inexact", SublangDynamicFixtures.d4Inexact());
+    SublangDynamicSmoke.emit("dyn-d4-overflow", SublangDynamicFixtures.d4Overflow());
+    SublangDynamicSmoke.emit("dyn-d5", SublangDynamicFixtures.d5());
+    SublangDynamicSmoke.rejectDangling();
+    SublangDynamicSmoke.checkPlan();
+}

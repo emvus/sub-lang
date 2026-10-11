@@ -1,0 +1,55 @@
+namespace sublang::harness::pass;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+// Provider/consumer modules for the linker. The consumer declares `consume` as an import and
+// passes it an owned Box; after linking, the program is one module with one runtime.
+//   kind 0: provider: Box{x}, consume(owned Box) = x + 1
+//   kind 1: consumer: main allocates Box{41}, transfers it to consume, returns 42
+//   kind 2: consumer whose import has a different signature (Int instead of owned Box)
+//   kind 3: consumer importing a function the provider does not define
+//   kind 4: consumer whose Box has an extra field (incompatible layout)
+public class SublangLinkFixtures {
+    private static Int box(SublangBuilder builder, Int span, Bool extra) {
+        Int box = builder.classType("Box", span);
+        builder.classField(box, "x", builder.intType(), true, span);
+        if (extra) { builder.classField(box, "y", builder.intType(), true, span); }
+        return box;
+    }
+
+    public static SublangModule build(Int kind) {
+        SublangBuilder builder = SublangBuilder("link-" + kind.toString());
+        Int span = builder.syntheticSpan("link:fixture");
+        Int box = SublangLinkFixtures.box(builder, span, kind == 4);
+        Int field = builder.module().types().typeAt(box).fieldAt(0);
+        if (kind == 0) {
+            Int function = builder.beginFunction("consume", builder.intType(), 0, span);
+            Int owned = builder.addParam("box", builder.refType(box), "owned", false);
+            builder.beginBlock();
+            Int value = builder.ops().fieldRead(owned, field, span);
+            builder.ops().returnValue(builder.ops().intBinary("int.add", value, builder.ops().constInt(1, span), "wrap", 0, span), span);
+            return builder.module();
+        }
+        String name = "consume";
+        if (kind == 3) { name = "missing"; }
+        Int imported = builder.declareExternal(name, builder.intType(), span);
+        if (kind == 2) { builder.addParam("value", builder.intType(), "value", false); }
+        if (kind != 2) { builder.addParam("box", builder.refType(box), "owned", false); }
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int object = builder.ops().classNew(box, scope, span);
+        builder.ops().fieldInit(object, field, builder.ops().constInt(41, span), span);
+        if (kind == 4) { builder.ops().fieldInit(object, builder.module().types().typeAt(box).fieldAt(1), builder.ops().constInt(0, span), span); }
+        List<Int> arguments = List();
+        List<String> modes = List();
+        if (kind == 2) { arguments.add(builder.ops().constInt(41, span)); modes.add("value"); }
+        if (kind != 2) { arguments.add(object); modes.add("owned"); }
+        Int result = builder.ops().callDirect(imported, arguments, modes, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(result, span);
+        return builder.module();
+    }
+}

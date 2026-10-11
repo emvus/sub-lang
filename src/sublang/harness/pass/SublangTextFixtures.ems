@@ -1,0 +1,282 @@
+namespace sublang::harness::pass;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+// Byte-text and list-element fixtures. The expected results are fixed by construction:
+// loop 2021, utf8 195164, listset 139, replace 5, and three aborting variants.
+public class SublangTextFixtures {
+    private static List<Int> none() {
+        List<Int> values = List();
+        return values;
+    }
+
+    private static Void entry(SublangBuilder builder, Int span) {
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+    }
+
+    // 101 appends of "ab", a temporary concatenation per iteration in its own scope, then a slice
+    // that must equal "abab". Result: length(202) * 10 + 1 = 2021.
+    public static SublangModule loop() {
+        SublangBuilder builder = SublangBuilder("text-loop");
+        Int span = builder.syntheticSpan("text:loop");
+        Int bytes = builder.listType(builder.byteType(), span);
+        SublangTextFixtures.entry(builder, span);
+        Int scope = builder.ops().scopeBegin(span);
+        Int base = builder.collections().textFrom(bytes, builder.ops().constString("ab", span), scope, span);
+        Int header = builder.newBlock();
+        Int body = builder.newBlock();
+        Int done = builder.newBlock();
+        List<Int> start = List();
+        start.add(builder.ops().constInt(0, span));
+        builder.ops().branchTo(header, start, span);
+        builder.enterBlock(header);
+        Int index = builder.addBlockParam(builder.intType());
+        Int below = builder.ops().compare("lt", index, builder.ops().constInt(100, span), span);
+        builder.ops().condBranch(below, body, SublangTextFixtures.none(), done, SublangTextFixtures.none(), span);
+        builder.enterBlock(body);
+        builder.collections().textAppend(base, builder.ops().constString("ab", span), span);
+        Int inner = builder.ops().scopeBegin(span);
+        Int temporary = builder.collections().textConcat(bytes, base, base, inner, span);
+        builder.collections().length(temporary, span);
+        builder.ops().scopeEnd(inner, span);
+        List<Int> next = List();
+        next.add(builder.ops().intBinary("int.add", index, builder.ops().constInt(1, span), "wrap", 0, span));
+        builder.ops().branchTo(header, next, span);
+        builder.enterBlock(done);
+        Int total = builder.collections().length(base, span);
+        Int slice = builder.collections().textSlice(bytes, base, builder.ops().constInt(2, span), builder.ops().constInt(4, span), scope, span);
+        Int expected = builder.collections().textFrom(bytes, builder.ops().constString("abab", span), scope, span);
+        Int same = builder.collections().textEqual(slice, expected, span);
+        Int scaled = builder.ops().intBinary("int.mul", total, builder.ops().constInt(10, span), "wrap", 0, span);
+        builder.ops().scopeEnd(scope, span);
+        Int yes = builder.newBlock();
+        Int no = builder.newBlock();
+        builder.ops().condBranch(same, yes, SublangTextFixtures.none(), no, SublangTextFixtures.none(), span);
+        builder.enterBlock(yes);
+        builder.ops().returnValue(builder.ops().intBinary("int.add", scaled, builder.ops().constInt(1, span), "wrap", 0, span), span);
+        builder.enterBlock(no);
+        builder.ops().returnValue(scaled, span);
+        return builder.module();
+    }
+
+    // "ä" is two UTF-8 bytes and "a", NUL, "b" has an embedded zero byte that is built at run time.
+    // Result: 195 * 1000 + 164 = 195164 plus 0 for the zero byte plus 0 for length(3) + length("") - 3.
+    public static SublangModule utf8() {
+        SublangBuilder builder = SublangBuilder("text-utf8");
+        Int span = builder.syntheticSpan("text:utf8");
+        Int bytes = builder.listType(builder.byteType(), span);
+        SublangTextFixtures.entry(builder, span);
+        Int scope = builder.ops().scopeBegin(span);
+        Int accent = builder.collections().textFrom(bytes, builder.ops().constString("ä", span), scope, span);
+        Int zeros = builder.collections().textFrom(bytes, builder.ops().constString("a", span), scope, span);
+        builder.collections().push(zeros, builder.collections().byteFromInt(builder.ops().constInt(0, span), span), span);
+        builder.collections().textAppend(zeros, builder.ops().constString("b", span), span);
+        Int empty = builder.collections().textFrom(bytes, builder.ops().constString("", span), scope, span);
+        Int high = builder.collections().byteToInt(builder.collections().get(accent, builder.ops().constInt(0, span), span), span);
+        Int low = builder.collections().byteToInt(builder.collections().get(accent, builder.ops().constInt(1, span), span), span);
+        Int middle = builder.collections().byteToInt(builder.collections().get(zeros, builder.ops().constInt(1, span), span), span);
+        Int lengths = builder.ops().intBinary("int.add", builder.collections().length(zeros, span), builder.collections().length(empty, span), "wrap", 0, span);
+        Int answer = builder.ops().intBinary("int.add", builder.ops().intBinary("int.mul", high, builder.ops().constInt(1000, span), "wrap", 0, span), low, "wrap", 0, span);
+        answer = builder.ops().intBinary("int.add", answer, builder.ops().intBinary("int.add", middle, builder.ops().intBinary("int.sub", lengths, builder.ops().constInt(3, span), "wrap", 0, span), "wrap", 0, span), "wrap", 0, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(answer, span);
+        return builder.module();
+    }
+
+    // [10, 20, 30]; list[1] = 99; sum = 139.
+    public static SublangModule listSet() {
+        SublangBuilder builder = SublangBuilder("list-set");
+        Int span = builder.syntheticSpan("text:set");
+        Int type = builder.listType(builder.intType(), span);
+        SublangTextFixtures.entry(builder, span);
+        Int scope = builder.ops().scopeBegin(span);
+        Int list = builder.collections().listNew(type, scope, span);
+        builder.collections().push(list, builder.ops().constInt(10, span), span);
+        builder.collections().push(list, builder.ops().constInt(20, span), span);
+        builder.collections().push(list, builder.ops().constInt(30, span), span);
+        builder.collections().set(list, builder.ops().constInt(1, span), builder.ops().constInt(99, span), span);
+        Int first = builder.collections().get(list, builder.ops().constInt(0, span), span);
+        Int second = builder.collections().get(list, builder.ops().constInt(1, span), span);
+        Int third = builder.collections().get(list, builder.ops().constInt(2, span), span);
+        Int sum = builder.ops().intBinary("int.add", builder.ops().intBinary("int.add", first, second, "wrap", 0, span), third, "wrap", 0, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(sum, span);
+        return builder.module();
+    }
+
+    // A Box with an empty owned child link, so it is stored as an owned (non-inline) element.
+    private static Int box(SublangBuilder builder, Int type, Int value, Int link, Int scope, Int number, Int span) {
+        Int object = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(object, value, builder.ops().constInt(number, span), span);
+        builder.ops().fieldClear(object, link, span);
+        return object;
+    }
+
+    // Owned element replacement: the old Box is dropped once, the new one is stored. Result 5.
+    // With `stale`, a borrowed view of the old element is used after the replacement.
+    public static SublangModule replace(Bool stale) {
+        SublangBuilder builder = SublangBuilder("list-replace");
+        Int span = builder.syntheticSpan("text:replace");
+        Int box = builder.classType("Box", span);
+        Int field = builder.classField(box, "x", builder.intType(), true, span);
+        Int link = builder.classField(box, "link", builder.refType(box), true, span);
+        Int type = builder.listType(box, span);
+        SublangTextFixtures.entry(builder, span);
+        Int scope = builder.ops().scopeBegin(span);
+        Int list = builder.collections().listNew(type, scope, span);
+        builder.collections().push(list, SublangTextFixtures.box(builder, box, field, link, scope, 1, span), span);
+        Int view = builder.collections().borrow(list, builder.ops().constInt(0, span), span);
+        Int second = SublangTextFixtures.box(builder, box, field, link, scope, 5, span);
+        builder.collections().replace(list, builder.ops().constInt(0, span), second, span);
+        Int source = view;
+        if (!stale) { source = builder.collections().borrow(list, builder.ops().constInt(0, span), span); }
+        Int answer = builder.ops().fieldRead(source, field, span);
+        builder.collections().clear(list, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(answer, span);
+        return builder.module();
+    }
+
+    // 200000 iterations, each building a 2000-byte temporary in its own scope. If dead buffers
+    // accumulated, the run would need 400 MB; the bundled check runs it under a 150 MB address
+    // space limit. Result: 200000 * 2000 = 400000000.
+    public static SublangModule churn() {
+        SublangBuilder builder = SublangBuilder("text-churn");
+        Int span = builder.syntheticSpan("text:churn");
+        Int bytes = builder.listType(builder.byteType(), span);
+        SublangTextFixtures.entry(builder, span);
+        Int scope = builder.ops().scopeBegin(span);
+        Int base = builder.collections().textFrom(bytes, builder.ops().constString("0123456789", span), scope, span);
+        Int fill = builder.newBlock();
+        Int fillBody = builder.newBlock();
+        Int filled = builder.newBlock();
+        List<Int> zero = List();
+        zero.add(builder.ops().constInt(0, span));
+        builder.ops().branchTo(fill, zero, span);
+        builder.enterBlock(fill);
+        Int step = builder.addBlockParam(builder.intType());
+        builder.ops().condBranch(builder.ops().compare("lt", step, builder.ops().constInt(99, span), span), fillBody, SublangTextFixtures.none(), filled, SublangTextFixtures.none(), span);
+        builder.enterBlock(fillBody);
+        builder.collections().textAppend(base, builder.ops().constString("0123456789", span), span);
+        List<Int> more = List();
+        more.add(builder.ops().intBinary("int.add", step, builder.ops().constInt(1, span), "wrap", 0, span));
+        builder.ops().branchTo(fill, more, span);
+        builder.enterBlock(filled);
+        Int header = builder.newBlock();
+        Int body = builder.newBlock();
+        Int done = builder.newBlock();
+        List<Int> start = List();
+        start.add(builder.ops().constInt(0, span));
+        start.add(builder.ops().constInt(0, span));
+        builder.ops().branchTo(header, start, span);
+        builder.enterBlock(header);
+        Int index = builder.addBlockParam(builder.intType());
+        Int sum = builder.addBlockParam(builder.intType());
+        builder.ops().condBranch(builder.ops().compare("lt", index, builder.ops().constInt(200000, span), span), body, SublangTextFixtures.none(), done, SublangTextFixtures.none(), span);
+        builder.enterBlock(body);
+        Int inner = builder.ops().scopeBegin(span);
+        Int temporary = builder.collections().textConcat(bytes, base, base, inner, span);
+        Int length = builder.collections().length(temporary, span);
+        builder.ops().scopeEnd(inner, span);
+        List<Int> next = List();
+        next.add(builder.ops().intBinary("int.add", index, builder.ops().constInt(1, span), "wrap", 0, span));
+        next.add(builder.ops().intBinary("int.add", sum, length, "wrap", 0, span));
+        builder.ops().branchTo(header, next, span);
+        builder.enterBlock(done);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(sum, span);
+        return builder.module();
+    }
+
+    // kind 0: list.set past the end; 1: slice past the end; 2: byte.from_int(300).
+    public static SublangModule abort(Int kind) {
+        SublangBuilder builder = SublangBuilder("text-abort");
+        Int span = builder.syntheticSpan("text:abort");
+        Int bytes = builder.listType(builder.byteType(), span);
+        Int ints = builder.listType(builder.intType(), span);
+        SublangTextFixtures.entry(builder, span);
+        Int scope = builder.ops().scopeBegin(span);
+        Int answer = builder.ops().constInt(7, span);
+        if (kind == 0) {
+            Int list = builder.collections().listNew(ints, scope, span);
+            builder.collections().push(list, builder.ops().constInt(1, span), span);
+            builder.collections().set(list, builder.ops().constInt(1, span), builder.ops().constInt(2, span), span);
+        }
+        if (kind == 1) {
+            Int text = builder.collections().textFrom(bytes, builder.ops().constString("abc", span), scope, span);
+            builder.collections().textSlice(bytes, text, builder.ops().constInt(2, span), builder.ops().constInt(2, span), scope, span);
+        }
+        if (kind == 2) { builder.collections().byteFromInt(builder.ops().constInt(300, span), span); }
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(answer, span);
+        return builder.module();
+    }
+
+    private static Int flag(SublangBuilder builder, Int condition, Int weight, Int span) {
+        // 0 or weight, through a branch so no Bool-to-Int coercion exists in the IR.
+        Int yes = builder.newBlock();
+        Int no = builder.newBlock();
+        Int join = builder.newBlock();
+        builder.ops().condBranch(condition, yes, SublangTextFixtures.none(), no, SublangTextFixtures.none(), span);
+        builder.enterBlock(yes);
+        List<Int> taken = List();
+        taken.add(builder.ops().constInt(weight, span));
+        builder.ops().branchTo(join, taken, span);
+        builder.enterBlock(no);
+        List<Int> skipped = List();
+        skipped.add(builder.ops().constInt(0, span));
+        builder.ops().branchTo(join, skipped, span);
+        builder.enterBlock(join);
+        return builder.addBlockParam(builder.intType());
+    }
+
+    // Exact numeric edge cases. Bits: 2^53 equal (2), -0.0 integral (32); to_int(7.0) * 1000.
+    // Expected 7034. Everything else must be false: 2^53+1 vs its rounded Float, 2.5, 1e30, NaN,
+    // 2^63 as Float, and Int64 max vs 2^63.
+    public static SublangModule numbers() {
+        SublangBuilder builder = SublangBuilder("numbers");
+        Int span = builder.syntheticSpan("numeric:edges");
+        SublangTextFixtures.entry(builder, span);
+        Int big = builder.ops().constInt(9007199254740993, span);
+        Int power = builder.ops().constInt(9007199254740992, span);
+        Int maximum = builder.ops().constInt(9223372036854775807, span);
+        Int twoPow63 = builder.ops().constFloatBits(4890909195324358656, span);
+        Int total = builder.ops().constInt(0, span);
+        Int a = SublangTextFixtures.flag(builder, builder.ops().numberEqual(big, builder.ops().intToFloat(big, span), span), 1, span);
+        Int b = SublangTextFixtures.flag(builder, builder.ops().numberEqual(power, builder.ops().intToFloat(power, span), span), 2, span);
+        Int c = SublangTextFixtures.flag(builder, builder.ops().floatIsInt(builder.ops().constFloatBits(4612811918334230528, span), span), 4, span);
+        Int d = SublangTextFixtures.flag(builder, builder.ops().floatIsInt(builder.ops().constFloatBits(5055640609639927018, span), span), 8, span);
+        Int e = SublangTextFixtures.flag(builder, builder.ops().floatIsInt(builder.ops().constFloatBits(9221120237041090560, span), span), 16, span);
+        Int f = SublangTextFixtures.flag(builder, builder.ops().floatIsInt(builder.ops().constFloatBits(-9223372036854775807 - 1, span), span), 32, span);
+        Int g = SublangTextFixtures.flag(builder, builder.ops().floatIsInt(twoPow63, span), 64, span);
+        Int h = SublangTextFixtures.flag(builder, builder.ops().numberEqual(maximum, twoPow63, span), 128, span);
+        Int seven = builder.ops().floatToInt(builder.ops().constFloatBits(4619567317775286272, span), span);
+        Int scaled = builder.ops().intBinary("int.mul", seven, builder.ops().constInt(1000, span), "wrap", 0, span);
+        Int sum = scaled;
+        sum = builder.ops().intBinary("int.add", sum, a, "wrap", 0, span);
+        sum = builder.ops().intBinary("int.add", sum, b, "wrap", 0, span);
+        sum = builder.ops().intBinary("int.add", sum, c, "wrap", 0, span);
+        sum = builder.ops().intBinary("int.add", sum, d, "wrap", 0, span);
+        sum = builder.ops().intBinary("int.add", sum, e, "wrap", 0, span);
+        sum = builder.ops().intBinary("int.add", sum, f, "wrap", 0, span);
+        sum = builder.ops().intBinary("int.add", sum, g, "wrap", 0, span);
+        sum = builder.ops().intBinary("int.add", sum, h, "wrap", 0, span);
+        builder.ops().returnValue(builder.ops().intBinary("int.add", sum, total, "wrap", 0, span), span);
+        return builder.module();
+    }
+
+    // kind 0: float.to_int(2.5); 1: float.to_int(1e30).
+    public static SublangModule inexact(Int kind) {
+        SublangBuilder builder = SublangBuilder("inexact");
+        Int span = builder.syntheticSpan("numeric:abort");
+        SublangTextFixtures.entry(builder, span);
+        Int bits = 4612811918334230528;
+        if (kind == 1) { bits = 5055640609639927018; }
+        builder.ops().floatToInt(builder.ops().constFloatBits(bits, span), span);
+        builder.ops().returnValue(builder.ops().constInt(7, span), span);
+        return builder.module();
+    }
+}

@@ -1,0 +1,261 @@
+namespace sublang::backend::lowllvm;
+
+use sublang::dump::SublangDumpText;
+use sublang::low::SublangLowBlock;
+use sublang::low::SublangLowFunction;
+use sublang::low::SublangLowOp;
+
+// Textual LLVM from verified Low IR. Every decision (placement, ownership, checks, layout) is
+// already in the Low operations; this class only spells them. Constants become literals,
+// block parameters become phi nodes and symbols follow the host-libc provider names.
+public class SublangLowLlvm {
+    public static String function(SublangLowFunction function) {
+        List<String> literals = SublangLowLlvm.literals(function);
+        String text = "define " + SublangLowLlvm.type(function.returnType()) + " @fn" + function.origin().toString() + "(";
+        Int param = 0;
+        while (param < function.paramCount()) {
+            if (param > 0) { text = text + ", "; }
+            text = text + SublangLowLlvm.type(function.valueType(function.paramAt(param))) + " " + SublangLowLlvm.name(function, function.paramAt(param));
+            param = param + 1;
+        }
+        text = text + ") ";
+        if (function.attributes() != "") { text = text + function.attributes() + " "; }
+        if (SublangLowLlvm.usesInvoke(function)) { text = text + "personality ptr @__gxx_personality_v0 "; }
+        text = text + "{\n";
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            text = text + SublangLowLlvm.block(function, function.blockAt(block), literals);
+            block = block + 1;
+        }
+        return text + "}\n";
+    }
+
+    private static Bool usesInvoke(SublangLowFunction function) {
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).opCount()) {
+                if (function.blockAt(block).opAt(index).opcode() == "invoke") { return true; }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        return false;
+    }
+
+    public static String type(String low) {
+        if (low == "str") { return "{ ptr, i64 }"; }
+        if (low == "f64") { return "double"; }
+        if (low == "list") { return "%sublang.list"; }
+        if (low == "shard") { return "%sublang.shard"; }
+        if (low == "bondroot") { return "%sublang.bond.root"; }
+        if (low.startsWith("hdr%t")) { return "{ ptr, ptr, " + low.substring(3, low.length()) + " }"; }
+        return low;
+    }
+
+    private static String name(SublangLowFunction function, Int value) {
+        if (function.valueHint(value) != "") { return "%" + function.valueHint(value); }
+        return "%v" + value.toString();
+    }
+
+    // Literal text of constant-producing operations, indexed by value id ("" otherwise).
+    private static List<String> literals(SublangLowFunction function) {
+        List<String> literals = List();
+        Int value = 0;
+        while (value <= function.valueCount()) {
+            literals.add("");
+            value = value + 1;
+        }
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).opCount()) {
+                SublangLowOp op = function.blockAt(block).opAt(index);
+                String literal = SublangLowLlvm.literal(op);
+                if (literal != "") { literals.set(op.result(), literal); }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        return literals;
+    }
+
+    private static String literal(SublangLowOp op) {
+        String code = op.opcode();
+        if (code == "const.i64" || code == "const.size" || code == "const.i32") { return op.immediate().toString(); }
+        if (code == "const.i1") { return SublangDumpText.boolText(op.immediate() != 0); }
+        if (code == "const.f64") { return SublangDumpText.hex64(op.immediate()); }
+        if (code == "const.null") { return "null"; }
+        if (code == "const.ptr") { return "inttoptr (i64 " + op.immediate().toString() + " to ptr)"; }
+        if (code == "const.zero") { return "zeroinitializer"; }
+        if (code == "const.str") { return "{ ptr @" + op.text() + ", i64 " + op.immediate().toString() + " }"; }
+        if (code == "sym.addr") { return "@" + op.text(); }
+        return "";
+    }
+
+    private static String use(SublangLowFunction function, List<String> literals, Int value) {
+        if (literals.get(value) != "") { return literals.get(value); }
+        return SublangLowLlvm.name(function, value);
+    }
+
+    private static String block(SublangLowFunction function, SublangLowBlock block, List<String> literals) {
+        String text = "b" + block.id().toString() + ":\n";
+        text = text + SublangLowLlvm.phis(function, block, literals);
+        Int index = 0;
+        while (index < block.opCount()) {
+            text = text + SublangLowLlvm.operation(function, block.opAt(index), literals);
+            index = index + 1;
+        }
+        return text;
+    }
+
+    // One phi per block parameter, with an incoming pair per predecessor edge.
+    private static String phis(SublangLowFunction function, SublangLowBlock block, List<String> literals) {
+        String text = "";
+        Int slot = 0;
+        while (slot < block.paramCount()) {
+            Int parameter = block.paramAt(slot);
+            text = text + "  " + SublangLowLlvm.name(function, parameter) + " = phi " + SublangLowLlvm.type(function.valueType(parameter)) + " ";
+            text = text + SublangLowLlvm.incoming(function, block.id(), slot, literals) + "\n";
+            slot = slot + 1;
+        }
+        return text;
+    }
+
+    private static String incoming(SublangLowFunction function, Int to, Int slot, List<String> literals) {
+        String text = "";
+        Bool any = false;
+        Int from = 1;
+        while (from <= function.blockCount()) {
+            SublangLowBlock source = function.blockAt(from);
+            if (source.opCount() > 0) {
+                SublangLowOp last = source.opAt(source.opCount() - 1);
+                Int target = 0;
+                while (target < last.targetCount()) {
+                    if (last.targetAt(target) == to) {
+                        if (any) { text = text + ", "; }
+                        text = text + "[ " + SublangLowLlvm.use(function, literals, last.operandAt(SublangLowLlvm.argumentBase(last, target) + slot)) + ", %b" + from.toString() + " ]";
+                        any = true;
+                    }
+                    target = target + 1;
+                }
+            }
+            from = from + 1;
+        }
+        return text;
+    }
+
+    // First operand index of the arguments passed along edge `target` of a terminator.
+    private static Int argumentBase(SublangLowOp terminator, Int target) {
+        if (terminator.opcode() != "cond_br") { return 0; }
+        if (target == 0) { return 1; }
+        return 1 + terminator.trueArguments();
+    }
+
+    private static String operation(SublangLowFunction function, SublangLowOp op, List<String> literals) {
+        String code = op.opcode();
+        if (literals.get(op.result()) != "" && op.result() != 0) { return ""; }
+        if (code.startsWith("const.") || code == "sym.addr") { return ""; }
+        String result = "";
+        if (op.result() != 0) { result = SublangLowLlvm.name(function, op.result()) + " = "; }
+        String a = "";
+        String b = "";
+        if (op.operandCount() > 0) { a = SublangLowLlvm.use(function, literals, op.operandAt(0)); }
+        if (op.operandCount() > 1) { b = SublangLowLlvm.use(function, literals, op.operandAt(1)); }
+        if (code == "stack.alloc") { return "  " + result + "alloca " + SublangLowLlvm.type(op.typeText()) + SublangLowLlvm.alignment(op) + "\n"; }
+        if (code == "load") { return "  " + result + "load " + SublangLowLlvm.type(op.typeText()) + ", ptr " + a + "\n"; }
+        if (code == "store") { return "  store " + SublangLowLlvm.type(op.typeText()) + " " + b + ", ptr " + a + "\n"; }
+        if (code == "field.addr") { return "  " + result + "getelementptr " + SublangLowLlvm.type(op.typeText()) + ", ptr " + a + ", i32 0, i32 " + op.index().toString() + "\n"; }
+        if (code == "byte.addr") { return "  " + result + "getelementptr i8, ptr " + a + ", i64 " + b + "\n"; }
+        if (code == "elem.addr") { return "  " + result + "getelementptr " + SublangLowLlvm.type(op.typeText()) + ", ptr " + a + ", i64 " + b + "\n"; }
+        if (code == "agg.extract") { return "  " + result + "extractvalue " + SublangLowLlvm.type(op.typeText()) + " " + a + ", " + op.index().toString() + "\n"; }
+        if (code == "agg.insert") { return "  " + result + "insertvalue " + SublangLowLlvm.type(op.typeText()) + " " + a + ", " + SublangLowLlvm.type(function.valueType(op.operandAt(1))) + " " + b + ", " + op.index().toString() + "\n"; }
+        if (code == "str.len") { return "  " + result + "extractvalue { ptr, i64 } " + a + ", 1\n"; }
+        if (code == "str.ptr") { return "  " + result + "extractvalue { ptr, i64 } " + a + ", 0\n"; }
+        if (code == "sitofp") { return "  " + result + "sitofp i64 " + a + " to double\n"; }
+        if (code == "fptosi") { return "  " + result + "fptosi double " + a + " to i64\n"; }
+        if (code == "trunc") { return "  " + result + "trunc i64 " + a + " to " + op.typeText() + "\n"; }
+        if (code == "zext") { return "  " + result + "zext " + SublangLowLlvm.type(op.typeText()) + " " + a + " to i64\n"; }
+        if (code == "cmp") { return "  " + result + SublangLowLlvm.compare(op) + " " + SublangLowLlvm.type(op.typeText()) + " " + a + ", " + b + "\n"; }
+        if (code.startsWith("i64.")) { return "  " + result + SublangLowLlvm.integer(code) + " i64 " + SublangLowLlvm.integerOperands(op, a, b) + "\n"; }
+        if (code.startsWith("f64.")) { return "  " + result + "call double @llvm.experimental.constrained.f" + code.substring(4, code.length()) + ".f64(double " + a + ", double " + b + ", metadata !\"round.tonearest\", metadata !\"fpexcept.ignore\")\n"; }
+        if (code == "call" || code == "rt.call") { return SublangLowLlvm.call(function, op, literals, result); }
+        if (code == "invoke") { return SublangLowLlvm.invoke(function, op, literals, result); }
+        if (code == "eh.catch") { return SublangLowLlvm.catching(function, op); }
+        if (code == "throw") {
+            String tag = "%throw" + op.origin().toString();
+            return "  " + tag + " = call ptr @__cxa_allocate_exception(i64 8)\n  store i64 " + a + ", ptr " + tag + "\n  call void @__cxa_throw(ptr " + tag + ", ptr @_ZTIl, ptr null)\n  unreachable\n";
+        }
+        if (code == "br") { return "  br label %b" + op.targetAt(0).toString() + "\n"; }
+        if (code == "cond_br") { return "  br i1 " + a + ", label %b" + op.targetAt(0).toString() + ", label %b" + op.targetAt(1).toString() + "\n"; }
+        if (code == "ret") {
+            if (op.operandCount() == 0) { return "  ret void\n"; }
+            return "  ret " + SublangLowLlvm.type(function.returnType()) + " " + a + "\n";
+        }
+        if (code == "abort") { return "  call void @abort()\n  unreachable\n"; }
+        return "  ; unsupported " + code + "\n";
+    }
+
+    private static String alignment(SublangLowOp op) {
+        if (op.immediate() > 0) { return ", align " + op.immediate().toString(); }
+        return "";
+    }
+
+    private static String compare(SublangLowOp op) {
+        if (op.typeText() == "f64") { return "fcmp " + op.text(); }
+        String predicate = op.text();
+        Bool unsigned = predicate.startsWith("u");
+        if (op.typeText() == "i64" && predicate != "eq" && predicate != "ne" && !unsigned) { predicate = "s" + predicate; }
+        return "icmp " + predicate;
+    }
+
+    private static String integer(String code) {
+        return code.substring(4, code.length());
+    }
+
+    private static String integerOperands(SublangLowOp op, String a, String b) {
+        if (op.opcode() == "i64.neg") { return "0, " + a; }
+        return a + ", " + b;
+    }
+
+    private static String call(SublangLowFunction function, SublangLowOp op, List<String> literals, String result) {
+        String callee = "@" + op.text();
+        if (op.opcode() == "call") { callee = "@fn" + op.index().toString(); }
+        String text = "  " + result + "call " + SublangLowLlvm.type(op.resultType()) + " " + callee + "(";
+        Int argument = 0;
+        while (argument < op.operandCount()) {
+            if (argument > 0) { text = text + ", "; }
+            text = text + SublangLowLlvm.type(function.valueType(op.operandAt(argument))) + " " + SublangLowLlvm.use(function, literals, op.operandAt(argument));
+            argument = argument + 1;
+        }
+        return text + ")\n";
+    }
+
+    private static String invoke(SublangLowFunction function, SublangLowOp op, List<String> literals, String result) {
+        String text = "  " + result + "invoke " + SublangLowLlvm.type(op.resultType()) + " @fn" + op.index().toString() + "(";
+        Int argument = 0;
+        while (argument < op.operandCount()) {
+            if (argument > 0) { text = text + ", "; }
+            text = text + SublangLowLlvm.type(function.valueType(op.operandAt(argument))) + " " + SublangLowLlvm.use(function, literals, op.operandAt(argument));
+            argument = argument + 1;
+        }
+        return text + ")\n          to label %b" + op.targetAt(0).toString() + " unwind label %b" + op.targetAt(1).toString() + "\n";
+    }
+
+    // Landing pad of an unwind block: catches the Int exception raised by throw and returns its code.
+    private static String catching(SublangLowFunction function, SublangLowOp op) {
+        String base = SublangLowLlvm.name(function, op.result());
+        String text = "  " + base + ".pad = landingpad { ptr, i32 }\n          catch ptr @_ZTIl\n";
+        text = text + "  " + base + ".exc = extractvalue { ptr, i32 } " + base + ".pad, 0\n";
+        text = text + "  " + base + ".obj = call ptr @__cxa_begin_catch(ptr " + base + ".exc)\n";
+        text = text + "  " + base + " = load i64, ptr " + base + ".obj\n";
+        return text + "  call void @__cxa_end_catch()\n";
+    }
+
+    // Declarations of the exception runtime, emitted only for modules that use exceptions.
+    public static String exceptionDeclarations() {
+        String text = "@_ZTIl = external constant ptr\ndeclare i32 @__gxx_personality_v0(...)\n";
+        text = text + "declare ptr @__cxa_allocate_exception(i64)\ndeclare void @__cxa_throw(ptr, ptr, ptr)\n";
+        return text + "declare ptr @__cxa_begin_catch(ptr)\ndeclare void @__cxa_end_catch()\n";
+    }
+}

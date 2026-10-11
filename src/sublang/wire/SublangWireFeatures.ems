@@ -1,0 +1,107 @@
+namespace sublang::wire;
+
+use sublang::ir::SublangModule;
+use sublang::vocabulary::SublangVocabulary;
+
+// Required-feature tokens of the header. The core token is fixed by the transport version; an
+// extension token is required exactly when the module uses its types or operations, so a reader
+// that does not know an extension rejects the module instead of misreading it.
+public class SublangWireFeatures {
+    public static String bytes() { return "ext.bytes.v1"; }
+
+    public static String numeric() { return "ext.numeric.v1"; }
+    public static String exceptions() { return "ext.eh.v1"; }
+    public static String objects() { return "ext.oo.v1"; }
+
+    public static Bool known(String feature) { return feature == SublangWireFeatures.bytes() || feature == SublangWireFeatures.numeric() || feature == SublangWireFeatures.exceptions() || feature == SublangWireFeatures.objects(); }
+
+    // Extension features needed by `module`, in canonical order.
+    public static List<String> needed(SublangModule module) {
+        List<String> features = List();
+        if (SublangWireFeatures.usesBytes(module)) { features.add(SublangWireFeatures.bytes()); }
+        if (SublangWireFeatures.usesNumeric(module)) { features.add(SublangWireFeatures.numeric()); }
+        if (SublangWireFeatures.usesExceptions(module)) { features.add(SublangWireFeatures.exceptions()); }
+        if (SublangWireFeatures.usesObjects(module)) { features.add(SublangWireFeatures.objects()); }
+        return features;
+    }
+
+    public static Bool usesBytes(SublangModule module) {
+        Int type = 1;
+        while (type <= module.types().typeCount()) {
+            if (module.types().isKind(type, "Byte")) { return true; }
+            type = type + 1;
+        }
+        Int function = 1;
+        while (function <= module.functionCount()) {
+            Int block = 1;
+            while (block <= module.functionAt(function).blockCount()) {
+                Int index = 0;
+                while (index < module.functionAt(function).blockAt(block).operationCount()) {
+                    if (SublangVocabulary.isTextOpcode(module.functionAt(function).blockAt(block).operationAt(index).opcode())) { return true; }
+                    index = index + 1;
+                }
+                block = block + 1;
+            }
+            function = function + 1;
+        }
+        return false;
+    }
+
+    public static Bool usesNumeric(SublangModule module) {
+        Int function = 1;
+        while (function <= module.functionCount()) {
+            Int block = 1;
+            while (block <= module.functionAt(function).blockCount()) {
+                Int index = 0;
+                while (index < module.functionAt(function).blockAt(block).operationCount()) {
+                    if (SublangVocabulary.isNumericOpcode(module.functionAt(function).blockAt(block).operationAt(index).opcode())) { return true; }
+                    index = index + 1;
+                }
+                block = block + 1;
+            }
+            function = function + 1;
+        }
+        return false;
+    }
+
+    public static Bool usesExceptions(SublangModule module) {
+        Int function = 1;
+        while (function <= module.functionCount()) {
+            Int block = 1;
+            while (block <= module.functionAt(function).blockCount()) {
+                Int index = 0;
+                while (index < module.functionAt(function).blockAt(block).operationCount()) {
+                    if (SublangVocabulary.isExceptionOpcode(module.functionAt(function).blockAt(block).operationAt(index).opcode())) { return true; }
+                    index = index + 1;
+                }
+                block = block + 1;
+            }
+            function = function + 1;
+        }
+        return false;
+    }
+
+    // Hierarchies (a class with a base), dispatch tables, upcasts and virtual calls.
+    public static Bool usesObjects(SublangModule module) {
+        if (!module.dispatch().isEmpty()) { return true; }
+        Int type = 1;
+        while (type <= module.types().typeCount()) {
+            if (module.types().isKind(type, "Class") && module.types().typeAt(type).target() != 0) { return true; }
+            type = type + 1;
+        }
+        Int function = 1;
+        while (function <= module.functionCount()) {
+            Int block = 1;
+            while (block <= module.functionAt(function).blockCount()) {
+                Int index = 0;
+                while (index < module.functionAt(function).blockAt(block).operationCount()) {
+                    if (SublangVocabulary.isObjectOpcode(module.functionAt(function).blockAt(block).operationAt(index).opcode())) { return true; }
+                    index = index + 1;
+                }
+                block = block + 1;
+            }
+            function = function + 1;
+        }
+        return false;
+    }
+}

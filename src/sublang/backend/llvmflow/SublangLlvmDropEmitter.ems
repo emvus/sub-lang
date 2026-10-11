@@ -17,6 +17,7 @@ public class SublangLlvmDropEmitter {
 
     private static String visitor(SublangModule module, Int type) {
         String text = "define internal void @sublang.drop.t" + type.toString() + "(ptr %payload, ptr %pending) {\nentry:\n";
+        text = text + SublangLlvmDropEmitter.dispatch(module, type);
         Int index = 0;
         while (index < module.types().typeAt(type).fieldCount()) {
             Int field = module.types().typeAt(type).fieldAt(index);
@@ -31,5 +32,62 @@ public class SublangLlvmDropEmitter {
             index = index + 1;
         }
         return text + "  ret void\n}\n";
+    }
+
+    // A class with registered descendants may be referenced through its static type while holding a
+    // descendant object. The visitor reads the tag and hands the object to the descendant's own
+    // visitor (which includes every inherited field), so derived-only owned fields are released.
+    private static String dispatch(SublangModule module, Int type) {
+        Int index = SublangLlvmDropEmitter.tagIndex(module, type);
+        if (index < 0) { return ""; }
+        String cases = "";
+        String targets = "";
+        Int registered = 0;
+        while (registered < module.dispatch().classCount()) {
+            Int candidate = module.dispatch().classTypeAt(registered);
+            if (candidate != type && SublangLlvmDropEmitter.derives(module, candidate, type)) {
+                String label = "derived" + candidate.toString();
+                cases = cases + " i64 " + module.dispatch().classTagAt(registered).toString() + ", label %" + label;
+                targets = targets + label + ":\n  call void @sublang.drop.t" + candidate.toString() + "(ptr %payload, ptr %pending)\n  ret void\n";
+            }
+            registered = registered + 1;
+        }
+        if (cases == "") { return ""; }
+        String text = "  %tagslot = getelementptr %t" + type.toString() + ", ptr %payload, i32 0, i32 " + index.toString() + "\n  %tag = load i64, ptr %tagslot\n";
+        return text + "  switch i64 %tag, label %own [" + cases + " ]\n" + targets + "own:\n";
+    }
+
+    // Position of the hierarchy's tag field, shared by every class of the hierarchy (prefix rule).
+    private static Int tagIndex(SublangModule module, Int type) {
+        Int root = type;
+        Int steps = 0;
+        while (module.types().typeAt(root).target() != 0 && steps <= module.types().typeCount()) {
+            root = module.types().typeAt(root).target();
+            steps = steps + 1;
+        }
+        Int group = 1;
+        while (group <= module.dispatch().groupCount()) {
+            if (module.dispatch().groupRoot(group) == root) {
+                Int field = module.dispatch().groupTagField(group);
+                Int position = 0;
+                while (position < module.types().typeAt(root).fieldCount()) {
+                    if (module.types().typeAt(root).fieldAt(position) == field) { return position; }
+                    position = position + 1;
+                }
+            }
+            group = group + 1;
+        }
+        return -1;
+    }
+
+    private static Bool derives(SublangModule module, Int type, Int ancestor) {
+        Int steps = 0;
+        Int walker = type;
+        while (walker != 0 && steps <= module.types().typeCount()) {
+            if (walker == ancestor) { return true; }
+            walker = module.types().typeAt(walker).target();
+            steps = steps + 1;
+        }
+        return false;
     }
 }

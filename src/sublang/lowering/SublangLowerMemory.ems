@@ -1,0 +1,200 @@
+namespace sublang::lowering;
+
+use sublang::body::SublangOperation;
+use sublang::lowering::SublangLowerContext;
+use sublang::lowering::SublangLowerOwnership;
+
+// Records (values), class objects and their fields, and scopes. Placement comes only from the
+// validated memory plan of this snapshot: Folded objects live in scalar slots, Pool objects in
+// reusable frame slots, Local objects on the stack, Shard objects in a region and the rest in the
+// scope-owned runtime heap.
+public class SublangLowerMemory {
+    public static Void lower(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        String code = op.opcode();
+        if (code == "scope.begin") { owners.begin(op.ref()); return; }
+        if (code == "scope.end") { owners.end(op.ref(), false); owners.bondEnd(op.ref(), false); return; }
+        if (code == "class.new") { SublangLowerMemory.allocate(context, owners, op); return; }
+        if (code == "class.upcast") { SublangLowerMemory.upcast(context, owners, op); return; }
+        if (code == "class.downcast") { SublangLowerMemory.downcast(context, op); return; }
+        if (code == "record.make") { SublangLowerMemory.record(context, op); return; }
+        if (code == "record.get" || code == "record.with") { SublangLowerMemory.recordPart(context, op); return; }
+        SublangLowerMemory.field(context, owners, op);
+    }
+
+    private static Void record(SublangLowerContext context, SublangOperation op) {
+        String type = "%t" + op.resultType().toString();
+        Int aggregate = context.constantZero(type);
+        Int index = 0;
+        while (index < op.operandCount()) {
+            aggregate = context.insert(type, index, aggregate, context.value(op.operandAt(index)));
+            index = index + 1;
+        }
+        context.bind(op.resultValue(), aggregate);
+    }
+
+    private static Void recordPart(SublangLowerContext context, SublangOperation op) {
+        Int owner = context.module.types().fieldAt(op.ref()).owner();
+        String aggregate = "%t" + owner.toString();
+        Int index = context.fieldIndex(op.ref());
+        Int source = context.value(op.operandAt(0));
+        if (op.opcode() == "record.get") {
+            String type = context.lowType(context.module.types().fieldAt(op.ref()).typeId());
+            context.bind(op.resultValue(), context.extract(aggregate, index, source, type));
+            return;
+        }
+        context.bind(op.resultValue(), context.insert(aggregate, index, source, context.value(op.operandAt(1))));
+    }
+
+    private static Void allocate(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int result = op.resultValue();
+        if (context.plan.isFolded(result)) { context.bind(result, context.constantNull()); return; }
+        if (context.plan.isPool(result)) { SublangLowerMemory.pool(context, owners, op); return; }
+        String layout = "%t" + op.ref().toString();
+        if (context.plan.isLocal(result)) {
+            Int stack = context.slot(layout, "", 0);
+            context.bind(result, stack);
+            SublangLowerMemory.zeroReferences(context, op, stack);
+            return;
+        }
+        Int size = context.constantSize(layout);
+        Int head = owners.head(op.scope(), op.ref());
+        Int object = 0;
+        if (context.plan.isShard(result)) {
+            Int region = context.runtimeNamed("sublang.shard.root", SublangLowerContext.one(owners.region(op.scope())), "ptr", "region" + op.id().toString());
+            object = context.runtime("sublang.shard.allocate", SublangLowerContext.three(region, head, size), "ptr");
+        }
+        if (!context.plan.isShard(result)) {
+            object = context.runtime("sublang.flow.allocate.t" + op.ref().toString(), SublangLowerContext.two(head, size), "ptr");
+        }
+        context.bind(result, object);
+        SublangLowerMemory.zeroReferences(context, op, object);
+    }
+
+    private static Void zeroReferences(SublangLowerContext context, SublangOperation op, Int object) {
+        Int index = 0;
+        while (index < context.module.types().typeAt(op.ref()).fieldCount()) {
+            Int field = context.module.types().typeAt(op.ref()).fieldAt(index);
+            if (context.module.types().isKind(context.module.types().fieldAt(field).typeId(), "Ref")) {
+                Int slot = context.fieldAddress("%t" + op.ref().toString(), index, object, "");
+                context.store("ptr", slot, context.constantNull());
+            }
+            index = index + 1;
+        }
+    }
+
+    private static Void pool(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int payload = owners.poolSlot(op.resultValue());
+        context.bind(op.resultValue(), payload);
+        Bool graph = false;
+        Int index = 0;
+        while (index < context.module.types().typeAt(op.ref()).fieldCount()) {
+            Int field = context.module.types().typeAt(op.ref()).fieldAt(index);
+            if (context.module.types().isKind(context.module.types().fieldAt(field).typeId(), "Ref")) { graph = true; }
+            index = index + 1;
+        }
+        if (!graph) { return; }
+        context.runtimeVoid("sublang.flow.detach", SublangLowerContext.one(payload));
+        context.runtimeVoid("sublang.flow.drop", SublangLowerContext.two(payload, context.symbol(owners.visitor(op.ref()))));
+        context.runtimeVoid("sublang.flow.adopt", SublangLowerContext.two(owners.head(op.scope(), op.ref()), payload));
+    }
+
+    private static Void field(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int object = op.operandAt(0);
+        if (context.plan.isFolded(object)) { SublangLowerMemory.scalarField(context, owners, op); return; }
+        Int owner = context.module.types().fieldAt(op.ref()).owner();
+        String aggregate = "%t" + owner.toString();
+        Int address = context.fieldAddress(aggregate, context.fieldIndex(op.ref()), context.value(object), "");
+        String code = op.opcode();
+        String type = context.lowType(context.module.types().fieldAt(op.ref()).typeId());
+        if (code == "field.clear" || code == "field.has") { SublangLowerMemory.optional(context, owners, op, address); return; }
+        if (code == "field.take") { SublangLowerMemory.take(context, owners, op, address); return; }
+        if (code == "field.read" || code == "field.borrow") {
+            Int loaded = context.load(type, address, "");
+            if (code == "field.borrow") {
+                context.guard(context.compare("ptr", "eq", loaded, context.constantNull()));
+            }
+            context.bind(op.resultValue(), loaded);
+            return;
+        }
+        SublangLowerMemory.write(context, owners, op, address, type);
+    }
+
+    private static Void optional(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op, Int address) {
+        Int previous = context.load("ptr", address, "");
+        if (op.opcode() == "field.has") {
+            context.bind(op.resultValue(), context.compare("ptr", "ne", previous, context.constantNull()));
+            return;
+        }
+        Int child = owners.target(context.module.types().fieldAt(op.ref()).typeId());
+        context.runtimeVoid("sublang.flow.drop", SublangLowerContext.two(previous, context.symbol(owners.visitor(child))));
+        context.store("ptr", address, context.constantNull());
+    }
+
+    private static Void take(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op, Int address) {
+        Int taken = context.load("ptr", address, "");
+        context.store("ptr", address, context.constantNull());
+        Int head = owners.head(op.scope(), owners.target(op.resultType()));
+        context.runtimeVoid("sublang.flow.adopt", SublangLowerContext.two(head, taken));
+        context.bind(op.resultValue(), taken);
+    }
+
+    private static Void write(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op, Int address, String type) {
+        Int value = context.value(op.operandAt(1));
+        if (type == "ptr") {
+            owners.join(op);
+            context.runtimeVoid("sublang.flow.detach", SublangLowerContext.one(value));
+            if (op.opcode() == "field.write") {
+                Int old = context.load("ptr", address, "");
+                Int child = owners.target(context.module.types().fieldAt(op.ref()).typeId());
+                context.runtimeVoid("sublang.flow.drop", SublangLowerContext.two(old, context.symbol(owners.visitor(child))));
+            }
+        }
+        context.store(type, address, value);
+    }
+
+    // A folded object keeps each primitive field in its own scalar slot.
+    private static Void scalarField(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int slot = owners.foldSlot(op.operandAt(0), op.ref());
+        String type = context.lowType(context.module.types().fieldAt(op.ref()).typeId());
+        if (op.opcode() == "field.read") {
+            context.bind(op.resultValue(), context.load(type, slot, ""));
+            return;
+        }
+        context.store(type, slot, context.value(op.operandAt(1)));
+    }
+
+    // Same object, ancestor static type. An owned upcast re-registers the object with the head of
+    // the destination scope for the ancestor class, whose visitor dispatches on the tag.
+    private static Void upcast(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int object = context.value(op.operandAt(0));
+        if (op.modeAt(0) == "owned") {
+            context.runtimeVoid("sublang.flow.detach", SublangLowerContext.one(object));
+            context.runtimeVoid("sublang.flow.adopt", SublangLowerContext.two(owners.head(op.scope(), owners.target(op.resultType())), object));
+        }
+        context.bind(op.resultValue(), object);
+    }
+
+    // The checked narrowing: compare the stored tag with the registered tag of the target class.
+    private static Void downcast(SublangLowerContext context, SublangOperation op) {
+        Int source = context.value(op.operandAt(0));
+        Int base = context.module.types().typeAt(context.function.valueTypeAt(op.operandAt(0))).target();
+        Int root = base;
+        Int steps = 0;
+        while (context.module.types().typeAt(root).target() != 0 && steps <= context.module.types().typeCount()) {
+            root = context.module.types().typeAt(root).target();
+            steps = steps + 1;
+        }
+        Int group = 1;
+        Int tagField = 0;
+        while (group <= context.module.dispatch().groupCount()) {
+            if (context.module.dispatch().groupRoot(group) == root) { tagField = context.module.dispatch().groupTagField(group); }
+            group = group + 1;
+        }
+        if (tagField == 0) { context.unsupported("class.downcast in " + context.function.name() + " has no dispatch group to name the tag field"); return; }
+        Int slot = context.fieldAddress("%t" + base.toString(), context.fieldIndex(tagField), source, "");
+        Int tag = context.load("i64", slot, "");
+        Int expected = context.constantInt(context.module.dispatch().tagOf(op.ref()));
+        context.guard(context.compare("i64", "ne", tag, expected));
+        context.bind(op.resultValue(), source);
+    }
+}

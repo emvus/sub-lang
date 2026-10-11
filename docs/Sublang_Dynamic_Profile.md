@@ -576,3 +576,49 @@ but not by live data. JIT and deoptimization are separate work.
   them.
 - Decision (profile choice, not a claim): truncating integer division, no overflow
   promotion, IEEE float division by zero, NaN truthy, Object and closure always truthy.
+
+## Implementation status
+
+This section records what the implemented dyn-v1 library does and what remains open. The
+sections above are the design draft. Where the implementation differs from the draft, the
+difference is listed here. The acceptance programs D1 to D6 named below are the ones in
+`src/sublang/harness/pass/SublangDynamicFixtures.ems`, not the draft's section 14 table.
+Library reference: [Sublang Dynamic Library](Sublang_Dynamic_Library.md).
+
+Implemented and verified by `scripts/sublang-dynamic-sandbox.sh`:
+
+- Tags 0 nil, 1 bool, 2 int, 3 float, 4 text. The value is a class `Dyn { tag, num, real, text }`
+  with `text: owned Ref<List<Byte>>`, not the pool record of section 3. Values are owned heap
+  objects, so Flow scope, ownership and drop rules apply.
+- Constructors `dyn_nil`, `dyn_bool`, `dyn_int`, `dyn_float`, `dyn_text` (copies the bytes).
+- `dyn_truthy`. Float truthiness is "not zero and not NaN", so NaN is falsy. This differs from
+  section 5, which made NaN truthy.
+- `dyn_add` for Int+Int (checked trap), Int+Float and Float+Int (exact promotion with
+  `int.to_float`, IEEE rne), Float+Float (rne), and Text+Text (concatenation). Other pairs abort.
+- `dyn_equal` for same-tag values and exact Int/Float equality with `number.equal`. Equality
+  between mixed tags other than Int and Float is false. No new op is needed, which differs from
+  the draft's section 6.
+- `dyn_to_int`: int returns `num`; float uses the exact `float.to_int`. Other tags abort.
+- Failures `dyn.type_error`, `dyn.overflow` and `dyn.internal` abort (SIGABRT, no output).
+- No Bool-to-Int coercion. A bool becomes a tag-1 value with `num` 0 or 1 through a branch.
+
+Not implemented or unspecified:
+
+- Objects and properties (sections 2, 7.1, 7.2): no object tag, no shapes, no property access.
+- Lists as dyn values (section 7.3): no list tag, no index access, no bounds errors.
+- Ordering operators, and the `-`, `*`, `/`, `%` operators on dyn values (section 4). Only `+`
+  is implemented, and ordering on Strings is absent.
+- String slicing views and indexing: text values are copies, with no slices and no `s[i]`.
+- General closures (section 11): the library has no closure construct. The D5 program shows a
+  closed two-body dispatch with an owned capture in fixture code only. Open-world callees, mutable
+  captures and sharing of heap captures are unspecified.
+- Shared or cyclic values (Bond graphs): not modeled. Text values are not shared.
+- Explain for pools and the external blocker in section 12: not asserted. The smoke program
+  asserts only the blocker text `may leave the region` for the D1 plan with Flow on.
+- Catchable exceptions and the draft's `dyn-reject-catch` case: not specified.
+- Equality on Objects, Lists and Closures (section 6): not present.
+
+Toolchain note: during development, fixture code that built IR through helper methods made the
+Emerald-built generator crash, and the cause was not isolated. The fixtures therefore build their
+IR inline. A fixture with a missing `return` also crashed the generator, which is a separate bug
+in that fixture.

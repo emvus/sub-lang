@@ -1,0 +1,43 @@
+namespace sublang::dynamic;
+
+use sublang::ir::SublangBuilder;
+
+// Tag and key tests for the library's dispatch chains. A test branches to a match block the caller
+// has created, and falls through to a new rest block that the caller enters after the match path.
+// Every match path ends in a return or a fail, so the chain is linear in the source.
+public class SublangDynamicBranch {
+    private SublangBuilder builder;
+    private Int span;
+
+    public SublangDynamicBranch(SublangBuilder builder, Int span) {
+        this.builder = builder;
+        this.span = span;
+    }
+
+    public static List<Int> none() {
+        List<Int> values = List();
+        return values;
+    }
+
+    public static List<Int> one(Int value) {
+        List<Int> values = List();
+        values.add(value);
+        return values;
+    }
+
+    // Emits "if condition goto match, else goto rest" in the current block and returns rest.
+    public Int test(Int condition, Int match) {
+        Int rest = this.builder.newBlock();
+        this.builder.ops().condBranch(condition, match, SublangDynamicBranch.none(), rest, SublangDynamicBranch.none(), this.span);
+        return rest;
+    }
+
+    // Int comparison against a constant, emitted in the current block.
+    public Int equalsConstant(Int value, Int constant) {
+        return this.builder.ops().compare("eq", value, this.builder.ops().constInt(constant, this.span), this.span);
+    }
+
+    public Void fail(Int failureId) {
+        this.builder.ops().failWith(failureId, this.span);
+    }
+}

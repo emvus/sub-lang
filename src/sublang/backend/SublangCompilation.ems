@@ -6,11 +6,22 @@ public class SublangCompilation {
     private String llvmText;
     private String failureText;
     private String memoryExplanation;
+    private String lowText;
 
     public SublangCompilation(String llvm, String failure, String explanation) {
         this.llvmText = llvm + "";
         this.failureText = failure + "";
         this.memoryExplanation = explanation + "";
+        this.lowText = "";
+    }
+
+    // Low IR dump of the module when the Low route produced it; empty otherwise.
+    public String lowDump() { return this.lowText; }
+
+    public SublangCompilation withLowDump(String dump) {
+        SublangCompilation next = SublangCompilation(this.llvmText, this.failureText, this.memoryExplanation);
+        next.lowText = dump + "";
+        return next;
     }
 
     public Bool codegenReady() {

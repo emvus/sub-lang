@@ -1,0 +1,82 @@
+namespace sublang::checks::operation;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::checks::SublangDispatchChecks;
+use sublang::diagnostics::SublangReport;
+use sublang::ir::SublangModule;
+
+// class.upcast and call.virtual. An upcast changes only the static type of one object reference
+// along its hierarchy (an owned upcast moves ownership, a borrowed one is a read-only view). A
+// virtual call has exactly the signature of its group's prototype and can reach only the group's
+// registered implementations.
+public class SublangObjectChecks {
+    public static Void check(SublangReport report, SublangModule module, SublangFunction function, SublangOperation op) {
+        String error = SublangObjectChecks.validate(module, function, op);
+        if (error != "") { report.report("SUBLANG-O004", error, op.span()); }
+    }
+
+    private static String validate(SublangModule module, SublangFunction function, SublangOperation op) {
+        if (op.opcode() == "class.upcast") { return SublangObjectChecks.upcast(module, function, op); }
+        if (op.opcode() == "class.downcast") { return SublangObjectChecks.downcast(module, function, op); }
+        return SublangObjectChecks.virtual(module, function, op);
+    }
+
+    private static String upcast(SublangModule module, SublangFunction function, SublangOperation op) {
+        if (op.operandCount() != 1 || !op.hasResult()) { return "class.upcast needs one reference operand and a result"; }
+        Int source = function.valueTypeOrZero(op.operandAt(0));
+        if (!module.types().isKind(source, "Ref") || !module.types().isKind(op.resultType(), "Ref")) { return "class.upcast converts class references"; }
+        Int derived = module.types().typeAt(source).target();
+        Int base = module.types().typeAt(op.resultType()).target();
+        if (!module.types().isKind(derived, "Class") || !module.types().isKind(base, "Class")) { return "class.upcast works on class references"; }
+        SublangReport scratch = SublangReport(1);
+        if (!SublangDispatchChecks(scratch, module).derivesFrom(derived, base)) { return "class.upcast target is not an ancestor of the source class"; }
+        String mode = op.modeAt(0);
+        if (mode == "borrow_read") {
+            if (op.resultOwnership() != "borrow_read" || op.scope() != 0) { return "a borrowed upcast is a read-only view"; }
+            return "";
+        }
+        if (mode == "owned") {
+            if (op.resultOwnership() != "owned" || op.scope() <= 0) { return "an owned upcast moves ownership into a destination scope"; }
+            return "";
+        }
+        return "class.upcast accepts borrow_read or owned operands";
+    }
+
+    private static String virtual(SublangModule module, SublangFunction function, SublangOperation op) {
+        if (!module.dispatch().hasGroup(op.ref())) { return "call.virtual names no dispatch group"; }
+        if (module.dispatch().entryCount(op.ref()) == 0) { return "dispatch group " + module.dispatch().groupName(op.ref()) + " has no implementation"; }
+        SublangFunction prototype = module.functionAt(module.dispatch().groupPrototype(op.ref()));
+        if (op.operandCount() != prototype.paramCount()) { return "call.virtual passes the wrong number of arguments"; }
+        Int index = 0;
+        while (index < op.operandCount()) {
+            if (function.valueTypeOrZero(op.operandAt(index)) != prototype.paramAt(index).typeId() || op.modeAt(index) != prototype.paramAt(index).passing()) {
+                return "argument " + index.toString() + " of call.virtual does not match the group prototype";
+            }
+            index = index + 1;
+        }
+        if (prototype.returnType() == module.types().voidType()) {
+            if (op.hasResult()) { return "call.virtual of a Void group must not produce a value"; }
+            return "";
+        }
+        if (!op.hasResult() || op.resultType() != prototype.returnType()) { return "call.virtual must produce the group return type"; }
+        String kind = module.types().kindOf(prototype.returnType());
+        if ((kind == "Ref" || kind == "Bond") && (op.resultOwnership() != "owned" || op.scope() < 1)) { return "a reference result of call.virtual needs owned ownership and a scope"; }
+        return "";
+    }
+
+    // A checked narrowing view: the tag registered for the target class must match at run time.
+    private static String downcast(SublangModule module, SublangFunction function, SublangOperation op) {
+        if (op.operandCount() != 1 || !op.hasResult() || op.modeAt(0) != "borrow_read") { return "class.downcast takes one reference borrowed for reading"; }
+        Int source = function.valueTypeOrZero(op.operandAt(0));
+        if (!module.types().isKind(source, "Ref") || !module.types().isKind(op.resultType(), "Ref")) { return "class.downcast converts class references"; }
+        Int base = module.types().typeAt(source).target();
+        Int derived = module.types().typeAt(op.resultType()).target();
+        SublangReport scratch = SublangReport(1);
+        SublangDispatchChecks hierarchy = SublangDispatchChecks(scratch, module);
+        if (!module.types().isKind(derived, "Class") || derived == base || !hierarchy.derivesFrom(derived, base)) { return "class.downcast target is not a proper descendant of the source class"; }
+        if (module.dispatch().tagOf(derived) < 0) { return "class.downcast target class has no registered tag"; }
+        if (op.resultOwnership() != "borrow_read" || op.scope() != 0) { return "a downcast is a read-only view"; }
+        return "";
+    }
+}

@@ -69,6 +69,103 @@ public class SublangOperationBuilder {
         return this.emitValue(op, this.cursor.module().types().floatType());
     }
 
+    // --- objects (Wire feature ext.oo.v1) ----------------------------------------------------
+
+    // Read-only view of `object` typed as its ancestor class `base`.
+    public Int upcastView(Int object, Int base, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation op = this.newOperation("class.upcast", span);
+        List<String> modes = List();
+        modes.add("borrow_read");
+        op.setOperands(this.single(object), modes);
+        op.setRef(base);
+        op.setResultOwnership("borrow_read");
+        return this.emitValue(op, this.cursor.module().types().refTypeFor(base));
+    }
+
+    // Read-only view of `object` as the descendant class `derived`; aborts unless the object's tag
+    // is the one registered for `derived`.
+    public Int downcast(Int object, Int derived, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation op = this.newOperation("class.downcast", span);
+        List<String> modes = List();
+        modes.add("borrow_read");
+        op.setOperands(this.single(object), modes);
+        op.setRef(derived);
+        op.setResultOwnership("borrow_read");
+        return this.emitValue(op, this.cursor.module().types().refTypeFor(derived));
+    }
+
+    // Moves the owned `object` into `scope`, typed as its ancestor class `base`.
+    public Int upcastOwned(Int object, Int base, Int scope, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation op = this.newOperation("class.upcast", span);
+        List<String> modes = List();
+        modes.add("owned");
+        op.setOperands(this.single(object), modes);
+        op.setRef(base);
+        op.setScope(scope);
+        op.setResultOwnership("owned");
+        return this.emitValue(op, this.cursor.module().types().refTypeFor(base));
+    }
+
+    // Closed-world virtual call; returns the result value, or 0 for a Void group.
+    public Int callVirtual(Int group, List<Int> args, List<String> modes, Int resultType, Int span) {
+        if (!this.canEmit()) { return 0; }
+        SublangOperation op = this.newOperation("call.virtual", span);
+        op.setOperands(args, modes);
+        op.setRef(group);
+        if (resultType == this.cursor.module().types().voidType()) {
+            this.emitEffect(op);
+            return 0;
+        }
+        return this.emitValue(op, resultType);
+    }
+
+    // --- exceptions (Wire feature ext.eh.v1) -------------------------------------------------
+
+    // Calls a function with a normal edge (whose target takes the result, if any) and an unwind
+    // edge (whose target takes the Int exception code).
+    public Void invoke(Int functionId, List<Int> args, List<String> modes, Int normal, Int unwind, Int span) {
+        if (!this.canEmit()) { return; }
+        SublangOperation op = this.newOperation("invoke", span);
+        op.setOperands(args, modes);
+        op.setRef(functionId);
+        op.setEffectSummary(this.effectSummaryOf(functionId));
+        List<Int> targets = List();
+        targets.add(normal);
+        targets.add(unwind);
+        op.setTargets(targets, 0);
+        this.emitEffect(op);
+    }
+
+    public Void throwCode(Int code, Int span) { this.exception("throw", code, span); }
+    public Void resume(Int code, Int span) { this.exception("resume", code, span); }
+
+    private Void exception(String opcode, Int code, Int span) {
+        if (!this.canEmit()) { return; }
+        SublangOperation op = this.newOperation(opcode, span);
+        op.setOperands(this.single(code), this.valueModes(1));
+        this.emitEffect(op);
+    }
+
+    // --- exact numeric conversions (Wire feature ext.numeric.v1) ---------------------------
+
+    public Int intToFloat(Int value, Int span) { return this.numeric("int.to_float", this.cursor.module().types().floatType(), value, 0, span); }
+    public Int floatToInt(Int value, Int span) { return this.numeric("float.to_int", this.cursor.module().types().intType(), value, 0, span); }
+    public Int floatIsInt(Int value, Int span) { return this.numeric("float.is_int", this.cursor.module().types().boolType(), value, 0, span); }
+    public Int numberEqual(Int integer, Int number, Int span) { return this.numeric("number.equal", this.cursor.module().types().boolType(), integer, number, span); }
+
+    private Int numeric(String opcode, Int result, Int first, Int second, Int span) {
+        if (!this.canEmit()) {
+            return 0;
+        }
+        SublangOperation op = this.newOperation(opcode, span);
+        if (second == 0) { op.setOperands(this.single(first), this.valueModes(1)); }
+        if (second != 0) { op.setOperands(this.pair(first, second), this.valueModes(2)); }
+        return this.emitValue(op, result);
+    }
+
     public Int intBinary(String opcode, Int left, Int right, String overflow, Int failureId, Int span) {
         if (!this.canEmit()) {
             return 0;

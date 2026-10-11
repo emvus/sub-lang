@@ -261,6 +261,19 @@ public class SublangFunction {
         return valueId;
     }
 
+    public Int scopeTotal() {
+        return this.scopeCounter;
+    }
+
+    // Snapshot copies keep scope ids stable; the counter continues after the copied scopes.
+    public Void restoreScopeTotal(Int total) {
+        if (this.frozenFlag) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.scopeCounter = total;
+    }
+
     public Int newScope() {
         if (this.frozenFlag) {
             this.refusalCounter = this.refusalCounter + 1;

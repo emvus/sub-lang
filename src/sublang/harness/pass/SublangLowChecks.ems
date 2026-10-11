@@ -1,0 +1,147 @@
+namespace sublang::harness::pass;
+
+use sublang::effects::SublangEffectAnalysis;
+use sublang::effects::SublangEffectResult;
+use sublang::harness::pass::SublangPassFixtures;
+use sublang::hyperalloc::SublangMemoryPlan;
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+use sublang::low::SublangLowDump;
+use sublang::low::SublangLowFunction;
+use sublang::low::SublangLowModule;
+use sublang::low::SublangLowOp;
+use sublang::low::SublangLowVerifier;
+use sublang::low::target::SublangLowLayout;
+use sublang::low::target::SublangLowTarget;
+use sublang::lowering::SublangLowering;
+
+// Low IR contract checks: well-formed modules verify, malformed ones are rejected with the
+// right family, and lowering refuses a foreign target or a plan made for another snapshot.
+public class SublangLowChecks {
+    private static SublangLowModule wrap(SublangModule source, SublangLowFunction function) {
+        SublangLowModule low = SublangLowModule("handmade", SublangLowTarget.host(), source, 1, 1);
+        low.add(function);
+        return low;
+    }
+
+    private static SublangLowFunction arithmetic() {
+        SublangLowFunction function = SublangLowFunction(1, "sum", "i64", 1);
+        Int a = function.addParam("i64", "");
+        Int b = function.addParam("i64", "");
+        function.addBlock();
+        Int total = function.newValue("i64", "");
+        SublangLowOp add = SublangLowOp("i64.add", total, "i64");
+        add.operand(a);
+        add.operand(b);
+        function.emit(1, add);
+        SublangLowOp ret = SublangLowOp("ret", 0, "void");
+        ret.operand(total);
+        function.emit(1, ret);
+        return function;
+    }
+
+    private static String firstFinding(SublangModule source, SublangLowModule low) {
+        List<String> found = SublangLowVerifier(low, SublangLowLayout(SublangLowTarget.host(), source)).verify();
+        if (found.length() == 0) { return ""; }
+        return found.get(0);
+    }
+
+    public static String verifier() {
+        SublangModule source = SublangPassFixtures.foldable("host", false);
+        if (SublangLowChecks.firstFinding(source, SublangLowChecks.wrap(source, SublangLowChecks.arithmetic())) != "") { return "a valid Low function was rejected"; }
+        String before = SublangLowDump.render(SublangLowChecks.wrap(source, SublangLowChecks.arithmetic()));
+        if (before != SublangLowDump.render(SublangLowChecks.wrap(source, SublangLowChecks.arithmetic())) || before.indexOf("i64.add") < 0) { return "the Low dump is not deterministic"; }
+
+        SublangLowFunction mistyped = SublangLowFunction(1, "bad", "i64", 1);
+        Int number = mistyped.addParam("i64", "");
+        Int real = mistyped.addParam("f64", "");
+        mistyped.addBlock();
+        Int mix = mistyped.newValue("i64", "");
+        SublangLowOp add = SublangLowOp("i64.add", mix, "i64");
+        add.operand(number);
+        add.operand(real);
+        mistyped.emit(1, add);
+        SublangLowOp ret = SublangLowOp("ret", 0, "void");
+        ret.operand(mix);
+        mistyped.emit(1, ret);
+        if (!SublangLowChecks.firstFinding(source, SublangLowChecks.wrap(source, mistyped)).startsWith("SUBLANG-L002")) { return "an i64 operation accepted an f64 operand"; }
+
+        SublangLowFunction open = SublangLowFunction(1, "open", "void", 1);
+        open.addBlock();
+        if (!SublangLowChecks.firstFinding(source, SublangLowChecks.wrap(source, open)).startsWith("SUBLANG-L001")) { return "a block without a terminator was accepted"; }
+
+        SublangLowFunction foreign = SublangLowFunction(1, "foreign", "void", 1);
+        foreign.addBlock();
+        Int pointer = foreign.newValue("ptr", "");
+        foreign.emit(1, SublangLowOp("const.null", pointer, "ptr"));
+        SublangLowOp call = SublangLowOp("rt.call", 0, "void");
+        call.textIs("sublang.invented");
+        call.operand(pointer);
+        foreign.emit(1, call);
+        foreign.emit(1, SublangLowOp("ret", 0, "void"));
+        if (!SublangLowChecks.firstFinding(source, SublangLowChecks.wrap(source, foreign)).startsWith("SUBLANG-L004")) { return "a symbol outside the provider was accepted"; }
+
+        SublangLowFunction wrong = SublangLowFunction(1, "wrong", "void", 1);
+        wrong.addBlock();
+        Int word = wrong.newValue("i64", "");
+        SublangLowOp literal = SublangLowOp("const.i64", word, "i64");
+        literal.immediateIs(3);
+        wrong.emit(1, literal);
+        Int head = wrong.newValue("ptr", "");
+        wrong.emit(1, SublangLowOp("const.null", head, "ptr"));
+        SublangLowOp end = SublangLowOp("rt.call", 0, "void");
+        end.textIs("sublang.flow.end");
+        end.operand(word);
+        end.operand(head);
+        wrong.emit(1, end);
+        wrong.emit(1, SublangLowOp("ret", 0, "void"));
+        if (!SublangLowChecks.firstFinding(source, SublangLowChecks.wrap(source, wrong)).startsWith("SUBLANG-L004")) { return "a provider call with a wrong argument type was accepted"; }
+        return SublangLowChecks.flow(source);
+    }
+
+    // Value defined only on one branch of a diamond, used after the join.
+    private static String flow(SublangModule source) {
+        SublangLowFunction diamond = SublangLowFunction(1, "diamond", "i64", 1);
+        Int flag = diamond.addParam("i1", "");
+        diamond.addBlock();
+        Int left = diamond.addBlock();
+        Int right = diamond.addBlock();
+        Int join = diamond.addBlock();
+        List<Int> none = List();
+        SublangLowOp branch = SublangLowOp("cond_br", 0, "void");
+        branch.operand(flag);
+        branch.target(left);
+        branch.target(right);
+        diamond.emit(1, branch);
+        Int only = diamond.newValue("i64", "");
+        SublangLowOp literal = SublangLowOp("const.i64", only, "i64");
+        literal.immediateIs(1);
+        diamond.emit(left, literal);
+        SublangLowOp toJoinLeft = SublangLowOp("br", 0, "void");
+        toJoinLeft.target(join);
+        diamond.emit(left, toJoinLeft);
+        SublangLowOp toJoinRight = SublangLowOp("br", 0, "void");
+        toJoinRight.target(join);
+        diamond.emit(right, toJoinRight);
+        SublangLowOp ret = SublangLowOp("ret", 0, "void");
+        ret.operand(only);
+        diamond.emit(join, ret);
+        if (!SublangLowChecks.firstFinding(source, SublangLowChecks.wrap(source, diamond)).startsWith("SUBLANG-L003")) { return "a use that is not dominated by its definition was accepted"; }
+        return "";
+    }
+
+    public static String lowering() {
+        SublangModule module = SublangPassFixtures.effects();
+        SublangEffectResult effects = SublangEffectAnalysis.derive(module);
+        SublangMemoryPlan plan = SublangMemoryPlan(module, true, effects);
+        SublangLowering accepted = SublangLowering(module, plan, true, effects, SublangLowTarget.host());
+        if (!accepted.ready()) { return "lowering of the effects fixture failed: " + accepted.problemAt(0); }
+        if (SublangLowVerifier(accepted.low(), accepted.layout()).verify().length() != 0) { return "lowered module does not verify"; }
+        if (!accepted.low().loweredFrom(module)) { return "Low module lost its source snapshot"; }
+        SublangLowTarget other = SublangLowTarget("wasm32", "wasm32-unknown-unknown", 32, "none", "none", "c");
+        if (SublangLowering(module, plan, true, effects, other).ready()) { return "an unsupported target was accepted"; }
+        SublangModule another = SublangPassFixtures.effects();
+        if (SublangLowering(another, plan, true, effects, SublangLowTarget.host()).ready()) { return "a plan for another snapshot was accepted"; }
+        return "";
+    }
+}

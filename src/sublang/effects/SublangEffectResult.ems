@@ -1,0 +1,31 @@
+namespace sublang::effects;
+
+use sublang::effects::SublangFunctionEffects;
+
+// Derived interprocedural effects of one snapshot: one summary per function id plus the
+// diagnostics produced while solving. Results belong to the snapshot they were derived from.
+public class SublangEffectResult {
+    private List<SublangFunctionEffects> entries;
+    private List<String> notes;
+    private Int sweepTotal;
+    private Bool widenedFlag;
+
+    public SublangEffectResult() {
+        this.entries = List();
+        this.notes = List();
+        this.sweepTotal = 0;
+        this.widenedFlag = false;
+    }
+
+    public Void add(SublangFunctionEffects summary) { this.entries.add(summary); }
+    public SublangFunctionEffects functionAt(Int id) { return this.entries.get(id - 1); }
+    public Int functionCount() { return this.entries.length(); }
+    public Bool hasFunction(Int id) { return id >= 1 && id <= this.entries.length(); }
+    public Int sweeps() { return this.sweepTotal; }
+    public Void countSweep() { this.sweepTotal = this.sweepTotal + 1; }
+    public Bool widened() { return this.widenedFlag; }
+    public Void markWidened() { this.widenedFlag = true; }
+    public Void note(String text) { this.notes.add(text + ""); }
+    public Int noteCount() { return this.notes.length(); }
+    public String noteAt(Int index) { return this.notes.get(index); }
+}

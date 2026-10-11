@@ -6,7 +6,14 @@ use sublang::wire::SublangWire;
 use sublang::wire::SublangWireResult;
 use sublang::backend::SublangCompiler;
 use sublang::backend::SublangCompilation;
+use sublang::analysis::SublangVerification;
+use sublang::analysis::SublangVerifier;
 use sublang::dump::SublangDump;
+use sublang::ir::SublangModule;
+use sublang::snapshot::SublangModuleLinker;
+use sublang::text::SublangTextParser;
+use sublang::text::SublangTextPrinter;
+use sublang::text::SublangTextResult;
 
 // Compiled executable, independent of Emerald at invocation. LLVM emission is
 // explicit; the capped launcher owns LLVM optimization, linking and execution.
@@ -17,7 +24,7 @@ public class SublangCommand {
         }
         if (arguments.length() == 1 && arguments.get(0) == "capabilities") {
             // Deterministic key=value discovery; every entry mirrors a checked contract.
-            println("capabilities-format=1");
+            println("capabilities-format=2");
             println("compiler=Sublang 0.1-dev");
             println("wire.read=1,2");
             println("wire.write=2");
@@ -25,12 +32,21 @@ public class SublangCommand {
             println("ir.stage=High");
             println("feature=core.native64.v1");
             println("feature=core.native64.v2");
+            println("feature=ext.bytes.v1");
+            println("feature=ext.numeric.v1");
+            println("feature=ext.eh.v1");
+            println("feature=ext.oo.v1");
             println("target=native64-host-libc");
-            println("provider=none");
+            println("provider=host-libc-runtime");
+            println("low-ir=low.native64.v1");
+            println("exceptions=itanium-libstdc++ (link with -lstdc++)");
             println("flow=auto,on,off");
             println("optimind=on,off");
+            println("passes=optimind.fold,optimind.dce");
             println("input.max-bytes=16777216");
-            println("output=llvm-ir,memory-plan");
+            println("output=llvm-ir,memory-plan,low-ir-dump");
+            println("commands=emit-llvm,dump,dump-low,link,text-dump,text-build,capabilities");
+            println("unsupported=weak-handles,finalizers,threads,c-ownership-import,additional-targets");
             return 0;
         }
         if (arguments.length() == 2 && arguments.get(0) == "dump") {
@@ -44,8 +60,14 @@ public class SublangCommand {
             println(SublangDump.render(dumped.module()));
             return 0;
         }
+        if (arguments.length() == 2 && arguments.get(0) == "text-dump") { return SublangCommand.textDump(arguments.get(1)); }
+        if (arguments.length() == 3 && arguments.get(0) == "text-build") { return SublangCommand.textBuild(arguments.get(1), arguments.get(2)); }
+        if (arguments.length() >= 4 && arguments.get(0) == "link") { return SublangCommand.link(arguments); }
+        if (arguments.length() == 4 && arguments.get(0) == "dump-low") {
+            return SublangCommand.dumpLow(arguments.get(1), arguments.get(2), arguments.get(3));
+        }
         if (arguments.length() != 5 || arguments.get(0) != "emit-llvm") {
-            println("Usage: sublang emit-llvm input.sublang-wire output.ll auto|on|off on|off | sublang dump input.sublang-wire | sublang capabilities | sublang --version"); return 2;
+            println("Usage: sublang emit-llvm input.sublang-wire output.ll auto|on|off on|off | sublang dump input.sublang-wire | sublang dump-low input.sublang-wire auto|on|off on|off | sublang link output.sublang-wire provider.sublang-wire consumer.sublang-wire [more...] | sublang text-dump input.sublang-wire | sublang text-build input.sublang-text output.sublang-wire | sublang capabilities | sublang --version"); return 2;
         }
         String input = arguments.get(1); String output = arguments.get(2);
         String flow = arguments.get(3); String optimind = arguments.get(4);
@@ -63,5 +85,93 @@ public class SublangCommand {
             println("SUBLANG-CLI003: cannot write output"); return 1;
         }
         return 0;
+    }
+
+    // Canonical text of a decoded module. Like dump, the module is printed without verification.
+    private static Int textDump(String input) {
+        if (!NativeFile.isFile(input)) {
+            println("SUBLANG-CLI002: input must be a regular file"); return 2;
+        }
+        if (NativeFile.size(input) > 16777216) {
+            println("SUBLANG-TX004: input exceeds 16 MiB"); return 1;
+        }
+        SublangWireResult decoded = SublangWire.read(NativeFile.readText(input));
+        if (!decoded.valid()) { println(decoded.error()); return 1; }
+        String rendered = SublangTextPrinter.render(decoded.module());
+        String limit = SublangTextParser.limitFailure(rendered);
+        if (limit != "") { println(limit); return 1; }
+        println(rendered);
+        return 0;
+    }
+
+    // Parses, verifies and freezes canonical text, then writes Wire. A failure is printed and exits 1.
+    private static Int textBuild(String input, String output) {
+        if (!NativeFile.isFile(input)) {
+            println("SUBLANG-CLI002: input must be a regular file"); return 2;
+        }
+        if (NativeFile.size(input) > 4194304) {
+            println("SUBLANG-TX004: input exceeds 4 MiB"); return 1;
+        }
+        SublangTextResult parsed = SublangTextParser.parse(NativeFile.readText(input));
+        if (!parsed.valid()) { println(parsed.error()); return 1; }
+        SublangWireResult written = SublangWire.write(parsed.module());
+        if (!written.valid()) { println(written.error()); return 1; }
+        NativeFile.writeText(output, written.text());
+        if (!NativeFile.isFile(output) || NativeFile.size(output) != written.text().length()) {
+            println("SUBLANG-CLI003: cannot write output"); return 1;
+        }
+        return 0;
+    }
+
+    // Low IR of an accepted input after the same pipeline as emit-llvm; nothing is written to disk.
+    private static Int dumpLow(String input, String flow, String optimind) {
+        if (optimind != "on" && optimind != "off") { println("SUBLANG-CLI001: invalid Optimind mode"); return 2; }
+        if (!NativeFile.isFile(input) || NativeFile.size(input) > 16777216) {
+            println("SUBLANG-CLI002: input must be a regular file of at most 16 MiB"); return 2;
+        }
+        SublangWireResult decoded = SublangWire.read(NativeFile.readText(input));
+        if (!decoded.valid()) { println(decoded.error()); return 1; }
+        SublangCompilation compilation = SublangCompiler.compile(decoded.module(), optimind == "on", flow);
+        if (!compilation.codegenReady()) { println(compilation.error()); return 1; }
+        if (compilation.lowDump() == "") { println("SUBLANG-L014: the module was not lowered to Low IR"); return 1; }
+        println(compilation.lowDump());
+        return 0;
+    }
+
+    // Left fold: each further module may import functions that the modules before it define.
+    private static Int link(List<String> arguments) {
+        SublangWireResult first = SublangCommand.load(arguments.get(2));
+        if (!first.valid()) { println(first.error()); return 1; }
+        SublangModule current = first.module();
+        Int index = 3;
+        while (index < arguments.length()) {
+            SublangWireResult next = SublangCommand.load(arguments.get(index));
+            if (!next.valid()) { println(next.error()); return 1; }
+            SublangModuleLinker linker = SublangModuleLinker(current, next.module());
+            if (!linker.ok()) {
+                Int problem = 0;
+                while (problem < linker.errorCount()) { println(linker.errorAt(problem)); problem = problem + 1; }
+                return 1;
+            }
+            linker.module().freeze();
+            SublangVerification verdict = SublangVerifier(linker.module()).verify();
+            if (!verdict.structurallyValid() || verdict.semanticsStatus() != "valid") {
+                println("SUBLANG-K002: linked module does not verify: " + verdict.diagnostics().get(0).code() + " " + verdict.diagnostics().get(0).message());
+                return 1;
+            }
+            current = linker.module();
+            index = index + 1;
+        }
+        SublangWireResult written = SublangWire.write(current);
+        if (!written.valid()) { println(written.error()); return 1; }
+        NativeFile.writeText(arguments.get(1), written.text());
+        return 0;
+    }
+
+    private static SublangWireResult load(String path) {
+        if (!NativeFile.isFile(path) || NativeFile.size(path) > 16777216) {
+            return SublangWireResult(SublangModule(""), "", "SUBLANG-CLI002: input must be a regular file of at most 16 MiB");
+        }
+        return SublangWire.read(NativeFile.readText(path));
     }
 }

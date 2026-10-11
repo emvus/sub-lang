@@ -1,0 +1,76 @@
+namespace sublang::effects;
+
+use sublang::body::SublangFunction;
+use sublang::ir::SublangModule;
+use sublang::effects::SublangCallGraph;
+use sublang::effects::SublangEffectResult;
+use sublang::effects::SublangEffectTransfer;
+use sublang::effects::SublangFunctionEffects;
+
+// Bottom-up interprocedural fixpoint over call-graph components. A component is iterated with a
+// bound that follows from the finite lattice height; hitting the bound widens its members to
+// unknown and reports SUBLANG-E009, never an optimistic answer. Convergence of effects says
+// nothing about termination: recursion and loops stay may-diverge.
+public class SublangEffectAnalysis {
+    public static SublangEffectResult derive(SublangModule module) {
+        SublangCallGraph graph = SublangCallGraph(module);
+        SublangEffectResult result = SublangEffectResult();
+        Int id = 1;
+        while (id <= module.functionCount()) {
+            result.add(SublangEffectAnalysis.seed(module.functionAt(id)));
+            id = id + 1;
+        }
+        Int component = 1;
+        while (component <= graph.componentCount()) {
+            SublangEffectAnalysis.solve(module, graph, component, result);
+            component = component + 1;
+        }
+        return result;
+    }
+
+    // A body starts at the bottom. An external contract is unknown: declared claims are not trusted.
+    private static SublangFunctionEffects seed(SublangFunction function) {
+        SublangFunctionEffects summary = SublangFunctionEffects(function.paramCount());
+        if (function.definition() != "body") {
+            summary.markExternal();
+            summary.widenToUnknown();
+        }
+        return summary;
+    }
+
+    private static Void solve(SublangModule module, SublangCallGraph graph, Int component, SublangEffectResult result) {
+        Int members = graph.memberCount(component);
+        Int bound = members * 24 + 8;
+        Int round = 0;
+        Bool changed = true;
+        while (changed && round < bound) {
+            changed = false;
+            Int index = 0;
+            while (index < members) {
+                if (SublangEffectAnalysis.refresh(module, graph, graph.memberAt(component, index), result)) { changed = true; }
+                index = index + 1;
+            }
+            result.countSweep();
+            round = round + 1;
+        }
+        if (changed) { SublangEffectAnalysis.widen(module, graph, component, result); }
+    }
+
+    private static Bool refresh(SublangModule module, SublangCallGraph graph, Int id, SublangEffectResult result) {
+        if (module.functionAt(id).definition() != "body") { return false; }
+        SublangFunctionEffects fresh = SublangEffectTransfer(module, module.functionAt(id), result).run();
+        if (graph.isRecursive(id)) { fresh.raise(SublangFunctionEffects.control(), 1); }
+        return result.functionAt(id).absorb(fresh);
+    }
+
+    private static Void widen(SublangModule module, SublangCallGraph graph, Int component, SublangEffectResult result) {
+        result.markWidened();
+        Int index = 0;
+        while (index < graph.memberCount(component)) {
+            Int id = graph.memberAt(component, index);
+            result.functionAt(id).widenToUnknown();
+            result.note("SUBLANG-E009: effect analysis budget exhausted for function " + module.functionAt(id).name() + "; widened to unknown");
+            index = index + 1;
+        }
+    }
+}

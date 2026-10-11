@@ -1,0 +1,27 @@
+use sublang::harness::pass::SublangLowChecks;
+use sublang::harness::pass::SublangPassChecks;
+use Std::Process::Processes;
+
+// Focused snapshot/pass/effect checks; built and run only inside the capped sandbox.
+public class SublangPassSmoke {
+    public static Void require(String name, String failure) {
+        if (failure != "") {
+            println("FAIL " + name + ": " + failure);
+            Processes.exit(1);
+        }
+        println("PASS " + name);
+    }
+}
+
+main() {
+    SublangPassSmoke.require("passes: independent forks, stale-parent rejection and lifetime validation", SublangPassChecks.forkAndLifetime());
+    SublangPassSmoke.require("passes: target/provider/ABI/profile/options and store cache isolation", SublangPassChecks.cacheContexts());
+    SublangPassSmoke.require("snapshots: identity, revision, origin map, stale proof, cache, preservation", SublangPassChecks.snapshots());
+    SublangPassSmoke.require("passes: discarded overflow and failing calls are kept", SublangPassChecks.overflowAndCalls());
+    SublangPassSmoke.require("effects: pure/read/write/allocate/recursive summaries", SublangPassChecks.effects());
+    SublangPassSmoke.require("effects: false declarations and unknown targets", SublangPassChecks.contradictionsAndUnknown());
+    SublangPassSmoke.require("wire: ext.bytes.v1 is declared, required and checked", SublangPassChecks.wireFeature());
+    SublangPassSmoke.require("low ir: verifier accepts valid and rejects malformed modules", SublangLowChecks.verifier());
+    SublangPassSmoke.require("low ir: target and snapshot/plan binding", SublangLowChecks.lowering());
+    println("Sublang passes: all checks passed");
+}

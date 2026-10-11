@@ -3,6 +3,7 @@ namespace sublang::hyperalloc;
 use sublang::body::SublangFunction;
 use sublang::body::SublangOperation;
 use sublang::ir::SublangModule;
+use sublang::effects::SublangEffectResult;
 use sublang::hyperalloc::SublangControlCycles;
 use sublang::optimind::SublangCallAnalysis;
 use sublang::ir::data::SublangCollectionLayout;
@@ -17,8 +18,10 @@ public class SublangObjectUses {
     private Int allocationSites;
     private Bool repeated;
     private String blocker;
+    private SublangEffectResult effects;
 
-    public SublangObjectUses(SublangModule module, SublangFunction function) {
+    public SublangObjectUses(SublangModule module, SublangFunction function, SublangEffectResult derived) {
+        this.effects = derived;
         this.cycles = SublangControlCycles(function);
         this.observed = List();
         this.moved = List();
@@ -31,7 +34,9 @@ public class SublangObjectUses {
         while (value <= function.valueCount()) { this.observed.add(false); this.moved.add(false); value = value + 1; }
         Int parameter = 0;
         while (parameter < function.paramCount()) {
-            if (module.types().isKind(function.paramAt(parameter).typeId(), "Ref")) { this.blockShard("reference parameter can connect to an external graph"); }
+            if (module.types().isKind(function.paramAt(parameter).typeId(), "Ref")) {
+                this.blockShard("reference parameter " + function.paramAt(parameter).name() + " can connect to an external graph");
+            }
             parameter = parameter + 1;
         }
         Int block = 1;
@@ -72,10 +77,13 @@ public class SublangObjectUses {
         if (opcode == "scope.begin") {
             this.region = operation.ref();
         }
-        if (opcode.startsWith("list.")) { this.blockShard("collection elements require independent ownership storage"); }
+        if (opcode.startsWith("list.") || opcode.startsWith("text.")) { this.blockShard("collection elements require independent ownership storage"); }
         if (opcode.startsWith("bond.")) { this.blockShard("shared graph lifetime is managed by Bond"); }
-        if (opcode == "call.direct" && operation.hasResult() && module.types().isKind(operation.resultType(), "Ref")) {
-            this.blockShard("reference call result requires an imported ownership region");
+        if (opcode == "class.upcast" && operation.modeAt(0) == "owned") {
+            this.blockShard("owned upcast of a reference moves it across ownership scopes");
+        }
+        if ((opcode == "call.direct" || opcode == "call.virtual") && operation.hasResult() && module.types().isKind(operation.resultType(), "Ref")) {
+            this.blockShard("reference call result of " + this.calleeName(module, operation) + " requires an imported ownership region" + this.derived(operation, -1));
         }
         this.cost(module, operation, block);
         Int argument = 0;
@@ -88,7 +96,8 @@ public class SublangObjectUses {
                     inlinePush = SublangCollectionLayout.inlineClass(module, type);
                 }
                 if (!inlinePush) { this.moved.set(value, true); }
-                if (opcode == "call.direct" || opcode == "return") { this.blockShard("owned call or return may leave the region"); }
+                if (opcode == "call.direct" || opcode == "invoke" || opcode == "call.virtual") { this.blockShard("owned argument " + argument.toString() + " of call to " + this.calleeName(module, operation) + " may leave the region" + this.derived(operation, argument)); }
+                if (opcode == "return") { this.blockShard("owned return may leave the region"); }
             }
             Bool scalarField = argument == 0 && (opcode == "field.init" || opcode == "field.write" || opcode == "field.read");
             if (opcode == "list.push" && argument == 1 && module.types().isKind(function.valueTypeAt(value), "Ref")) {
@@ -98,6 +107,25 @@ public class SublangObjectUses {
             if (module.types().isKind(function.valueTypeAt(value), "Ref") && !scalarField) { this.observed.set(value, true); }
             argument = argument + 1;
         }
+    }
+
+    private String calleeName(SublangModule module, SublangOperation operation) {
+        if (operation.opcode() == "call.virtual") { return "dispatch group " + module.dispatch().groupName(operation.ref()); }
+        if (!module.hasFunction(operation.ref())) { return "unknown target"; }
+        return module.functionAt(operation.ref()).name();
+    }
+
+    // Derived callee fact that backs or qualifies the blocker; empty when nothing is derived.
+    private String derived(SublangOperation operation, Int argument) {
+        if (operation.opcode() == "call.virtual") { return " (derived: every registered implementation is considered)"; }
+        if (!this.effects.hasFunction(operation.ref())) { return ""; }
+        if (this.effects.functionAt(operation.ref()).external()) { return " (derived: external target is unknown)"; }
+        if (argument >= 0 && argument < this.effects.functionAt(operation.ref()).paramCount()) {
+            if (this.effects.functionAt(operation.ref()).escapesParam(argument)) { return " (derived: the callee lets this argument escape)"; }
+            return " (derived: the callee does not retain this argument, but region transfer is not modeled)";
+        }
+        if (this.effects.functionAt(operation.ref()).returnsFresh()) { return " (derived: the callee returns a fresh allocation)"; }
+        return "";
     }
 
     private Void blockShard(String reason) {
@@ -116,7 +144,7 @@ public class SublangObjectUses {
         if ((operation.opcode() == "field.write" || operation.opcode() == "field.clear") && module.types().isKind(module.types().fieldAt(operation.ref()).typeId(), "Ref")) {
             this.blockShard("early subtree release in a loop would retain dead region storage");
         }
-        if (operation.opcode() != "call.direct") { return; }
+        if (operation.opcode() != "call.direct" && operation.opcode() != "invoke" && operation.opcode() != "call.virtual") { return; }
         Int argument = 0;
         while (argument < operation.operandCount()) {
             if (operation.modeAt(argument) == "borrow_write") { this.blockShard("loop-capable mutable call can discard region subtrees"); }

@@ -1,0 +1,132 @@
+namespace sublang::pass;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::effects::SublangEffectResult;
+
+// Selects operations that can be deleted without changing any observable behavior: a result that
+// is never used, produced by an operation that cannot fail, allocate, write, synchronize or
+// diverge. Failing arithmetic (trap mode, division) is kept even when its result is discarded.
+// A call is selected only when the derived summary of its callee permits it. Selection repeats
+// until stable, so deleting one operation can release its operands' producers.
+public class SublangDeadComputationPass {
+    // Appends (function id, operation id) pairs to the two parallel lists; returns how many.
+    public static Int select(SublangModule module, SublangEffectResult effects, List<Int> functions, List<Int> operations) {
+        Int total = 0;
+        Int id = 1;
+        while (id <= module.functionCount()) {
+            if (module.functionAt(id).definition() == "body") {
+                total = total + SublangDeadComputationPass.function(module, effects, id, functions, operations);
+            }
+            id = id + 1;
+        }
+        return total;
+    }
+
+    private static Int function(SublangModule module, SublangEffectResult effects, Int id, List<Int> functions, List<Int> operations) {
+        SublangFunction function = module.functionAt(id);
+        List<Int> uses = SublangDeadComputationPass.useCounts(function);
+        List<Int> removed = List();
+        Int total = 0;
+        Bool found = true;
+        while (found) {
+            found = false;
+            Int block = 1;
+            while (block <= function.blockCount()) {
+                Int index = 0;
+                while (index < function.blockAt(block).operationCount()) {
+                    SublangOperation op = function.blockAt(block).operationAt(index);
+                    if (!removed.contains(op.id()) && SublangDeadComputationPass.dead(module, effects, op, uses)) {
+                        removed.add(op.id());
+                        functions.add(id);
+                        operations.add(op.id());
+                        SublangDeadComputationPass.release(op, uses);
+                        total = total + 1;
+                        found = true;
+                    }
+                    index = index + 1;
+                }
+                block = block + 1;
+            }
+        }
+        return total;
+    }
+
+    // Uses by operands of any operation, including branch arguments and return values.
+    private static List<Int> useCounts(SublangFunction function) {
+        List<Int> uses = List();
+        Int value = 0;
+        while (value <= function.valueCount()) {
+            uses.add(0);
+            value = value + 1;
+        }
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                SublangDeadComputationPass.count(function.blockAt(block).operationAt(index), uses);
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        return uses;
+    }
+
+    private static Void count(SublangOperation op, List<Int> uses) {
+        Int operand = 0;
+        while (operand < op.operandCount()) {
+            uses.set(op.operandAt(operand), uses.get(op.operandAt(operand)) + 1);
+            operand = operand + 1;
+        }
+    }
+
+    private static Void release(SublangOperation op, List<Int> uses) {
+        Int operand = 0;
+        while (operand < op.operandCount()) {
+            uses.set(op.operandAt(operand), uses.get(op.operandAt(operand)) - 1);
+            operand = operand + 1;
+        }
+    }
+
+    private static Bool dead(SublangModule module, SublangEffectResult effects, SublangOperation op, List<Int> uses) {
+        if (op.isTerminator()) { return false; }
+        if (op.hasResult() && uses.get(op.resultValue()) != 0) { return false; }
+        String code = op.opcode();
+        if (code == "float.to_int") { return false; }
+        if (code.startsWith("const.") || code == "compare" || code.startsWith("float.") || code == "number.equal") { return true; }
+        if (code == "record.make" || code == "record.get" || code == "record.with") { return SublangDeadComputationPass.scalarOrRecord(module, op); }
+        if (code == "string.length" || code == "string.equal") { return true; }
+        if (code.startsWith("int.")) { return SublangDeadComputationPass.cannotFail(op); }
+        if (code == "call.direct") { return SublangDeadComputationPass.pureCall(module, effects, op); }
+        return false;
+    }
+
+    // Records and their fields are values: dropping an unused one cannot change ownership.
+    private static Bool scalarOrRecord(SublangModule module, SublangOperation op) {
+        String kind = module.types().kindOf(op.resultType());
+        return kind == "Record" || kind == "Int" || kind == "Bool" || kind == "Float" || kind == "String";
+    }
+
+    // Division and remainder trap on a zero divisor in every mode; trap-mode arithmetic aborts.
+    private static Bool cannotFail(SublangOperation op) {
+        String code = op.opcode();
+        if (code == "int.div" || code == "int.rem") { return false; }
+        return op.overflow() == "wrap";
+    }
+
+    private static Bool pureCall(SublangModule module, SublangEffectResult effects, SublangOperation op) {
+        if (!module.hasFunction(op.ref())) { return false; }
+        if (!effects.functionAt(op.ref()).removableWhenUnused()) { return false; }
+        if (op.hasResult()) {
+            String kind = module.types().kindOf(op.resultType());
+            if (kind != "Int" && kind != "Bool" && kind != "Float") { return false; }
+        }
+        Int mode = 0;
+        while (mode < op.modeCount()) {
+            if (op.modeAt(mode) != "value" && op.modeAt(mode) != "borrow_read") { return false; }
+            mode = mode + 1;
+        }
+        return true;
+    }
+}

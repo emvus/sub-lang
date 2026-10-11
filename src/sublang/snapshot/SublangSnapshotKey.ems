@@ -1,0 +1,25 @@
+namespace sublang::snapshot;
+
+// Identity of one immutable snapshot: the lineage instance plus its revision. A module name is
+// not identity, so two modules with equal names never compare equal here.
+public class SublangSnapshotKey {
+    private Int instanceValue;
+    private Int revisionValue;
+
+    public SublangSnapshotKey(Int instance, Int revision) {
+        this.instanceValue = instance;
+        this.revisionValue = revision;
+    }
+
+    public Int instance() { return this.instanceValue; }
+    public Int revision() { return this.revisionValue; }
+    public Bool valid() { return this.instanceValue >= 1 && this.revisionValue >= 1; }
+
+    public Bool same(SublangSnapshotKey other) {
+        return this.instanceValue == other.instance() && this.revisionValue == other.revision();
+    }
+
+    public String text() {
+        return "m" + this.instanceValue.toString() + "@r" + this.revisionValue.toString();
+    }
+}

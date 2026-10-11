@@ -1,0 +1,63 @@
+namespace sublang::lowering;
+
+use sublang::body::SublangOperation;
+use sublang::lowering::SublangLowerContext;
+use sublang::lowering::SublangLowerOwnership;
+
+// Shared (Bond) objects: counted roots owned by scopes, counted edges between objects and
+// owned exclusive children. Trace routines per class come from the provider.
+public class SublangLowerBond {
+    public static Void lower(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        String code = op.opcode();
+        if (code == "bond.new") { SublangLowerBond.create(context, owners, op); return; }
+        Int object = context.value(op.operandAt(0));
+        if (code == "bond.borrow") { context.bind(op.resultValue(), object); return; }
+        if (code == "bond.retain") {
+            context.runtimeVoid("sublang.bond.retain", SublangLowerContext.one(object));
+            owners.bondAdopt(op.resultValue(), op.scope(), object);
+            context.bind(op.resultValue(), object);
+            return;
+        }
+        Int owner = context.module.types().fieldAt(op.ref()).owner();
+        Int address = context.fieldAddress("%t" + owner.toString(), context.fieldIndex(op.ref()), object, "");
+        if (code == "bond.get") {
+            Int target = context.load("ptr", address, "");
+            context.runtimeVoid("sublang.bond.retain", SublangLowerContext.one(target));
+            owners.bondAdopt(op.resultValue(), op.scope(), target);
+            context.bind(op.resultValue(), target);
+            return;
+        }
+        SublangLowerBond.edge(context, owners, op, address);
+    }
+
+    private static Void create(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        String layout = "%t" + op.ref().toString();
+        Int size = context.constantSize(layout);
+        Int trace = context.symbol("sublang.bond.trace.t" + op.ref().toString());
+        Int created = context.runtime("sublang.bond.allocate", SublangLowerContext.two(size, trace), "ptr");
+        context.store(layout, created, context.constantZero(layout));
+        owners.bondAdopt(op.resultValue(), op.scope(), created);
+        context.bind(op.resultValue(), created);
+    }
+
+    private static Void edge(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op, Int address) {
+        String code = op.opcode();
+        Int fieldType = context.module.types().fieldAt(op.ref()).typeId();
+        Bool owned = context.module.types().isKind(fieldType, "Ref");
+        if (code == "bond.own" || (code == "bond.clear" && owned)) {
+            Int target = context.module.types().typeAt(fieldType).target();
+            Int old = context.load("ptr", address, "");
+            Int value = context.constantNull();
+            if (code == "bond.own") {
+                value = context.value(op.operandAt(1));
+                context.runtimeVoid("sublang.flow.detach", SublangLowerContext.one(value));
+            }
+            context.store("ptr", address, value);
+            context.runtimeVoid("sublang.flow.drop", SublangLowerContext.two(old, context.symbol(owners.visitor(target))));
+            return;
+        }
+        if (code == "bond.clear") { context.runtimeVoid("sublang.bond.edge.set", SublangLowerContext.two(address, context.constantNull())); return; }
+        if (code == "bond.link") { context.runtimeVoid("sublang.bond.edge.set", SublangLowerContext.two(address, context.value(op.operandAt(1)))); return; }
+        context.store(context.lowType(fieldType), address, context.value(op.operandAt(1)));
+    }
+}

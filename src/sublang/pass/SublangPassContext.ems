@@ -1,0 +1,55 @@
+namespace sublang::pass;
+
+use sublang::effects::SublangEffectAnalysis;
+use sublang::effects::SublangEffectResult;
+use sublang::hyperalloc::SublangLocalLifetime;
+use sublang::ir::SublangModule;
+
+// Immutable compilation context. Length prefixes avoid collisions when option values contain
+// separators. Module semantic tables are frozen and are additionally identified by the snapshot.
+public class SublangPassContext {
+    private String targetName;
+    private String providerName;
+    private String abiName;
+    private String profileName;
+    private String optionText;
+
+    public SublangPassContext(String target, String provider, String abi, String profile, String options) {
+        this.targetName = target + "";
+        this.providerName = provider + "";
+        this.abiName = abi + "";
+        this.profileName = profile + "";
+        this.optionText = options + "";
+    }
+
+    public static SublangPassContext host() {
+        return SublangPassContext("native64-host-libc", "host-libc-runtime", "low.native64.v1", "module-profiles", "flow=auto;optimind=on");
+    }
+
+    public String fingerprint() {
+        return SublangPassContext.part(this.targetName) + SublangPassContext.part(this.providerName)
+            + SublangPassContext.part(this.abiName) + SublangPassContext.part(this.profileName)
+            + SublangPassContext.part(this.optionText);
+    }
+
+    private static String part(String value) { return value.length().toString() + ":" + value; }
+
+    // This is a target-specific memory proof, not a universal High IR lifetime verifier.
+    // Reject an unsupported proof context instead of reporting an unchecked pass as verified.
+    public String memoryError(SublangModule module) {
+        if (this.targetName != "native64-host-libc" || this.providerName != "host-libc-runtime" || this.abiName != "low.native64.v1") {
+            return "SUBLANG-P017: no lifetime verifier for this target/provider/ABI";
+        }
+        SublangEffectResult effects = SublangEffectAnalysis.derive(module);
+        Int function = 1;
+        while (function <= module.functionCount()) {
+            if (module.functionAt(function).definition() != "body") {
+                return "SUBLANG-P017: external bodies have no native lifetime proof";
+            }
+            String error = SublangLocalLifetime(module, module.functionAt(function), effects).check();
+            if (error != "") { return "fn" + function.toString() + ": " + error; }
+            function = function + 1;
+        }
+        return "";
+    }
+}

@@ -123,6 +123,9 @@ public class SublangTypeChecks {
         if (kind == "Bool") {
             return typeEntry.width() == 1;
         }
+        if (kind == "Byte") {
+            return typeEntry.width() == 8 && !typeEntry.isSigned();
+        }
         if (kind == "Void") {
             return typeEntry.width() == 0;
         }

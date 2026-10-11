@@ -5,11 +5,25 @@ use sublang::semantics::SublangOptions;
 use sublang::backend::SublangBackendGate;
 use sublang::backend::SublangCompilation;
 use sublang::backend::llvm::SublangLlvmEmitter;
+use sublang::effects::SublangEffectReport;
+use sublang::effects::SublangEffectResult;
 use sublang::hyperalloc::SublangMemoryPlan;
-use sublang::optimind::SublangOptimindReport;
+use sublang::low::SublangLowDump;
+use sublang::low::SublangLowVerifier;
+use sublang::low::target::SublangLowTarget;
+use sublang::lowering::SublangLowering;
+use sublang::pass::SublangAnalysisCache;
+use sublang::pass::SublangPassManager;
+use sublang::pass::SublangPassContext;
+use sublang::pass::SublangPassReport;
+use sublang::pass::SublangPassResult;
+use sublang::snapshot::SublangSnapshotStore;
+use sublang::wire::SublangWireFeatures;
 
 // Explicit host-libc binding and verified scoped ownership form this initial target.
 // Flow on/auto choose proven Local or scope-owned runtime storage; off uses heap.
+// Optimind runs as snapshot passes; the optimized snapshot is used only if it passes the same
+// backend gate as the input, otherwise the untransformed input is compiled.
 public class SublangCompiler {
     public static SublangCompilation compile(SublangModule module, Bool optimind, String flowMode) {
         if (!SublangOptions(flowMode).isValid()) {
@@ -17,7 +31,62 @@ public class SublangCompiler {
         }
         String error = SublangBackendGate.check(module);
         if (error != "") { return SublangCompilation("", error, ""); }
-        SublangMemoryPlan plan = SublangMemoryPlan(module, flowMode != "off");
-        return SublangCompilation(SublangLlvmEmitter.emit(module, optimind, plan), "", plan.explain() + SublangOptimindReport.render(module, optimind));
+        String options = "flow=" + flowMode + ";optimind=" + optimind.toString();
+        SublangPassContext context = SublangPassContext("native64-host-libc", "host-libc-runtime", "low.native64.v1", "module-profiles", options);
+        SublangPassManager manager = SublangPassManager.forContext(SublangSnapshotStore(), SublangAnalysisCache(), context);
+        if (!optimind) { return SublangCompiler.finish(module, manager, flowMode, false, SublangPassReport.disabled()); }
+        SublangPassResult fold = manager.run("optimind.fold", module);
+        SublangPassResult sweep = manager.run("optimind.dce", fold.module());
+        if (fold.rejected() || sweep.rejected() || SublangBackendGate.check(sweep.module()) != "") {
+            return SublangCompiler.finish(module, manager, flowMode, true, "optimind: transformation rejected; compiled the original snapshot" + SublangCompiler.reasons(fold, sweep) + "\n");
+        }
+        return SublangCompiler.finish(sweep.module(), manager, flowMode, true, SublangPassReport.render(sweep.module(), fold, sweep));
+    }
+
+    private static SublangCompilation finish(SublangModule target, SublangPassManager manager, String flowMode, Bool optimind, String optimindReport) {
+        SublangEffectResult effects = manager.effects(target);
+        SublangMemoryPlan plan = SublangMemoryPlan(target, flowMode != "off", effects);
+        SublangLowering lowering = SublangLowering(target, plan, optimind, effects, SublangLowTarget.host());
+        String route = "lowering: legacy emitter";
+        String text = "";
+        List<String> findings = SublangCompiler.verifyLow(lowering);
+        if (lowering.ready() && findings.length() == 0) {
+            text = SublangLlvmEmitter.emitLow(target, plan, lowering.low());
+            route = "lowering: Low IR (" + lowering.low().target().name() + ", " + lowering.low().functionCount().toString() + " functions)";
+        }
+        if (lowering.ready() && findings.length() > 0) { route = route + "; " + findings.get(0); }
+        if (text == "" && (SublangWireFeatures.usesBytes(target) || SublangWireFeatures.usesNumeric(target) || SublangWireFeatures.usesExceptions(target) || SublangWireFeatures.usesObjects(target))) {
+            return SublangCompilation("", "SUBLANG-B009: extension operations are only emitted from Low IR; " + route, "");
+        }
+        if (text == "") {
+            text = SublangLlvmEmitter.emit(target, optimind, plan, effects);
+            if (!lowering.ready()) { route = route + "; " + lowering.problemAt(0); }
+        }
+        SublangCompilation compiled = SublangCompilation(text, "", plan.explain() + optimindReport + SublangEffectReport.render(target, effects) + SublangEffectReport.diagnostics(target, effects) + route + "\n" + SublangCompiler.notes(lowering));
+        if (lowering.ready() && findings.length() == 0) { return compiled.withLowDump(SublangLowDump.render(lowering.low())); }
+        return compiled;
+    }
+
+    private static String reasons(SublangPassResult fold, SublangPassResult sweep) {
+        String text = "";
+        if (fold.rejected()) { text = text + " (fold: " + fold.messageAt(0) + ")"; }
+        if (sweep.rejected()) { text = text + " (dce: " + sweep.messageAt(0) + ")"; }
+        if (!fold.rejected() && !sweep.rejected()) { text = text + " (the optimized snapshot failed the backend gate)"; }
+        return text;
+    }
+
+    private static List<String> verifyLow(SublangLowering lowering) {
+        if (!lowering.ready()) { return List(); }
+        return SublangLowVerifier(lowering.low(), lowering.layout()).verify();
+    }
+
+    private static String notes(SublangLowering lowering) {
+        String text = "";
+        Int index = 0;
+        while (index < lowering.noteCount()) {
+            text = text + "lowering: " + lowering.noteAt(index) + "\n";
+            index = index + 1;
+        }
+        return text;
     }
 }

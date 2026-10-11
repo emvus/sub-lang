@@ -6,6 +6,8 @@ use sublang::body::SublangFunction;
 use sublang::ir::SublangModule;
 use sublang::hyperalloc::SublangLocalLifetime;
 use sublang::backend::SublangBackendBudget;
+use sublang::effects::SublangEffectAnalysis;
+use sublang::effects::SublangEffectResult;
 
 // Resource limits are checked before the generic dominance verifier allocates tables.
 // This target accepts only a subset; unsupported semantics are errors, never ignored.
@@ -62,6 +64,7 @@ public class SublangBackendGate {
     }
 
     private static String functions(SublangModule module) {
+        SublangEffectResult effects = SublangEffectAnalysis.derive(module);
         Int functionId = 1;
         while (functionId <= module.functionCount()) {
             SublangFunction function = module.functionAt(functionId);
@@ -78,7 +81,7 @@ public class SublangBackendGate {
                 }
                 index = index + 1;
             }
-            String error = SublangLocalLifetime(module, function).check();
+            String error = SublangLocalLifetime(module, function, effects).check();
             if (error != "") {
                 return "SUBLANG-B005: fn" + functionId.toString() + ": " + error;
             }

@@ -1,0 +1,29 @@
+namespace sublang::low;
+
+use sublang::low::SublangLowOp;
+
+// Basic block of Low IR: typed block parameters (value ids owned by the function) followed by
+// operations that end in exactly one terminator.
+public class SublangLowBlock {
+    private Int idValue;
+    private List<Int> paramList;
+    private List<SublangLowOp> opList;
+
+    public SublangLowBlock(Int id) {
+        this.idValue = id;
+        this.paramList = List();
+        this.opList = List();
+    }
+
+    public Int id() { return this.idValue; }
+    public Int paramCount() { return this.paramList.length(); }
+    public Int paramAt(Int index) { return this.paramList.get(index); }
+    public Void addParam(Int value) { this.paramList.add(value); }
+    public Int opCount() { return this.opList.length(); }
+    public SublangLowOp opAt(Int index) { return this.opList.get(index); }
+    public Void add(SublangLowOp op) { this.opList.add(op); }
+
+    public Bool terminated() {
+        return this.opList.length() > 0 && this.opList.get(this.opList.length() - 1).isTerminator();
+    }
+}

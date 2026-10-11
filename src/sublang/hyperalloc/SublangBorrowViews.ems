@@ -16,7 +16,8 @@ public class SublangBorrowViews {
             Int index = 0;
             while (index < function.blockAt(block).operationCount()) {
                 SublangOperation operation = function.blockAt(block).operationAt(index);
-                if (operation.opcode() == "field.borrow" || operation.opcode() == "list.borrow" || operation.opcode() == "bond.borrow") { this.sources.set(operation.resultValue(), operation.operandAt(0)); }
+                Bool upcastView = (operation.opcode() == "class.upcast" || operation.opcode() == "class.downcast") && operation.modeAt(0) == "borrow_read";
+                if (operation.opcode() == "field.borrow" || operation.opcode() == "list.borrow" || operation.opcode() == "bond.borrow" || upcastView) { this.sources.set(operation.resultValue(), operation.operandAt(0)); }
                 index = index + 1;
             }
             block = block + 1;

@@ -1,0 +1,120 @@
+use Std::Process::Processes;
+use sublang::text::SublangTextCodec;
+use sublang::text::SublangTextCursor;
+use sublang::text::SublangTextLexer;
+use sublang::text::SublangTextParser;
+use sublang::text::SublangTextResult;
+
+// In-process checks of the text IR codec, lexer and parser diagnostics. Each check returns an empty
+// string on success or a failure description. The CLI checks (printer, Wire round trips, verification)
+// run in scripts/sublang-text-sandbox.sh against the built sublang binary.
+public class SublangTextSmoke {
+    public static Void require(String name, String failure) {
+        if (failure != "") {
+            println("FAIL " + name + ": " + failure);
+            Processes.exit(1);
+        }
+        println("PASS " + name);
+    }
+
+    // Quoted literal of the bytes, read back through the lexer and the attribute reader.
+    public static String literalRoundTrip(String bytes) {
+        SublangTextCursor cursor = SublangTextLexer.lex("name=" + SublangTextCodec.quote(bytes), 1);
+        if (cursor.failed()) { return "lexer: " + cursor.error(); }
+        String back = cursor.strAttr("name");
+        if (cursor.failed()) { return "reader: " + cursor.error(); }
+        if (!cursor.atEnd()) { return "trailing tokens"; }
+        if (back != bytes) { return "bytes differ after the round trip"; }
+        return "";
+    }
+
+    public static String everyByte() {
+        String all = "";
+        Int code = 0;
+        while (code < 256) {
+            all = all + SublangTextCodec.byteText(code);
+            code = code + 1;
+        }
+        return SublangTextSmoke.literalRoundTrip(all);
+    }
+
+    // The NUL byte and the UTF-8 sequence of U+00E4 written as escapes in the text itself.
+    public static String nulAndUtf8() {
+        String expected = "a" + SublangTextCodec.byteText(0) + "b" + SublangTextCodec.byteText(195) + SublangTextCodec.byteText(164);
+        SublangTextCursor cursor = SublangTextLexer.lex("name=\"a\\x00b\\xC3\\xA4\"", 1);
+        if (cursor.failed()) { return cursor.error(); }
+        String back = cursor.strAttr("name");
+        if (cursor.failed()) { return cursor.error(); }
+        if (back != expected) { return "escapes decoded to the wrong bytes"; }
+        if (SublangTextCodec.quote(expected) != "\"a\\x00b\\xc3\\xa4\"") { return "canonical form is " + SublangTextCodec.quote(expected); }
+        return "";
+    }
+
+    public static String prefixFailure(String text, String prefix) {
+        if (text.startsWith(prefix)) { return ""; }
+        return "expected a message starting with " + prefix + " but got " + text;
+    }
+
+    public static String lexerDiagnostics() {
+        String first = SublangTextSmoke.prefixFailure(SublangTextLexer.lex("name=\"\\q\"", 1).error(), "SUBLANG-TX001: line 1 column 7: invalid escape");
+        if (first != "") { return first; }
+        String second = SublangTextSmoke.prefixFailure(SublangTextLexer.lex("name=\"abc", 1).error(), "SUBLANG-TX001: line 1 column 6: unterminated string");
+        if (second != "") { return second; }
+        String third = SublangTextSmoke.prefixFailure(SublangTextLexer.lex("name=\"\\x4\"", 1).error(), "SUBLANG-TX001: line 1 column 7:");
+        if (third != "") { return third; }
+        String fourth = SublangTextSmoke.prefixFailure(SublangTextLexer.lex("name=\"a" + SublangTextCodec.byteText(9) + "b\"", 1).error(), "SUBLANG-TX001: line 1 column 8:");
+        if (fourth != "") { return fourth; }
+        return SublangTextSmoke.prefixFailure(SublangTextLexer.lex("name=" + SublangTextCodec.byteText(195), 1).error(), "SUBLANG-TX001: line 1 column 6:");
+    }
+
+    public static String attributeDiagnostics() {
+        SublangTextCursor cursor = SublangTextLexer.lex("other=\"x\"", 1);
+        cursor.strAttr("name");
+        return SublangTextSmoke.prefixFailure(cursor.error(), "SUBLANG-TX002: line 1 column 1: unknown or misplaced attribute other");
+    }
+
+    public static String integerRange() {
+        if (!SublangTextCodec.validInt("9223372036854775807")) { return "maximum Int rejected"; }
+        if (SublangTextCodec.validInt("9223372036854775808")) { return "overflow accepted"; }
+        if (!SublangTextCodec.validInt("-9223372036854775808")) { return "minimum Int rejected"; }
+        if (SublangTextCodec.validInt("-9223372036854775809")) { return "underflow accepted"; }
+        if (SublangTextCodec.intValue("-9223372036854775808") != -9223372036854775807 - 1) { return "minimum Int value wrong"; }
+        if (SublangTextCodec.intValue("-42") != -42) { return "negative value wrong"; }
+        return "";
+    }
+
+    public static String parseDiagnostics() {
+        String header = "sublang-text 1 schema=1 stage=High revision=1\n";
+        String truncated = SublangTextSmoke.prefixFailure(SublangTextParser.parse(header).error(), "SUBLANG-TX001:");
+        if (truncated != "") { return truncated; }
+        String unknown = SublangTextSmoke.prefixFailure(SublangTextParser.parse(header + "bogus x=1\nend\n").error(), "SUBLANG-TX002: line 2 column 1: unknown record bogus");
+        if (unknown != "") { return unknown; }
+        String text = header + "module \"m\" entry=0\nsource id=1 name=\"s\"\nspan id=1 source=1 line=1 column=1 origin=\"o\"\nspan id=1 source=1 line=1 column=1 origin=\"o\"\nend\n";
+        String duplicate = SublangTextSmoke.prefixFailure(SublangTextParser.parse(text).error(), "SUBLANG-TX003: line 5 column 9:");
+        if (duplicate != "") { return duplicate; }
+        String badEscape = SublangTextSmoke.prefixFailure(SublangTextParser.parse(header + "module \"bad\\q\" entry=0\nend\n").error(), "SUBLANG-TX001: line 2 column 12: invalid escape");
+        if (badEscape != "") { return badEscape; }
+        String early = SublangTextSmoke.prefixFailure(SublangTextParser.parse(header + "span id=1 source=1 line=1 column=1 origin=\"o\"\nend\n").error(), "SUBLANG-TX001: line 2 column 1: record span before the module record");
+        if (early != "") { return early; }
+        return SublangTextSmoke.prefixFailure(SublangTextParser.parse(header + "module \"m\" entry=0 extra=1\nend\n").error(), "SUBLANG-TX001: line 2 column 20:");
+    }
+
+    public static String limits() {
+        String tooLarge = SublangTextSmoke.prefixFailure(SublangTextParser.parse("x".repeat(4194305)).error(), "SUBLANG-TX004:");
+        if (tooLarge != "") { return tooLarge; }
+        String tooManyLines = SublangTextSmoke.prefixFailure(SublangTextParser.parse("\n".repeat(200001)).error(), "SUBLANG-TX004: line 200001 column 1:");
+        if (tooManyLines != "") { return tooManyLines; }
+        return SublangTextSmoke.prefixFailure(SublangTextParser.parse("#" + "x".repeat(65536)).error(), "SUBLANG-TX004: line 1 column 1:");
+    }
+}
+
+main() {
+    SublangTextSmoke.require("codec: every byte 0..255 round-trips through quote and the lexer", SublangTextSmoke.everyByte());
+    SublangTextSmoke.require("codec: NUL byte and UTF-8 bytes written as \\x00 and \\xC3\\xA4 round-trip", SublangTextSmoke.nulAndUtf8());
+    SublangTextSmoke.require("codec: signed Int64 range is exact", SublangTextSmoke.integerRange());
+    SublangTextSmoke.require("lexer: bad escape, unterminated string, short hex escape, raw control and non-ASCII bytes", SublangTextSmoke.lexerDiagnostics());
+    SublangTextSmoke.require("reader: unknown attribute is TX002", SublangTextSmoke.attributeDiagnostics());
+    SublangTextSmoke.require("parser: truncated, unknown record, duplicate id, bad escape, early record, extra token", SublangTextSmoke.parseDiagnostics());
+    SublangTextSmoke.require("parser: input, line count and line length limits are TX004", SublangTextSmoke.limits());
+    println("Sublang text smoke: all in-process checks passed");
+}

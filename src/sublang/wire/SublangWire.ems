@@ -6,6 +6,7 @@ use sublang::wire::SublangWireResult;
 use sublang::wire::SublangWireTables;
 use sublang::wire::SublangWireEffects;
 use sublang::wire::SublangWireBody;
+use sublang::wire::SublangWireFeatures;
 
 // Transport validity is separate from semantic/lifetime validity. Deserialization
 // freezes the snapshot but never certifies frontend effects or ownership claims.
@@ -34,27 +35,58 @@ public class SublangWire {
         if (schema != module.schema() || stage != "High" || revision != 1) {
             stream.reject("unsupported IR schema, stage or revision");
         }
-        SublangWire.features(stream);
+        List<String> extensions = SublangWireFeatures.needed(module);
+        List<String> declared = SublangWire.features(stream, extensions);
         String name = stream.text(module.name());
         Int entry = stream.number(module.entryFunction());
         if (stream.isReading()) { module = SublangModule(name); module.setEntry(entry); }
         SublangWireTables.sources(stream, module); SublangWireTables.types(stream, module);
         SublangWireTables.profiles(stream, module); SublangWireTables.failures(stream, module);
         SublangWireEffects.locations(stream, module); SublangWireEffects.summaries(stream, module);
-        SublangWireBody.functions(stream, module); stream.finish();
+        SublangWireBody.functions(stream, module);
+        Bool objects = declared.contains(SublangWireFeatures.objects());
+        if (objects) { SublangWireTables.dispatch(stream, module); }
+        if (stream.isReading() && SublangWireFeatures.usesObjects(module) && !declared.contains(SublangWireFeatures.objects())) {
+            stream.reject("module uses ext.oo.v1 without declaring the feature");
+        }
+        if (stream.isReading() && SublangWireFeatures.usesBytes(module) && !declared.contains(SublangWireFeatures.bytes())) {
+            stream.reject("module uses ext.bytes.v1 without declaring the feature");
+        }
+        if (stream.isReading() && SublangWireFeatures.usesExceptions(module) && !declared.contains(SublangWireFeatures.exceptions())) {
+            stream.reject("module uses ext.eh.v1 without declaring the feature");
+        }
+        if (stream.isReading() && SublangWireFeatures.usesNumeric(module) && !declared.contains(SublangWireFeatures.numeric())) {
+            stream.reject("module uses ext.numeric.v1 without declaring the feature");
+        }
+        stream.finish();
         return module;
     }
 
-    private static Void features(SublangWireStream stream) {
-        Int count = stream.count(1, 32); Int index = 0;
+    // Core feature first, then extensions. Returns the extension tokens that were declared.
+    private static List<String> features(SublangWireStream stream, List<String> extensions) {
+        Int count = stream.count(1 + extensions.length(), 32);
+        List<String> declared = List();
+        Int index = 0;
         Bool core = false;
         while (index < count && stream.valid()) {
             String expected = "core.native64.v1";
             if (stream.version() == 2) { expected = "core.native64.v2"; }
+            if (index > 0 && index - 1 < extensions.length()) { expected = extensions.get(index - 1); }
             String feature = stream.text(expected);
-            if (feature != expected || core) { stream.reject("unknown or duplicate required feature"); }
-            core = true; index = index + 1;
+            if (index == 0 && feature != expected) { stream.reject("unknown or duplicate required feature"); }
+            if (index == 0) { core = true; }
+            if (index > 0) { SublangWire.extension(stream, feature, declared); }
+            index = index + 1;
         }
         if (!core) { stream.reject("missing core.native64 feature"); }
+        return declared;
+    }
+
+    private static Void extension(SublangWireStream stream, String feature, List<String> declared) {
+        if (!SublangWireFeatures.known(feature) || declared.contains(feature) || stream.version() != 2) {
+            stream.reject("unknown or duplicate required feature");
+            return;
+        }
+        declared.add(feature);
     }
 }

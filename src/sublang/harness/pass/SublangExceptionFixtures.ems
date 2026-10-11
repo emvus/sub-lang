@@ -1,0 +1,143 @@
+namespace sublang::harness::pass;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+// Exception fixtures. Each owned frame allocates a heap object so that a missing or repeated
+// cleanup on the unwind path shows up as a leak or double free under the sanitizers.
+public class SublangExceptionFixtures {
+    private static List<Int> none() {
+        List<Int> values = List();
+        return values;
+    }
+
+    private static List<Int> one(Int value) {
+        List<Int> values = List();
+        values.add(value);
+        return values;
+    }
+
+    private static List<String> valueMode() {
+        List<String> modes = List();
+        modes.add("value");
+        return modes;
+    }
+
+    private static Void entry(SublangBuilder builder, Int span) {
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+    }
+
+    // thrower(code): allocates a Box in its own scope, ends it and throws `code` unless it is 0,
+    // in which case it returns 1. middle(code): owns a Box in a scope, invokes thrower with an
+    // unwind block that ends the scope exactly once and rethrows with resume; the normal path
+    // ends the scope and returns the thrower result plus 10. main: catches the second call.
+    // main = (middle(0) = 11) + (caught code 3) * 100 = 311.
+    // kind 0: the full example; 1: uncaught (plain call from a frame without cleanup); 2: throw
+    // while a scope is active (rejected); 3: plain call to a throwing function with a scope
+    // active (rejected).
+    public static SublangModule build(Int kind) {
+        SublangBuilder builder = SublangBuilder("exceptions");
+        Int span = builder.syntheticSpan("eh:fixture");
+        Int box = builder.classType("Box", span);
+        Int field = builder.classField(box, "x", builder.intType(), true, span);
+        Int link = builder.classField(box, "link", builder.refType(box), true, span);
+        Int thrower = builder.beginFunction("thrower", builder.intType(), 0, span);
+        Int code = builder.addParam("code", builder.intType(), "value", false);
+        builder.beginBlock();
+        Int local = builder.ops().scopeBegin(span);
+        Int object = builder.ops().classNew(box, local, span);
+        builder.ops().fieldInit(object, field, code, span);
+        builder.ops().fieldClear(object, link, span);
+        Int read = builder.ops().fieldRead(object, field, span);
+        if (kind == 2) {
+            builder.ops().throwCode(read, span);
+            SublangExceptionFixtures.finish(builder, 0, span);
+            return builder.module();
+        }
+        builder.ops().scopeEnd(local, span);
+        Int raise = builder.newBlock();
+        Int give = builder.newBlock();
+        Int zero = builder.ops().constInt(0, span);
+        builder.ops().condBranch(builder.ops().compare("eq", code, zero, span), give, SublangExceptionFixtures.none(), raise, SublangExceptionFixtures.none(), span);
+        builder.enterBlock(raise);
+        builder.ops().throwCode(read, span);
+        builder.enterBlock(give);
+        builder.ops().returnValue(builder.ops().constInt(1, span), span);
+        Int middle = SublangExceptionFixtures.middle(builder, box, field, link, thrower, kind, span);
+        SublangExceptionFixtures.finish(builder, middle, span);
+        return builder.module();
+    }
+
+    private static Int middle(SublangBuilder builder, Int box, Int field, Int link, Int thrower, Int kind, Int span) {
+        Int middle = builder.beginFunction("middle", builder.intType(), 0, span);
+        Int code = builder.addParam("code", builder.intType(), "value", false);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int object = builder.ops().classNew(box, scope, span);
+        builder.ops().fieldInit(object, field, code, span);
+        builder.ops().fieldClear(object, link, span);
+        if (kind == 3) {
+            Int direct = builder.ops().callDirect(thrower, SublangExceptionFixtures.one(code), SublangExceptionFixtures.valueMode(), span);
+            builder.ops().scopeEnd(scope, span);
+            builder.ops().returnValue(direct, span);
+            return middle;
+        }
+        Int normal = builder.newBlock();
+        Int unwind = builder.newBlock();
+        builder.ops().invoke(thrower, SublangExceptionFixtures.one(code), SublangExceptionFixtures.valueMode(), normal, unwind, span);
+        builder.enterBlock(normal);
+        Int result = builder.addBlockParam(builder.intType());
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(builder.ops().intBinary("int.add", result, builder.ops().constInt(10, span), "wrap", 0, span), span);
+        builder.enterBlock(unwind);
+        Int caught = builder.addBlockParam(builder.intType());
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().resume(caught, span);
+        return middle;
+    }
+
+    private static Void finish(SublangBuilder builder, Int middle, Int span) {
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+        if (middle == 0) {
+            builder.ops().returnValue(builder.ops().constInt(0, span), span);
+            return;
+        }
+        Int fine = builder.newBlock();
+        Int handled = builder.newBlock();
+        builder.ops().invoke(middle, SublangExceptionFixtures.one(builder.ops().constInt(0, span)), SublangExceptionFixtures.valueMode(), fine, handled, span);
+        builder.enterBlock(handled);
+        builder.addBlockParam(builder.intType());
+        builder.ops().returnValue(builder.ops().constInt(-1, span), span);
+        builder.enterBlock(fine);
+        Int sum = builder.addBlockParam(builder.intType());
+        Int nextNormal = builder.newBlock();
+        Int nextUnwind = builder.newBlock();
+        builder.ops().invoke(middle, SublangExceptionFixtures.one(builder.ops().constInt(3, span)), SublangExceptionFixtures.valueMode(), nextNormal, nextUnwind, span);
+        builder.enterBlock(nextNormal);
+        builder.addBlockParam(builder.intType());
+        builder.ops().returnValue(builder.ops().constInt(-2, span), span);
+        builder.enterBlock(nextUnwind);
+        Int code = builder.addBlockParam(builder.intType());
+        Int scaled = builder.ops().intBinary("int.mul", code, builder.ops().constInt(100, span), "wrap", 0, span);
+        builder.ops().returnValue(builder.ops().intBinary("int.add", sum, scaled, "wrap", 0, span), span);
+    }
+
+    // main calls thrower(5) with a plain call from a frame that owns nothing: the exception is
+    // uncaught and terminates the process.
+    public static SublangModule uncaught() {
+        SublangBuilder builder = SublangBuilder("uncaught");
+        Int span = builder.syntheticSpan("eh:uncaught");
+        Int thrower = builder.beginFunction("thrower", builder.intType(), 0, span);
+        Int code = builder.addParam("code", builder.intType(), "value", false);
+        builder.beginBlock();
+        builder.ops().throwCode(code, span);
+        SublangExceptionFixtures.entry(builder, span);
+        Int result = builder.ops().callDirect(thrower, SublangExceptionFixtures.one(builder.ops().constInt(5, span)), SublangExceptionFixtures.valueMode(), span);
+        builder.ops().returnValue(result, span);
+        return builder.module();
+    }
+}

@@ -1,0 +1,313 @@
+namespace sublang::text;
+
+use sublang::ir::SublangModule;
+use sublang::model::SublangField;
+use sublang::model::SublangSourceSpan;
+use sublang::model::SublangType;
+use sublang::proof::SublangProofReference;
+use sublang::semantics::SublangAliasFact;
+use sublang::semantics::SublangEffectFact;
+use sublang::semantics::SublangEffectSummary;
+use sublang::text::SublangTextBodyPrinter;
+use sublang::text::SublangTextCodec;
+use sublang::wire::SublangWireFeatures;
+
+// Canonical text of a High IR module, the printer half of the M10 text IR.
+//
+// FORMAT (schema 1, text version 1). The text is ASCII only, one record per line, and every record
+// starts with its keyword. Records are written in the order of the printer, which is also the only
+// order the parser accepts. Attributes are key=value pairs in a fixed order per record; a '#' starts
+// a comment and blank lines are ignored. Indentation is cosmetic and carries no meaning.
+//
+//   value kinds   integer   signed decimal Int64, e.g. -7 (float constants are raw IEEE-754 bits)
+//                 string    double quotes; raw printable ASCII except \ and "; every other byte is
+//                           an escape: \\ \" \n \r \t or \xNN (two hex digits, any byte 0..255)
+//                 word      letters, digits, _ - . starting with a letter or _; true and false
+//                 list      [a,b,c] of integers or of strings; [] is the empty list
+//   records (in this order):
+//     sublang-text 1 schema=1 stage=High revision=1      header, must be the first record
+//     feature "ext.bytes.v1"                             one per extension the module needs
+//     module "name" entry=N                              the module and its entry function id
+//     source id=N name="..."                             source file names
+//     span id=N source=N line=N column=N origin="..."
+//     type id=N kind="..." name="..." width=N signed=B target=N nullable=B span=N
+//                                                        ids 1 to 4 are implicit, not printed
+//     field id=N owner=N name="..." type=N mutable=B span=N
+//     profile id=N name="..." version=N integer-rules="..." float-rules="..."
+//             failure-model="..." unwinding-model="..."
+//     failure id=N name="..." behavior="..." binding="..." signature="..." continues=B
+//             unwinding="..." span=N
+//     location id=N kind="..." name="..." span=N
+//     alias id=N left=N right=N answer="..." origin="..." label="..." revision=N span=N
+//           proof-analysis="..." proof-revision=N proof-deps=[...]
+//     effect id=N name="..." span=N                      followed by its fact records
+//     fact area="..." value="..." provenance="..." detail="..." label="..."
+//          proof-analysis="..." proof-revision=N proof-deps=[...] locations=[...]
+//     class type=N tag=N                                 dispatch table, only when non-empty
+//     group id=N name="..." root=N field=N prototype=N   dispatch table, only when non-empty
+//     entry group=N tag=N function=N                     dispatch table, only when non-empty
+//     func id=N name="..." returnType=N methodOf=N span=N profile=N effect=N
+//          linkage="..." convention="sublang" definition="..."
+//       value id=N type=N                                value ids 1..n, in order
+//       param id=N name="..." type=N passing="..." noescape=B
+//       block id=N params=[...]                          block ids 1..n; block 1 is the entry
+//         op id=N opcode="..." span=N result=N type=N ownership="..." ref=N scope=N
+//            overflow="..." predicate="..." fpmode="..." effect=N int=N bool=B bits=N
+//            text="..." operands=[...] modes=["...",...] targets=[...] trueargs=N
+//     end                                                last record; nothing may follow it
+//
+// IDS. Every table is numbered by ordinal: span, source, type, field, profile, failure, location,
+// alias, effect, group, function, value and block ids are 1, 2, 3, ... with no gap or repeat, and
+// the parser reports a duplicate or non-dense id as SUBLANG-TX003. Operation ids must be unique in
+// the module (they may have gaps, as after linking). Every id is preserved exactly.
+//
+// ROUND TRIP. text-dump prints the module as read from Wire; text-build rebuilds it through the public
+// builder APIs, freezes it, verifies it and writes Wire. Wire -> module -> text -> module -> Wire
+// reproduces the original bytes for transport-2 input; transport-1 input comes back as transport 2
+// with the same module (see docs/Sublang_Text_IR.md).
+//
+// render() returns the text without a final newline, so println(render(module)) prints exactly one
+// record per line and a file written from text-dump is parsed back identically.
+public class SublangTextPrinter {
+    public static String render(SublangModule module) {
+        String out = "";
+        out = out + (SublangTextPrinter.preamble(module));
+        out = out + (SublangTextPrinter.sources(module));
+        out = out + (SublangTextPrinter.spans(module));
+        out = out + (SublangTextPrinter.types(module));
+        out = out + (SublangTextPrinter.fields(module));
+        out = out + (SublangTextPrinter.profiles(module));
+        out = out + (SublangTextPrinter.failures(module));
+        out = out + (SublangTextPrinter.locations(module));
+        out = out + (SublangTextPrinter.aliases(module));
+        out = out + (SublangTextPrinter.effects(module));
+        out = out + (SublangTextPrinter.dispatch(module));
+        out = out + (SublangTextBodyPrinter.functions(module));
+        out = out + ("end");
+        return out;
+    }
+
+    private static String preamble(SublangModule module) {
+        String out = "";
+        out = out + ("# Sublang canonical text IR; grammar in docs/Sublang_Text_IR.md\n");
+        out = out + ("sublang-text 1 schema=" + module.schema().toString() + " stage=" + module.stage() + " revision=" + module.revision().toString() + "\n");
+        List<String> needed = SublangWireFeatures.needed(module);
+        Int index = 0;
+        while (index < needed.length()) {
+            out = out + ("feature " + SublangTextCodec.quote(needed.get(index)) + "\n");
+            index = index + 1;
+        }
+        out = out + ("module " + SublangTextCodec.quote(module.name()) + " entry=" + module.entryFunction().toString() + "\n");
+        return out;
+    }
+
+    private static String sources(SublangModule module) {
+        String out = "";
+        Int id = 1;
+        while (id <= module.sourceCount()) {
+            out = out + ("source id=" + id.toString() + " name=" + SublangTextCodec.quote(module.sourceNameAt(id)) + "\n");
+            id = id + 1;
+        }
+        return out;
+    }
+
+    private static String spans(SublangModule module) {
+        String out = "";
+        Int id = 1;
+        while (id <= module.spanCount()) {
+            SublangSourceSpan entry = module.spanAt(id);
+            out = out + ("span id=" + id.toString());
+            out = out + (" source=" + entry.source().toString());
+            out = out + (" line=" + entry.line().toString());
+            out = out + (" column=" + entry.column().toString());
+            out = out + (" origin=" + SublangTextCodec.quote(entry.origin()) + "\n");
+            id = id + 1;
+        }
+        return out;
+    }
+
+    // Ids 1 to 4 are the implicit primitive types and are never printed.
+    private static String types(SublangModule module) {
+        String out = "";
+        Int id = 5;
+        while (id <= module.types().typeCount()) {
+            SublangType entry = module.types().typeAt(id);
+            out = out + ("type id=" + id.toString());
+            out = out + (" kind=" + SublangTextCodec.quote(entry.kind()));
+            out = out + (" name=" + SublangTextCodec.quote(entry.name()));
+            out = out + (" width=" + entry.width().toString());
+            out = out + (" signed=" + SublangTextCodec.flag(entry.isSigned()));
+            out = out + (" target=" + entry.target().toString());
+            out = out + (" nullable=" + SublangTextCodec.flag(entry.nullable()));
+            out = out + (" span=" + entry.span().toString() + "\n");
+            id = id + 1;
+        }
+        return out;
+    }
+
+    private static String fields(SublangModule module) {
+        String out = "";
+        Int id = 1;
+        while (id <= module.types().fieldCount()) {
+            SublangField entry = module.types().fieldAt(id);
+            out = out + ("field id=" + id.toString());
+            out = out + (" owner=" + entry.owner().toString());
+            out = out + (" name=" + SublangTextCodec.quote(entry.name()));
+            out = out + (" type=" + entry.typeId().toString());
+            out = out + (" mutable=" + SublangTextCodec.flag(entry.isMutable()));
+            out = out + (" span=" + entry.span().toString() + "\n");
+            id = id + 1;
+        }
+        return out;
+    }
+
+    private static String profiles(SublangModule module) {
+        String out = "";
+        Int id = 1;
+        while (id <= module.semantics().profileCount()) {
+            out = out + ("profile id=" + id.toString());
+            out = out + (" name=" + SublangTextCodec.quote(module.semantics().profileAt(id).name()));
+            out = out + (" version=" + module.semantics().profileAt(id).version().toString());
+            out = out + (" integer-rules=" + SublangTextCodec.quote(module.semantics().profileAt(id).integerRules()));
+            out = out + (" float-rules=" + SublangTextCodec.quote(module.semantics().profileAt(id).floatRules()));
+            out = out + (" failure-model=" + SublangTextCodec.quote(module.semantics().profileAt(id).failureModel()));
+            out = out + (" unwinding-model=" + SublangTextCodec.quote(module.semantics().profileAt(id).unwindingModel()) + "\n");
+            id = id + 1;
+        }
+        return out;
+    }
+
+    private static String failures(SublangModule module) {
+        String out = "";
+        Int id = 1;
+        while (id <= module.semantics().failureCount()) {
+            out = out + ("failure id=" + id.toString());
+            out = out + (" name=" + SublangTextCodec.quote(module.semantics().failureActionAt(id).name()));
+            out = out + (" behavior=" + SublangTextCodec.quote(module.semantics().failureActionAt(id).behavior()));
+            out = out + (" binding=" + SublangTextCodec.quote(module.semantics().failureActionAt(id).binding()));
+            out = out + (" signature=" + SublangTextCodec.quote(module.semantics().failureActionAt(id).signature()));
+            out = out + (" continues=" + SublangTextCodec.flag(module.semantics().failureActionAt(id).continues()));
+            out = out + (" unwinding=" + SublangTextCodec.quote(module.semantics().failureActionAt(id).unwinding()));
+            out = out + (" span=" + module.semantics().failureActionAt(id).span().toString() + "\n");
+            id = id + 1;
+        }
+        return out;
+    }
+
+    private static String locations(SublangModule module) {
+        String out = "";
+        Int id = 1;
+        while (id <= module.aliases().locationCount()) {
+            out = out + ("location id=" + id.toString());
+            out = out + (" kind=" + SublangTextCodec.quote(module.aliases().locationAt(id).kind()));
+            out = out + (" name=" + SublangTextCodec.quote(module.aliases().locationAt(id).name()));
+            out = out + (" span=" + module.aliases().locationAt(id).span().toString() + "\n");
+            id = id + 1;
+        }
+        return out;
+    }
+
+    private static String aliases(SublangModule module) {
+        String out = "";
+        Int id = 1;
+        while (id <= module.aliases().aliasFactCount()) {
+            out = out + (SublangTextPrinter.aliasLine(id, module.aliases().aliasFactAt(id)));
+            id = id + 1;
+        }
+        return out;
+    }
+
+    private static String aliasLine(Int id, SublangAliasFact fact) {
+        SublangProofReference proof = fact.proofReference();
+        String out = "";
+        out = out + ("alias id=" + id.toString());
+        out = out + (" left=" + fact.left().toString());
+        out = out + (" right=" + fact.right().toString());
+        out = out + (" answer=" + SublangTextCodec.quote(fact.answer()));
+        out = out + (" origin=" + SublangTextCodec.quote(fact.origin()));
+        out = out + (" label=" + SublangTextCodec.quote(fact.proof()));
+        out = out + (" revision=" + fact.revision().toString());
+        out = out + (" span=" + fact.span().toString());
+        out = out + (" proof-analysis=" + SublangTextCodec.quote(proof.analysis()));
+        out = out + (" proof-revision=" + proof.revision().toString());
+        out = out + (" proof-deps=" + SublangTextCodec.intList(SublangTextPrinter.dependencies(proof)) + "\n");
+        return out;
+    }
+
+    private static String effects(SublangModule module) {
+        String out = "";
+        Int id = 1;
+        while (id <= module.semantics().effectSummaryCount()) {
+            SublangEffectSummary summary = module.semantics().effectSummaryAt(id);
+            out = out + ("effect id=" + id.toString());
+            out = out + (" name=" + SublangTextCodec.quote(summary.name()));
+            out = out + (" span=" + summary.span().toString() + "\n");
+            Int index = 0;
+            while (index < summary.factCount()) {
+                out = out + (SublangTextPrinter.factLine(summary.factAt(index)));
+                index = index + 1;
+            }
+            id = id + 1;
+        }
+        return out;
+    }
+
+    private static String factLine(SublangEffectFact fact) {
+        SublangProofReference proof = fact.proofReference();
+        String out = "";
+        out = out + ("  fact area=" + SublangTextCodec.quote(fact.area()));
+        out = out + (" value=" + SublangTextCodec.quote(fact.value()));
+        out = out + (" provenance=" + SublangTextCodec.quote(fact.provenance()));
+        out = out + (" detail=" + SublangTextCodec.quote(fact.detail()));
+        out = out + (" label=" + SublangTextCodec.quote(fact.proof()));
+        out = out + (" proof-analysis=" + SublangTextCodec.quote(proof.analysis()));
+        out = out + (" proof-revision=" + proof.revision().toString());
+        out = out + (" proof-deps=" + SublangTextCodec.intList(SublangTextPrinter.dependencies(proof)));
+        out = out + (" locations=" + SublangTextCodec.intList(SublangTextPrinter.factLocations(fact)) + "\n");
+        return out;
+    }
+
+    private static List<Int> dependencies(SublangProofReference proof) {
+        List<Int> values = List();
+        Int index = 0;
+        while (index < proof.dependencyCount()) {
+            values.add(proof.dependencyAt(index));
+            index = index + 1;
+        }
+        return values;
+    }
+
+    private static List<Int> factLocations(SublangEffectFact fact) {
+        List<Int> values = List();
+        Int index = 0;
+        while (index < fact.locationCount()) {
+            values.add(fact.locationAt(index));
+            index = index + 1;
+        }
+        return values;
+    }
+
+    private static String dispatch(SublangModule module) {
+        String out = "";
+        Int index = 0;
+        while (index < module.dispatch().classCount()) {
+            out = out + ("class type=" + module.dispatch().classTypeAt(index).toString() + " tag=" + module.dispatch().classTagAt(index).toString() + "\n");
+            index = index + 1;
+        }
+        Int group = 1;
+        while (group <= module.dispatch().groupCount()) {
+            out = out + ("group id=" + group.toString());
+            out = out + (" name=" + SublangTextCodec.quote(module.dispatch().groupName(group)));
+            out = out + (" root=" + module.dispatch().groupRoot(group).toString());
+            out = out + (" field=" + module.dispatch().groupTagField(group).toString());
+            out = out + (" prototype=" + module.dispatch().groupPrototype(group).toString() + "\n");
+            Int entry = 0;
+            while (entry < module.dispatch().entryCount(group)) {
+                out = out + ("entry group=" + group.toString() + " tag=" + module.dispatch().entryTag(group, entry).toString() + " function=" + module.dispatch().entryFunction(group, entry).toString() + "\n");
+                entry = entry + 1;
+            }
+            group = group + 1;
+        }
+        return out;
+    }
+}

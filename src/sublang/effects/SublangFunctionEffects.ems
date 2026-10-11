@@ -1,0 +1,157 @@
+namespace sublang::effects;
+
+// Derived effect summary of one function. Area values use 0 (none / returns), 1 (may / may-diverge)
+// and 2 (unknown); areas follow SublangVocabulary.effectAreas order. Locations are the function's
+// own parameter regions plus "other" (globals, runtime, unknown memory). absorb() is a monotone
+// join, so a fixpoint over recursive components can only climb.
+public class SublangFunctionEffects {
+    private List<Int> areaValues;
+    private List<Bool> readsParams;
+    private List<Bool> writesParams;
+    private List<Bool> escapesParams;
+    private List<Bool> returnsParams;
+    private Bool readsOtherFlag;
+    private Bool writesOtherFlag;
+    private Bool returnsFreshFlag;
+    private Bool returnsUnknownFlag;
+    private Bool externalFlag;
+
+    public SublangFunctionEffects(Int paramCount) {
+        this.areaValues = List();
+        this.readsParams = List();
+        this.writesParams = List();
+        this.escapesParams = List();
+        this.returnsParams = List();
+        Int area = 0;
+        while (area < 9) {
+            this.areaValues.add(0);
+            area = area + 1;
+        }
+        Int param = 0;
+        while (param < paramCount) {
+            this.readsParams.add(false);
+            this.writesParams.add(false);
+            this.escapesParams.add(false);
+            this.returnsParams.add(false);
+            param = param + 1;
+        }
+        this.readsOtherFlag = false;
+        this.writesOtherFlag = false;
+        this.returnsFreshFlag = false;
+        this.returnsUnknownFlag = false;
+        this.externalFlag = false;
+    }
+
+    public static Int allocation() { return 0; }
+    public static Int escape() { return 1; }
+    public static Int failure() { return 2; }
+    public static Int exceptions() { return 3; }
+    public static Int memoryRead() { return 4; }
+    public static Int memoryWrite() { return 5; }
+    public static Int synchronization() { return 6; }
+    public static Int observable() { return 7; }
+    public static Int control() { return 8; }
+
+    public Int paramCount() { return this.readsParams.length(); }
+    public Int area(Int index) { return this.areaValues.get(index); }
+    public Bool readsParam(Int index) { return this.readsParams.get(index); }
+    public Bool writesParam(Int index) { return this.writesParams.get(index); }
+    public Bool escapesParam(Int index) { return this.escapesParams.get(index); }
+    public Bool returnsParam(Int index) { return this.returnsParams.get(index); }
+    public Bool readsOther() { return this.readsOtherFlag; }
+    public Bool writesOther() { return this.writesOtherFlag; }
+    public Bool returnsFresh() { return this.returnsFreshFlag; }
+    public Bool returnsUnknown() { return this.returnsUnknownFlag; }
+    public Bool external() { return this.externalFlag; }
+
+    public Void raise(Int area, Int value) {
+        if (value > this.areaValues.get(area)) { this.areaValues.set(area, value); }
+    }
+
+    public Void markReadsParam(Int index) { this.readsParams.set(index, true); this.raise(SublangFunctionEffects.memoryRead(), 1); }
+    public Void markWritesParam(Int index) { this.writesParams.set(index, true); this.raise(SublangFunctionEffects.memoryWrite(), 1); }
+    public Void markEscapesParam(Int index) { this.escapesParams.set(index, true); this.raise(SublangFunctionEffects.escape(), 1); }
+    public Void markReturnsParam(Int index) { this.returnsParams.set(index, true); }
+    public Void markReadsOther() { this.readsOtherFlag = true; this.raise(SublangFunctionEffects.memoryRead(), 1); }
+    public Void markWritesOther() { this.writesOtherFlag = true; this.raise(SublangFunctionEffects.memoryWrite(), 1); }
+    public Void markReturnsFresh() { this.returnsFreshFlag = true; }
+    public Void markReturnsUnknown() { this.returnsUnknownFlag = true; }
+    public Void markExternal() { this.externalFlag = true; }
+
+    // Everything may happen and every argument may be read, written, retained and returned.
+    public Void widenToUnknown() {
+        Int area = 0;
+        while (area < 9) {
+            this.areaValues.set(area, 2);
+            area = area + 1;
+        }
+        Int param = 0;
+        while (param < this.readsParams.length()) {
+            this.readsParams.set(param, true);
+            this.writesParams.set(param, true);
+            this.escapesParams.set(param, true);
+            this.returnsParams.set(param, true);
+            param = param + 1;
+        }
+        this.readsOtherFlag = true;
+        this.writesOtherFlag = true;
+        this.returnsFreshFlag = true;
+        this.returnsUnknownFlag = true;
+    }
+
+    // Monotone join. Returns true when this summary grew.
+    public Bool absorb(SublangFunctionEffects other) {
+        Bool grew = false;
+        Int area = 0;
+        while (area < 9) {
+            if (other.area(area) > this.areaValues.get(area)) { this.areaValues.set(area, other.area(area)); grew = true; }
+            area = area + 1;
+        }
+        Int param = 0;
+        while (param < this.readsParams.length() && param < other.paramCount()) {
+            if (other.readsParam(param) && !this.readsParams.get(param)) { this.readsParams.set(param, true); grew = true; }
+            if (other.writesParam(param) && !this.writesParams.get(param)) { this.writesParams.set(param, true); grew = true; }
+            if (other.escapesParam(param) && !this.escapesParams.get(param)) { this.escapesParams.set(param, true); grew = true; }
+            if (other.returnsParam(param) && !this.returnsParams.get(param)) { this.returnsParams.set(param, true); grew = true; }
+            param = param + 1;
+        }
+        if (other.readsOther() && !this.readsOtherFlag) { this.readsOtherFlag = true; grew = true; }
+        if (other.writesOther() && !this.writesOtherFlag) { this.writesOtherFlag = true; grew = true; }
+        if (other.returnsFresh() && !this.returnsFreshFlag) { this.returnsFreshFlag = true; grew = true; }
+        if (other.returnsUnknown() && !this.returnsUnknownFlag) { this.returnsUnknownFlag = true; grew = true; }
+        return grew;
+    }
+
+    // Sufficient for deleting a call whose result is unused and dropping an unused argument
+    // computation: no failure, abort, allocation, write, observable effect, synchronization or
+    // divergence. Reads are allowed because an unused result cannot observe them.
+    public Bool removableWhenUnused() {
+        return this.areaValues.get(SublangFunctionEffects.allocation()) == 0
+            && this.areaValues.get(SublangFunctionEffects.failure()) == 0
+            && this.areaValues.get(SublangFunctionEffects.exceptions()) == 0
+            && this.areaValues.get(SublangFunctionEffects.memoryWrite()) == 0
+            && this.areaValues.get(SublangFunctionEffects.synchronization()) == 0
+            && this.areaValues.get(SublangFunctionEffects.observable()) == 0
+            && this.areaValues.get(SublangFunctionEffects.control()) == 0
+            && !this.writesOtherFlag;
+    }
+
+    // Sufficient for LLVM memory(none) + nounwind + willreturn: additionally no memory reads.
+    public Bool memoryFree() {
+        return this.removableWhenUnused()
+            && this.areaValues.get(SublangFunctionEffects.memoryRead()) == 0
+            && !this.readsOtherFlag;
+    }
+
+    public String areaText(Int area) {
+        Int value = this.areaValues.get(area);
+        if (area == SublangFunctionEffects.control()) {
+            if (value == 0) { return "returns"; }
+            if (value == 1) { return "may-diverge"; }
+            return "unknown";
+        }
+        if (value == 0) { return "none"; }
+        if (value == 1) { return "may"; }
+        return "unknown";
+    }
+}

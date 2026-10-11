@@ -2,6 +2,7 @@ namespace sublang::ir;
 
 use sublang::body::SublangFunction;
 use sublang::ir::SublangAliasTable;
+use sublang::ir::SublangDispatchTable;
 use sublang::ir::SublangSemanticTable;
 use sublang::ir::SublangTypeTable;
 use sublang::model::SublangSourceSpan;
@@ -17,6 +18,7 @@ public class SublangModule {
     private Int revisionNumber;
     private Int entryFunctionId;
     private Int operationCounter;
+    private Int parentRevisionValue;
     private Bool frozenFlag;
     private Int refusalCounter;
     private List<String> sourceNames;
@@ -25,6 +27,7 @@ public class SublangModule {
     private SublangTypeTable typeTable;
     private SublangSemanticTable semanticTable;
     private SublangAliasTable aliasTable;
+    private SublangDispatchTable dispatchTable;
 
     public SublangModule(String name) {
         this.moduleName = name + "";
@@ -32,6 +35,7 @@ public class SublangModule {
         this.revisionNumber = 1;
         this.entryFunctionId = 0;
         this.operationCounter = 0;
+        this.parentRevisionValue = 0;
         this.frozenFlag = false;
         this.refusalCounter = 0;
         this.sourceNames = List();
@@ -40,6 +44,7 @@ public class SublangModule {
         this.typeTable = SublangTypeTable();
         this.semanticTable = SublangSemanticTable();
         this.aliasTable = SublangAliasTable(this.revisionNumber);
+        this.dispatchTable = SublangDispatchTable();
     }
 
     public String name() {
@@ -56,6 +61,37 @@ public class SublangModule {
 
     public Int revision() {
         return this.revisionNumber;
+    }
+
+    // Revision this one was derived from; 0 for a module that was built directly.
+    public Int parentRevision() {
+        return this.parentRevisionValue;
+    }
+
+    // Empty, unfrozen successor snapshot of the same lineage. Tables start empty; the snapshot
+    // copier fills them. The revision must exceed the source revision.
+    public static SublangModule derived(SublangModule source, Int revision) {
+        SublangModule next = SublangModule(source.moduleName);
+        next.revisionNumber = revision;
+        next.aliasTable = SublangAliasTable(revision);
+        next.stageName = source.stageName + "";
+        next.entryFunctionId = source.entryFunctionId;
+        next.operationCounter = source.operationCounter;
+        next.parentRevisionValue = source.revisionNumber;
+        return next;
+    }
+
+    public Int operationTotal() {
+        return this.operationCounter;
+    }
+
+    // Linking appends operations whose ids were numbered by another module.
+    public Void advanceOperationTotal(Int total) {
+        if (this.frozenFlag) {
+            this.refuse();
+            return;
+        }
+        if (total > this.operationCounter) { this.operationCounter = total; }
     }
 
     public Int entryFunction() {
@@ -82,13 +118,17 @@ public class SublangModule {
         return this.aliasTable;
     }
 
+    public SublangDispatchTable dispatch() {
+        return this.dispatchTable;
+    }
+
     public Bool isFrozen() {
         return this.frozenFlag;
     }
 
     // Refused mutations of the module itself and of all of its tables.
     public Int refusalCount() {
-        return this.refusalCounter + this.typeTable.refusalCount() + this.semanticTable.refusalCount() + this.aliasTable.refusalCount();
+        return this.refusalCounter + this.typeTable.refusalCount() + this.semanticTable.refusalCount() + this.aliasTable.refusalCount() + this.dispatchTable.refusalCount();
     }
 
     public Void refuse() {
@@ -107,6 +147,7 @@ public class SublangModule {
         this.typeTable.freeze();
         this.semanticTable.freeze();
         this.aliasTable.freeze();
+        this.dispatchTable.freeze();
     }
 
     public Int nextOperationId() {

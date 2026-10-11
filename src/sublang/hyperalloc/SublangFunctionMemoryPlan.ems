@@ -3,6 +3,7 @@ namespace sublang::hyperalloc;
 use sublang::body::SublangFunction;
 use sublang::body::SublangOperation;
 use sublang::ir::SublangModule;
+use sublang::effects::SublangEffectResult;
 use sublang::hyperalloc::SublangObjectUses;
 use sublang::ir::data::SublangCollectionLayout;
 
@@ -20,12 +21,12 @@ public class SublangFunctionMemoryPlan {
     private Int functionId;
     private SublangModule module;
 
-    public SublangFunctionMemoryPlan(SublangModule module, SublangFunction function, Bool enabled) {
+    public SublangFunctionMemoryPlan(SublangModule module, SublangFunction function, Bool enabled, SublangEffectResult effects) {
         this.module = module;
         this.snapshotRevision = module.revision();
         this.functionId = function.id();
         this.localValues = List();
-        this.uses = SublangObjectUses(module, function);
+        this.uses = SublangObjectUses(module, function, effects);
         this.foldedValues = List();
         this.shardValues = List();
         this.regionScope = 0;

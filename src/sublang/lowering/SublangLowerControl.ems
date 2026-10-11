@@ -1,0 +1,178 @@
+namespace sublang::lowering;
+
+use sublang::body::SublangOperation;
+use sublang::lowering::SublangLowerContext;
+use sublang::lowering::SublangLowerOwnership;
+
+// Terminators and calls, including the ownership effects that belong to them: transferring an
+// owned argument detaches it from its scope, adopting a Ref/Bond result attaches it to the
+// destination scope, and every exit ends the scopes it must clean up.
+public class SublangLowerControl {
+    public static Void lower(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        String code = op.opcode();
+        if (code == "fail") { context.abort(); return; }
+        if (code == "branch") { context.branch(context.blockOf(op.targetAt(0)), SublangLowerControl.arguments(context, op, 0, op.operandCount())); return; }
+        if (code == "return") { SublangLowerControl.giveBack(context, owners, op); return; }
+        if (code == "call.direct") { SublangLowerControl.call(context, owners, op); return; }
+        if (code == "invoke") { SublangLowerControl.invoke(context, owners, op); return; }
+        if (code == "call.virtual") { SublangLowerControl.virtual(context, owners, op); return; }
+        if (code == "throw" || code == "resume") { SublangLowerControl.raise(context, owners, op); return; }
+        SublangLowerControl.conditional(context, op);
+    }
+
+    private static List<Int> arguments(SublangLowerContext context, SublangOperation op, Int from, Int to) {
+        List<Int> values = List();
+        Int index = from;
+        while (index < to) {
+            values.add(context.value(op.operandAt(index)));
+            index = index + 1;
+        }
+        return values;
+    }
+
+    // Both edges may reach the same block with different arguments, which one phi cannot
+    // express, so each edge gets its own forwarding block in that case.
+    private static Void conditional(SublangLowerContext context, SublangOperation op) {
+        Int condition = context.value(op.operandAt(0));
+        Int whenTrue = context.blockOf(op.targetAt(0));
+        Int whenFalse = context.blockOf(op.targetAt(1));
+        List<Int> trueArguments = SublangLowerControl.arguments(context, op, 1, 1 + op.trueArgs());
+        List<Int> falseArguments = SublangLowerControl.arguments(context, op, 1 + op.trueArgs(), op.operandCount());
+        if (whenTrue != whenFalse) {
+            context.conditional(condition, whenTrue, trueArguments, whenFalse, falseArguments);
+            return;
+        }
+        Int first = context.newBlock();
+        Int second = context.newBlock();
+        List<Int> none = SublangLowerContext.none();
+        context.conditional(condition, first, none, second, none);
+        context.enter(first);
+        context.branch(whenTrue, trueArguments);
+        context.enter(second);
+        context.branch(whenFalse, falseArguments);
+    }
+
+    private static Void giveBack(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int value = 0;
+        if (op.operandCount() > 0) { value = context.value(op.operandAt(0)); }
+        String kind = context.module.types().kindOf(context.function.returnType());
+        Bool owned = kind == "Ref" || kind == "Bond";
+        if (kind == "Ref") { context.runtimeVoid("sublang.flow.detach", SublangLowerContext.one(value)); }
+        if (kind == "Bond") { owners.bondTake(op.operandAt(0)); }
+        owners.end(0, owned);
+        owners.bondEnd(0, owned);
+        context.ret(value);
+    }
+
+    private static Void call(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int argument = 0;
+        while (argument < op.operandCount()) {
+            if (op.modeAt(argument) == "owned") {
+                String kind = context.module.types().kindOf(context.function.valueTypeAt(op.operandAt(argument)));
+                if (kind == "Ref") { context.runtimeVoid("sublang.flow.detach", SublangLowerContext.one(context.value(op.operandAt(argument)))); }
+                if (kind == "Bond") { owners.bondTake(op.operandAt(argument)); }
+            }
+            argument = argument + 1;
+        }
+        String result = context.lowType(context.module.functionAt(op.ref()).returnType());
+        Int value = context.call(op.ref(), SublangLowerControl.arguments(context, op, 0, op.operandCount()), result);
+        if (!op.hasResult()) { return; }
+        String kind = context.module.types().kindOf(op.resultType());
+        if (kind == "Ref") {
+            context.runtimeVoid("sublang.flow.adopt", SublangLowerContext.two(owners.head(op.scope(), owners.target(op.resultType())), value));
+        }
+        if (kind == "Bond") { owners.bondAdopt(op.resultValue(), op.scope(), value); }
+        context.bind(op.resultValue(), value);
+    }
+
+    // Owned arguments are transferred before the call on both edges, as for a plain call. The
+    // call result reaches the High normal block as its parameter; the exception code reaches the
+    // High unwind block as its parameter, through a landing pad that starts the Low unwind block.
+    private static Void invoke(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int argument = 0;
+        while (argument < op.operandCount()) {
+            if (op.modeAt(argument) == "owned") {
+                String kind = context.module.types().kindOf(context.function.valueTypeAt(op.operandAt(argument)));
+                if (kind == "Ref") { context.runtimeVoid("sublang.flow.detach", SublangLowerContext.one(context.value(op.operandAt(argument)))); }
+                if (kind == "Bond") { owners.bondTake(op.operandAt(argument)); }
+            }
+            argument = argument + 1;
+        }
+        String result = context.lowType(context.module.functionAt(op.ref()).returnType());
+        Int normal = context.newBlock();
+        Int landing = context.newBlock();
+        Int value = context.invoke(op.ref(), SublangLowerControl.arguments(context, op, 0, op.operandCount()), result, normal, landing);
+        context.enter(normal);
+        if (value != 0) { context.branch(context.blockOf(op.targetAt(0)), SublangLowerContext.one(value)); }
+        if (value == 0) { context.branch(context.blockOf(op.targetAt(0)), SublangLowerContext.none()); }
+        context.enter(landing);
+        context.branch(context.blockOf(op.targetAt(1)), SublangLowerContext.one(context.caught()));
+    }
+
+    // Leaving by exception ends the function-level owners like a return does, then raises.
+    private static Void raise(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int code = context.value(op.operandAt(0));
+        owners.end(0, true);
+        owners.bondEnd(0, true);
+        context.raise(code);
+    }
+
+    // Closed-world dispatch: compare the receiver's tag with each registered tag and call the
+    // matching implementation; an unknown tag is a contract violation and aborts. A group with a
+    // single implementation is lowered to a direct call.
+    private static Void virtual(SublangLowerContext context, SublangLowerOwnership owners, SublangOperation op) {
+        Int group = op.ref();
+        Int argument = 0;
+        while (argument < op.operandCount()) {
+            if (op.modeAt(argument) == "owned") {
+                String kind = context.module.types().kindOf(context.function.valueTypeAt(op.operandAt(argument)));
+                if (kind == "Ref") { context.runtimeVoid("sublang.flow.detach", SublangLowerContext.one(context.value(op.operandAt(argument)))); }
+                if (kind == "Bond") { owners.bondTake(op.operandAt(argument)); }
+            }
+            argument = argument + 1;
+        }
+        Int prototype = context.module.dispatch().groupPrototype(group);
+        String resultType = context.lowType(context.module.functionAt(prototype).returnType());
+        List<Int> values = SublangLowerControl.arguments(context, op, 0, op.operandCount());
+        Int entries = context.module.dispatch().entryCount(group);
+        Int result = 0;
+        if (entries == 1) {
+            Int only = context.module.dispatch().entryFunction(group, 0);
+            context.note("call.virtual " + context.module.dispatch().groupName(group) + " in " + context.function.name() + ": one implementation, lowered to a direct call of " + context.module.functionAt(only).name());
+            result = context.call(only, values, resultType);
+        }
+        if (entries != 1) { result = SublangLowerControl.chain(context, group, entries, values, resultType, op); }
+        if (!op.hasResult()) { return; }
+        if (context.module.types().kindOf(op.resultType()) == "Ref") {
+            context.runtimeVoid("sublang.flow.adopt", SublangLowerContext.two(owners.head(op.scope(), owners.target(op.resultType())), result));
+        }
+        context.bind(op.resultValue(), result);
+    }
+
+    private static Int chain(SublangLowerContext context, Int group, Int entries, List<Int> values, String resultType, SublangOperation op) {
+        Int root = context.module.dispatch().groupRoot(group);
+        Int index = context.fieldIndex(context.module.dispatch().groupTagField(group));
+        Int slot = context.fieldAddress("%t" + root.toString(), index, values.get(0), "");
+        Int tag = context.load("i64", slot, "");
+        Int join = context.newBlock();
+        Int answer = 0;
+        if (resultType != "void") { answer = context.blockParam(join, resultType); }
+        List<Int> none = SublangLowerContext.none();
+        Int entry = 0;
+        while (entry < entries) {
+            Int hit = context.newBlock();
+            Int next = context.newBlock();
+            Int test = context.compare("i64", "eq", tag, context.constantInt(context.module.dispatch().entryTag(group, entry)));
+            context.conditional(test, hit, none, next, none);
+            context.enter(hit);
+            Int value = context.call(context.module.dispatch().entryFunction(group, entry), values, resultType);
+            if (value != 0) { context.branch(join, SublangLowerContext.one(value)); }
+            if (value == 0) { context.branch(join, SublangLowerContext.none()); }
+            context.enter(next);
+            entry = entry + 1;
+        }
+        context.abort();
+        context.enter(join);
+        return answer;
+    }
+}

@@ -1,6 +1,7 @@
 namespace sublang::analysis;
 
 use sublang::body::SublangFunction;
+use sublang::checks::SublangDispatchChecks;
 use sublang::checks::SublangFlowChecks;
 use sublang::checks::SublangFunctionChecks;
 use sublang::checks::SublangSemanticChecks;
@@ -23,19 +24,20 @@ public class SublangVerifier {
         SublangReport report = SublangReport(this.module.revision());
         SublangSemanticChecks semantics = SublangSemanticChecks(report, this.module);
         SublangTypeChecks types = SublangTypeChecks(report, this.module);
-        this.checkModuleData(semantics, types);
+        this.checkModuleData(report, semantics, types);
         this.checkFunctions(report, semantics);
         this.checkEntryFunction(report);
         return SublangVerification(report.diagnostics());
     }
 
-    private Void checkModuleData(SublangSemanticChecks semantics, SublangTypeChecks types) {
+    private Void checkModuleData(SublangReport report, SublangSemanticChecks semantics, SublangTypeChecks types) {
         semantics.checkFailureActions();
         semantics.checkEffectSummaries();
         semantics.checkLocations();
         semantics.checkAliasFacts();
         types.checkTypes();
         types.checkFields();
+        SublangDispatchChecks(report, this.module).check();
     }
 
     private Void checkFunctions(SublangReport report, SublangSemanticChecks semantics) {

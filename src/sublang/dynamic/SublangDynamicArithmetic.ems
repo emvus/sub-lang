@@ -1,0 +1,84 @@
+namespace sublang::dynamic;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangOperationBuilder;
+use sublang::dynamic::SublangDynamicLayout;
+use sublang::dynamic::SublangDynamicValues;
+use sublang::dynamic::SublangDynamicBranch;
+
+// dyn_add(borrow_read a, borrow_read b) -> owned Dyn. The result is allocated in the function's own
+// scope and returned owned, so the caller adopts it in its destination scope (the allocating call
+// pattern of the Flow lifetime rules). Int + Int is checked (trap, dyn.overflow); Int with Float
+// promotes the Int with int.to_float and adds with IEEE rne; Float + Float adds with rne; Text + Text
+// concatenates through text.concat. Any other pair aborts with dyn.type_error.
+public class SublangDynamicArithmetic {
+    private SublangBuilder builder;
+    private SublangDynamicLayout layout;
+    private SublangDynamicValues values;
+    private SublangDynamicBranch branch;
+    private Int span;
+
+    public SublangDynamicArithmetic(SublangBuilder builder, SublangDynamicLayout layout, SublangDynamicValues values, Int span) {
+        this.builder = builder;
+        this.layout = layout;
+        this.values = values;
+        this.branch = SublangDynamicBranch(builder, span);
+        this.span = span;
+    }
+
+    public Int defineAdd() {
+        Int function = this.builder.beginFunction("dyn_add", this.layout.dynRef(), 0, this.span);
+        Int left = this.builder.addParam("left", this.layout.dynRef(), "borrow_read", false);
+        Int right = this.builder.addParam("right", this.layout.dynRef(), "borrow_read", false);
+        this.builder.beginBlock();
+        SublangOperationBuilder ops = this.builder.ops();
+        Int scope = ops.scopeBegin(this.span);
+        Int leftTag = ops.fieldRead(left, this.layout.tagField(), this.span);
+        Int rightTag = ops.fieldRead(right, this.layout.tagField(), this.span);
+        Int key = ops.intBinary("int.add", ops.intBinary("int.mul", leftTag, ops.constInt(10, this.span), "wrap", 0, this.span), rightTag, "wrap", 0, this.span);
+
+        Int intIntBlock = this.builder.newBlock();
+        Int restIntInt = this.branch.test(this.branch.equalsConstant(key, 22), intIntBlock);
+        this.builder.enterBlock(intIntBlock);
+        Int leftNum = ops.fieldRead(left, this.layout.numField(), this.span);
+        Int rightNum = ops.fieldRead(right, this.layout.numField(), this.span);
+        Int sum = ops.intBinary("int.add", leftNum, rightNum, "trap", this.layout.overflow(), this.span);
+        ops.returnOwned(this.values.plain(scope, 2, sum, ops.constFloatBits(0, this.span)), this.span);
+        this.builder.enterBlock(restIntInt);
+
+        Int intFloatBlock = this.builder.newBlock();
+        Int restIntFloat = this.branch.test(this.branch.equalsConstant(key, 23), intFloatBlock);
+        this.builder.enterBlock(intFloatBlock);
+        Int promotedLeft = ops.intToFloat(ops.fieldRead(left, this.layout.numField(), this.span), this.span);
+        Int plusRight = ops.floatBinary("float.add", promotedLeft, ops.fieldRead(right, this.layout.realField(), this.span), "rne", this.span);
+        ops.returnOwned(this.values.plain(scope, 3, ops.constInt(0, this.span), plusRight), this.span);
+        this.builder.enterBlock(restIntFloat);
+
+        Int floatIntBlock = this.builder.newBlock();
+        Int restFloatInt = this.branch.test(this.branch.equalsConstant(key, 32), floatIntBlock);
+        this.builder.enterBlock(floatIntBlock);
+        Int promotedRight = ops.intToFloat(ops.fieldRead(right, this.layout.numField(), this.span), this.span);
+        Int plusInt = ops.floatBinary("float.add", ops.fieldRead(left, this.layout.realField(), this.span), promotedRight, "rne", this.span);
+        ops.returnOwned(this.values.plain(scope, 3, ops.constInt(0, this.span), plusInt), this.span);
+        this.builder.enterBlock(restFloatInt);
+
+        Int floatFloatBlock = this.builder.newBlock();
+        Int restFloatFloat = this.branch.test(this.branch.equalsConstant(key, 33), floatFloatBlock);
+        this.builder.enterBlock(floatFloatBlock);
+        Int floatSum = ops.floatBinary("float.add", ops.fieldRead(left, this.layout.realField(), this.span), ops.fieldRead(right, this.layout.realField(), this.span), "rne", this.span);
+        ops.returnOwned(this.values.plain(scope, 3, ops.constInt(0, this.span), floatSum), this.span);
+        this.builder.enterBlock(restFloatFloat);
+
+        Int textBlock = this.builder.newBlock();
+        Int restText = this.branch.test(this.branch.equalsConstant(key, 44), textBlock);
+        this.builder.enterBlock(textBlock);
+        Int leftBytes = ops.fieldBorrow(left, this.layout.textField(), this.span);
+        Int rightBytes = ops.fieldBorrow(right, this.layout.textField(), this.span);
+        Int joined = this.builder.collections().textConcat(this.layout.bytesType(), leftBytes, rightBytes, scope, this.span);
+        ops.returnOwned(this.values.text(scope, joined), this.span);
+        this.builder.enterBlock(restText);
+
+        this.branch.fail(this.layout.typeError());
+        return function;
+    }
+}

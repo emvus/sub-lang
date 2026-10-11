@@ -1,0 +1,53 @@
+namespace sublang::dynamic;
+
+use sublang::ir::SublangBuilder;
+
+// Dyn profile, dyn-v1 library (see docs/Sublang_Dynamic_Library.md).
+// One class holds every dynamic value:
+//   class Dyn { tag: Int; num: Int; real: Float; text: owned Ref<List<Byte>> }
+// tag: 0 nil, 1 bool, 2 int, 3 float, 4 text. num holds the bool (0/1) or the int value.
+// real holds the float value. text owns the bytes of a text value and is cleared for every other tag.
+// Values are ordinary owned heap objects (`owned Ref<Dyn>`), so Flow scope, ownership and drop rules,
+// and the existing optimizations, apply without new opcodes.
+//
+// This class only holds the ids of the Dyn class, its fields, its byte-list type and the failure
+// records that the library's operations use. The ids are created once per module.
+public class SublangDynamicLayout {
+    private SublangBuilder builder;
+    private Int dynTypeId;
+    private Int dynRefId;
+    private Int tagFieldId;
+    private Int numFieldId;
+    private Int realFieldId;
+    private Int textFieldId;
+    private Int bytesTypeId;
+    private Int typeErrorId;
+    private Int overflowId;
+    private Int internalId;
+
+    public SublangDynamicLayout(SublangBuilder builder, Int span) {
+        this.builder = builder;
+        this.bytesTypeId = builder.listType(builder.byteType(), span);
+        this.dynTypeId = builder.classType("Dyn", span);
+        this.dynRefId = builder.refType(this.dynTypeId);
+        this.tagFieldId = builder.classField(this.dynTypeId, "tag", builder.intType(), true, span);
+        this.numFieldId = builder.classField(this.dynTypeId, "num", builder.intType(), true, span);
+        this.realFieldId = builder.classField(this.dynTypeId, "real", builder.floatType(), true, span);
+        this.textFieldId = builder.classField(this.dynTypeId, "text", builder.refType(this.bytesTypeId), true, span);
+        this.typeErrorId = builder.failure("dyn.type_error");
+        this.overflowId = builder.failure("dyn.overflow");
+        this.internalId = builder.failure("dyn.internal");
+    }
+
+    public SublangBuilder builder() { return this.builder; }
+    public Int dynType() { return this.dynTypeId; }
+    public Int dynRef() { return this.dynRefId; }
+    public Int tagField() { return this.tagFieldId; }
+    public Int numField() { return this.numFieldId; }
+    public Int realField() { return this.realFieldId; }
+    public Int textField() { return this.textFieldId; }
+    public Int bytesType() { return this.bytesTypeId; }
+    public Int typeError() { return this.typeErrorId; }
+    public Int overflow() { return this.overflowId; }
+    public Int internalFailure() { return this.internalId; }
+}

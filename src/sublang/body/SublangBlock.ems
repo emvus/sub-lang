@@ -81,6 +81,15 @@ public class SublangBlock {
         this.paramValueIds.add(valueId);
     }
 
+    // Controlled in-place replacement before a draft snapshot is frozen; one operation keeps its slot.
+    public Void replaceOperation(Int index, SublangOperation op) {
+        if (this.frozenFlag || index < 0 || index >= this.operationList.length()) {
+            this.refusalCounter = this.refusalCounter + 1;
+            return;
+        }
+        this.operationList.set(index, op);
+    }
+
     public Void addOperation(SublangOperation op) {
         if (this.frozenFlag) {
             this.refusalCounter = this.refusalCounter + 1;

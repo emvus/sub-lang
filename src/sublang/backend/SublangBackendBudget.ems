@@ -1,70 +1,9 @@
 namespace sublang::backend;
 
-use sublang::body::SublangFunction;
-use sublang::body::SublangOperation;
 use sublang::ir::SublangModule;
+use sublang::limits::SublangResourceBudget;
 
-// Limits precede dominance analysis and also bound identifier validation to linear work.
-// Emission uses operation ids in SSA names, so duplicate ids must never reach LLVM.
+// Compatibility entry point; passes and codegen share the same pre-verification limits.
 public class SublangBackendBudget {
-    private List<Bool> seenOperations;
-    private Int operationCount;
-
-    public SublangBackendBudget() {
-        this.seenOperations = List();
-        this.operationCount = 0;
-        Int index = 0;
-        while (index <= 32768) {
-            this.seenOperations.add(false);
-            index = index + 1;
-        }
-    }
-
-    public String check(SublangModule module) {
-        if (module.functionCount() > 32 || module.types().typeCount() > 512 || module.types().fieldCount() > 512) {
-            return "SUBLANG-B003: module exceeds the initial backend budget";
-        }
-        Int functionId = 1;
-        while (functionId <= module.functionCount()) {
-            String error = this.checkFunction(module.functionAt(functionId));
-            if (error != "") { return error; }
-            functionId = functionId + 1;
-        }
-        return "";
-    }
-
-    private String checkFunction(SublangFunction function) {
-        if (function.blockCount() > 64 || function.valueCount() > 4096) {
-            return "SUBLANG-B003: function exceeds the initial backend budget";
-        }
-        Int blockId = 1;
-        while (blockId <= function.blockCount()) {
-            if (function.blockAt(blockId).operationCount() > 4096) {
-                return "SUBLANG-B003: block exceeds the initial backend budget";
-            }
-            Int index = 0;
-            while (index < function.blockAt(blockId).operationCount()) {
-                SublangOperation operation = function.blockAt(blockId).operationAt(index);
-                if (operation.scope() < 0 || operation.scope() > 32768) { return "SUBLANG-B003: scope id exceeds backend budget"; }
-                if (operation.opcode().startsWith("scope.") && (operation.ref() < 1 || operation.ref() > 32768)) { return "SUBLANG-B003: scope id exceeds backend budget"; }
-                String error = this.operation(operation.id());
-                if (error != "") { return error; }
-                index = index + 1;
-            }
-            blockId = blockId + 1;
-        }
-        return "";
-    }
-
-    private String operation(Int id) {
-        this.operationCount = this.operationCount + 1;
-        if (this.operationCount > 32768 || id < 1 || id > 32768) {
-            return "SUBLANG-B003: operation id/count exceeds the initial backend budget";
-        }
-        if (this.seenOperations.get(id)) {
-            return "SUBLANG-B008: duplicate operation id";
-        }
-        this.seenOperations.set(id, true);
-        return "";
-    }
+    public String check(SublangModule module) { return SublangResourceBudget().check(module); }
 }

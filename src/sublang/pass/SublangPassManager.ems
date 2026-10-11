@@ -1,0 +1,196 @@
+namespace sublang::pass;
+
+use sublang::analysis::SublangVerification;
+use sublang::analysis::SublangVerifier;
+use sublang::limits::SublangResourceBudget;
+use sublang::effects::SublangCallGraph;
+use sublang::effects::SublangEffectAnalysis;
+use sublang::effects::SublangEffectChecks;
+use sublang::effects::SublangEffectResult;
+use sublang::ir::SublangModule;
+use sublang::pass::SublangAnalysisCache;
+use sublang::pass::SublangDeadComputationPass;
+use sublang::pass::SublangFoldPass;
+use sublang::pass::SublangPassDescriptor;
+use sublang::pass::SublangPassContext;
+use sublang::pass::SublangPassResult;
+use sublang::snapshot::SublangEntityMap;
+use sublang::snapshot::SublangModuleCopy;
+use sublang::snapshot::SublangSnapshotKey;
+use sublang::snapshot::SublangSnapshotStore;
+
+// Runs one pass at a time on a frozen snapshot. A transformation derives a new snapshot, verifies
+// it, and only then commits it to the lineage; on any rejection the input snapshot is returned
+// unchanged. Analyses are recomputed for the new snapshot unless the descriptor names them as
+// preserved and the manager re-establishes the named invariant (call-graph equality).
+public class SublangPassManager {
+    private SublangSnapshotStore store;
+    private SublangAnalysisCache cache;
+    private SublangPassContext context;
+    private Int cacheStore;
+
+    public SublangPassManager(SublangSnapshotStore snapshots, SublangAnalysisCache analyses) {
+        this.store = snapshots;
+        this.cache = analyses;
+        this.context = SublangPassContext.host();
+        this.cacheStore = analyses.storeId(snapshots);
+    }
+
+    public static SublangPassManager forContext(SublangSnapshotStore snapshots, SublangAnalysisCache analyses, SublangPassContext options) {
+        SublangPassManager manager = SublangPassManager(snapshots, analyses);
+        manager.context = options;
+        return manager;
+    }
+
+    private String analysisKey(SublangSnapshotKey snapshot, String name, String options) {
+        return SublangAnalysisCache.key(snapshot, name, 1, "store=" + this.cacheStore.toString() + ";" + this.context.fingerprint() + options);
+    }
+
+    public SublangSnapshotStore snapshots() { return this.store; }
+    public SublangAnalysisCache analyses() { return this.cache; }
+
+    // Derived effects of this exact snapshot; recomputed after any revision change.
+    public SublangEffectResult effects(SublangModule module) {
+        SublangSnapshotKey snapshot = this.store.admit(module);
+        if (!snapshot.valid()) { return SublangEffectAnalysis.derive(module); }
+        String key = this.analysisKey(snapshot, "effects", "stage=" + module.stage());
+        if (this.cache.hasEffects(key)) { return this.cache.effects(key); }
+        SublangEffectResult result = SublangEffectAnalysis.derive(module);
+        this.cache.putEffects(key, result);
+        return result;
+    }
+
+    public SublangCallGraph callGraph(SublangModule module) {
+        SublangSnapshotKey snapshot = this.store.admit(module);
+        if (!snapshot.valid()) { return SublangCallGraph(module); }
+        String key = this.analysisKey(snapshot, "callgraph", "direct");
+        if (this.cache.hasGraph(key)) { return this.cache.graph(key); }
+        SublangCallGraph graph = SublangCallGraph(module);
+        this.cache.putGraph(key, graph);
+        return graph;
+    }
+
+    // Declared-versus-derived contradictions of this snapshot (SUBLANG-E008/E009).
+    public List<String> effectDiagnostics(SublangModule module) {
+        SublangEffectResult result = this.effects(module);
+        List<String> found = SublangEffectChecks.contradictions(module, result);
+        Int index = 0;
+        while (index < result.noteCount()) {
+            found.add(result.noteAt(index));
+            index = index + 1;
+        }
+        return found;
+    }
+
+    public SublangPassResult run(String passName, SublangModule module) {
+        SublangSnapshotKey previous = this.store.admit(module);
+        SublangPassResult result = SublangPassResult(module, previous, previous, SublangEntityMap(previous.text(), previous.text()));
+        if (!previous.valid()) { result.reject("SUBLANG-P010: pass input must be a frozen snapshot"); return result; }
+        if (!this.store.isHead(previous)) { result.reject("SUBLANG-P011: input snapshot " + previous.text() + " is superseded; fork it or use the head revision"); return result; }
+        String invalid = this.validate(module, result);
+        if (invalid != "") { result.reject("SUBLANG-P012: pass input does not verify: " + invalid); return result; }
+        if (passName == "optimind.fold") {
+            List<Int> noFunctions = List();
+            List<Int> noOperations = List();
+            return this.derive(SublangPassDescriptor.fold(), module, previous, noFunctions, noOperations, 0);
+        }
+        if (passName == "optimind.dce") { return this.eliminate(module, previous); }
+        result.reject("SUBLANG-P013: unknown pass " + passName);
+        return result;
+    }
+
+    private SublangPassResult eliminate(SublangModule module, SublangSnapshotKey previous) {
+        List<Int> functions = List();
+        List<Int> operations = List();
+        SublangEffectResult effects = this.effects(module);
+        Int removed = SublangDeadComputationPass.select(module, effects, functions, operations);
+        return this.derive(SublangPassDescriptor.deadComputation(), module, previous, functions, operations, removed);
+    }
+
+    private SublangPassResult derive(SublangPassDescriptor descriptor, SublangModule module, SublangSnapshotKey previous, List<Int> functions, List<Int> operations, Int removals) {
+        Int revision = this.store.nextRevision(previous.instance());
+        SublangEntityMap map = SublangEntityMap(previous.text(), "m" + previous.instance().toString() + "@r" + revision.toString());
+        SublangPassResult result = SublangPassResult(module, previous, previous, map);
+        result.markVerified("valid", "valid", "valid");
+        if (descriptor.stage() != module.stage()) { result.reject("SUBLANG-P018: pass does not accept this IR stage"); return result; }
+        if (descriptor.requires("effects")) { this.effects(module); }
+        if (descriptor.requires("callgraph")) { this.callGraph(module); }
+        if (descriptor.name() == "optimind.dce" && removals == 0) { return result; }
+        SublangModule draft = SublangModuleCopy.copy(module, revision, functions, operations, map);
+        Int rewrites = 0;
+        if (descriptor.name() == "optimind.fold") { rewrites = SublangFoldPass.apply(draft, map); }
+        if (rewrites == 0 && removals == 0) { return result; }
+        draft.freeze();
+        String invalid = this.validate(draft, result);
+        if (invalid != "") {
+            result.reject("SUBLANG-P014: " + descriptor.name() + " produced an invalid snapshot: " + invalid);
+            return result;
+        }
+        if (!this.store.commit(draft, module)) { result.reject("SUBLANG-P015: snapshot lineage rejected the new revision"); return result; }
+        SublangSnapshotKey current = this.store.keyOf(draft);
+        SublangPassResult changed = SublangPassResult(draft, current, previous, map);
+        changed.markVerified("valid", "valid", "valid");
+        changed.markChanged(rewrites, removals);
+        this.preserve(descriptor, module, draft, previous, current, changed);
+        return changed;
+    }
+
+    // A named analysis is carried over only if its invariant holds on the new snapshot.
+    private Void preserve(SublangPassDescriptor descriptor, SublangModule before, SublangModule after, SublangSnapshotKey previous, SublangSnapshotKey current, SublangPassResult result) {
+        if (!descriptor.preserves("callgraph")) { return; }
+        SublangCallGraph old = this.callGraph(before);
+        SublangCallGraph fresh = SublangCallGraph(after);
+        if (!SublangPassManager.sameEdges(old, fresh)) { return; }
+        this.cache.putGraph(this.analysisKey(current, "callgraph", "direct"), fresh);
+        result.markPreserved("callgraph");
+    }
+
+    // Fork a frozen snapshot, including a superseded one, into an independent lineage. Deep
+    // copying demotes all old proof references; neither analysis facts nor ownership are shared.
+    public SublangPassResult fork(SublangModule module) {
+        SublangSnapshotKey previous = this.store.admit(module);
+        SublangEntityMap unchanged = SublangEntityMap(previous.text(), previous.text());
+        SublangPassResult rejected = SublangPassResult(module, previous, previous, unchanged);
+        if (!previous.valid()) { rejected.reject("SUBLANG-P010: fork input must be frozen"); return rejected; }
+        String invalid = this.validate(module, rejected);
+        if (invalid != "") { rejected.reject("SUBLANG-P012: fork input does not verify: " + invalid); return rejected; }
+        SublangSnapshotKey predicted = SublangSnapshotKey(this.store.nextInstance(), module.revision() + 1);
+        SublangEntityMap map = SublangEntityMap(previous.text(), predicted.text());
+        List<Int> noFunctions = List();
+        List<Int> noOperations = List();
+        SublangModule draft = SublangModuleCopy.copy(module, predicted.revision(), noFunctions, noOperations, map);
+        draft.freeze();
+        invalid = this.validate(draft, rejected);
+        if (invalid != "") { rejected.reject("SUBLANG-P014: fork does not verify: " + invalid); return rejected; }
+        SublangSnapshotKey current = this.store.admit(draft);
+        SublangPassResult forked = SublangPassResult(draft, current, previous, map);
+        forked.markVerified("valid", "valid", "valid");
+        forked.markChanged(0, 0);
+        forked.note("independent lineage; analyses invalidated");
+        return forked;
+    }
+
+    private String validate(SublangModule module, SublangPassResult result) {
+        String budget = SublangResourceBudget().check(module);
+        if (budget != "") { result.markVerified("not_checked", "not_checked", "not_checked"); return budget; }
+        SublangVerification verdict = SublangVerifier(module).verify();
+        result.markVerified(verdict.structureStatus(), verdict.semanticsStatus(), "not_checked");
+        if (!verdict.structurallyValid() || verdict.semanticsStatus() != "valid") {
+            return verdict.diagnostics().get(0).code() + " " + verdict.diagnostics().get(0).message();
+        }
+        String memory = this.context.memoryError(module);
+        if (memory != "") { result.markVerified("valid", "valid", "invalid"); return memory; }
+        result.markVerified("valid", "valid", "valid");
+        return "";
+    }
+
+    private static Bool sameEdges(SublangCallGraph left, SublangCallGraph right) {
+        if (left.edgeCount() != right.edgeCount()) { return false; }
+        Int index = 0;
+        while (index < left.edgeCount()) {
+            if (left.edgeFromAt(index) != right.edgeFromAt(index) || left.edgeToAt(index) != right.edgeToAt(index)) { return false; }
+            index = index + 1;
+        }
+        return true;
+    }
+}

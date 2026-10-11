@@ -1,0 +1,37 @@
+namespace sublang::low;
+
+use sublang::ir::SublangModule;
+use sublang::low::SublangLowFunction;
+use sublang::low::target::SublangLowTarget;
+
+// Canonical Low IR of one compilation: the explicit target, functions with concrete layouts and
+// the identity of what it was lowered from. The source snapshot (instance@revision) and the
+// memory plan revision are recorded so a Low module is never combined with a plan or snapshot
+// that it was not made for.
+public class SublangLowModule {
+    private String nameText;
+    private SublangLowTarget targetValue;
+    private SublangModule sourceModule;
+    private Int sourceRevision;
+    private Int planRevision;
+    private List<SublangLowFunction> functionList;
+
+    public SublangLowModule(String name, SublangLowTarget target, SublangModule source, Int revision, Int plan) {
+        this.nameText = name + "";
+        this.targetValue = target;
+        this.sourceModule = source;
+        this.sourceRevision = revision;
+        this.planRevision = plan;
+        this.functionList = List();
+    }
+
+    public String name() { return this.nameText; }
+    public SublangLowTarget target() { return this.targetValue; }
+    // True when this Low module was lowered from exactly this snapshot object.
+    public Bool loweredFrom(SublangModule module) { return module == this.sourceModule && module.revision() == this.sourceRevision; }
+    public Int sourceRevision() { return this.sourceRevision; }
+    public Int planRevision() { return this.planRevision; }
+    public Int functionCount() { return this.functionList.length(); }
+    public SublangLowFunction functionAt(Int id) { return this.functionList.get(id - 1); }
+    public Void add(SublangLowFunction function) { this.functionList.add(function); }
+}

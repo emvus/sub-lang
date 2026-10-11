@@ -1,0 +1,124 @@
+namespace sublang::text;
+
+use sublang::body::SublangOperation;
+use sublang::text::SublangTextCursor;
+use sublang::text::SublangTextResult;
+
+// Records of a function: func, value, param, block and op. Each record applies to the function named
+// by the latest func record and, for ops, to the block named by the latest block record. Values and
+// blocks are added in id order; an op id must be unique within the module.
+public class SublangTextBodyParser {
+    public static Void bodyRecord(SublangTextResult result, SublangTextCursor cursor, String word) {
+        if (word == "func") { SublangTextBodyParser.functionRecord(result, cursor); return; }
+        if (word == "value") { SublangTextBodyParser.valueRecord(result, cursor); return; }
+        if (word == "param") { SublangTextBodyParser.paramRecord(result, cursor); return; }
+        if (word == "block") { SublangTextBodyParser.blockRecord(result, cursor); return; }
+        if (word == "op") { SublangTextBodyParser.opRecord(result, cursor); return; }
+        cursor.failLast("TX002", "unknown record " + word);
+    }
+
+    private static Void functionRecord(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().functionCount() + 1)) { return; }
+        String name = cursor.strAttr("name");
+        Int returnType = cursor.intAttr("returnType");
+        Int methodOf = cursor.intAttr("methodOf");
+        Int span = cursor.intAttr("span");
+        Int profile = cursor.intAttr("profile");
+        Int effect = cursor.intAttr("effect");
+        String linkage = cursor.strAttr("linkage");
+        String convention = cursor.strAttr("convention");
+        String definition = cursor.strAttr("definition");
+        if (cursor.failed()) { return; }
+        if (convention != "sublang") {
+            cursor.failLast("TX005", "unsupported calling convention " + convention);
+            return;
+        }
+        Int created = result.module().addFunction(name, returnType, methodOf, span);
+        result.module().functionAt(created).setProfile(profile);
+        result.module().functionAt(created).setEffectSummary(effect);
+        result.module().functionAt(created).setLinkage(linkage);
+        result.module().functionAt(created).setDefinition(definition);
+        result.setCurrentFunction(created);
+        result.setCurrentBlock(0);
+    }
+
+    private static Void valueRecord(SublangTextResult result, SublangTextCursor cursor) {
+        Int fn = result.currentFunction();
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().functionAt(fn).valueCount() + 1)) { return; }
+        Int typeId = cursor.intAttr("type");
+        if (cursor.failed()) { return; }
+        result.module().functionAt(fn).newValue(typeId);
+    }
+
+    private static Void paramRecord(SublangTextResult result, SublangTextCursor cursor) {
+        Int valueId = cursor.intAttr("id");
+        String name = cursor.strAttr("name");
+        Int typeId = cursor.intAttr("type");
+        String passing = cursor.strAttr("passing");
+        Bool noEscape = cursor.boolAttr("noescape");
+        if (cursor.failed()) { return; }
+        result.module().functionAt(result.currentFunction()).addParamValue(valueId, name, typeId, passing, noEscape);
+    }
+
+    private static Void blockRecord(SublangTextResult result, SublangTextCursor cursor) {
+        Int fn = result.currentFunction();
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().functionAt(fn).blockCount() + 1)) { return; }
+        List<Int> params = cursor.intListAttr("params");
+        if (cursor.failed()) { return; }
+        Int created = result.module().functionAt(fn).addBlock();
+        Int index = 0;
+        while (index < params.length()) {
+            result.module().functionAt(fn).blockAt(created).addParam(params.get(index));
+            index = index + 1;
+        }
+        result.setCurrentBlock(created);
+    }
+
+    private static Void opRecord(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (cursor.failed()) { return; }
+        if (!result.addOperationId(id)) {
+            cursor.failLast("TX003", "duplicate operation id " + id.toString());
+            return;
+        }
+        String opcode = cursor.strAttr("opcode");
+        Int span = cursor.intAttr("span");
+        Int valueId = cursor.intAttr("result");
+        Int typeId = cursor.intAttr("type");
+        String ownership = cursor.strAttr("ownership");
+        Int ref = cursor.intAttr("ref");
+        Int scope = cursor.intAttr("scope");
+        String overflow = cursor.strAttr("overflow");
+        String predicate = cursor.strAttr("predicate");
+        String fpMode = cursor.strAttr("fpmode");
+        Int effect = cursor.intAttr("effect");
+        Int integer = cursor.intAttr("int");
+        Bool boolean = cursor.boolAttr("bool");
+        Int bits = cursor.intAttr("bits");
+        String literal = cursor.strAttr("text");
+        List<Int> operands = cursor.intListAttr("operands");
+        List<String> modes = cursor.strListAttr("modes");
+        List<Int> targets = cursor.intListAttr("targets");
+        Int trueArgs = cursor.intAttr("trueargs");
+        if (cursor.failed()) { return; }
+        SublangOperation op = SublangOperation(id, opcode, span);
+        op.setResult(valueId, typeId);
+        op.setResultOwnership(ownership);
+        op.setRef(ref);
+        op.setScope(scope);
+        op.setOverflow(overflow);
+        op.setPredicate(predicate);
+        op.setFpMode(fpMode);
+        op.setEffectSummary(effect);
+        op.setConstInt(integer);
+        op.setConstBool(boolean);
+        op.setConstFloatBits(bits);
+        op.setConstText(literal);
+        op.setOperands(operands, modes);
+        op.setTargets(targets, trueArgs);
+        result.module().functionAt(result.currentFunction()).blockAt(result.currentBlock()).addOperation(op);
+    }
+}

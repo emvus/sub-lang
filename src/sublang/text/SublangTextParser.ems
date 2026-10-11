@@ -1,0 +1,443 @@
+namespace sublang::text;
+
+use sublang::analysis::SublangVerification;
+use sublang::analysis::SublangVerifier;
+use sublang::ir::SublangModule;
+use sublang::proof::SublangProofReference;
+use sublang::text::SublangTextBodyParser;
+use sublang::text::SublangTextCursor;
+use sublang::text::SublangTextLexer;
+use sublang::text::SublangTextResult;
+use sublang::wire::SublangWireFeatures;
+
+// Parser for canonical Sublang text. Lines are read in order; every record must follow the section
+// rank of the printer (header 0, feature 1, module 2, source 3, span 4, type 5, field 6, profile 7,
+// failure 8, location 9, alias 10, effect and fact 11, class 12, group 13, entry 14, func 15, value 16,
+// param 17, block 18, op 19, end 20). Ids must be the next ordinal of their table. The module is
+// rebuilt only through the public builder APIs, then frozen and verified; a module that does not
+// verify is never returned, and the first failure of the whole parse is the one reported.
+public class SublangTextParser {
+    // Input limits of the text format, checked before any line is parsed. Empty when the text is within them.
+    public static String limitFailure(String text) {
+        if (text.length() > 4194304) { return "SUBLANG-TX004: input exceeds 4 MiB"; }
+        Int start = 0;
+        Int lineNumber = 0;
+        while (start < text.length()) {
+            Int end = SublangTextParser.lineEnd(text, start);
+            lineNumber = lineNumber + 1;
+            if (lineNumber > 200000) { return "SUBLANG-TX004: line " + lineNumber.toString() + " column 1: more than 200000 lines"; }
+            if (end - start > 65536) { return "SUBLANG-TX004: line " + lineNumber.toString() + " column 1: line exceeds 64 KiB"; }
+            start = end + 1;
+        }
+        return "";
+    }
+
+    public static SublangTextResult parse(String text) {
+        SublangTextResult result = SublangTextResult();
+        String limit = SublangTextParser.limitFailure(text);
+        if (limit != "") {
+            result.fail(limit);
+            return result;
+        }
+        Int start = 0;
+        Int lineNumber = 0;
+        while (start <= text.length() && result.valid()) {
+            Int end = SublangTextParser.lineEnd(text, start);
+            Bool atEnd = end == text.length();
+            if (!(atEnd && end == start)) {
+                lineNumber = lineNumber + 1;
+                SublangTextParser.parseLine(result, text.substring(start, end), lineNumber);
+            }
+            start = end + 1;
+        }
+        SublangTextParser.finish(result);
+        return result;
+    }
+
+    private static Int lineEnd(String text, Int start) {
+        Int index = start;
+        while (index < text.length()) {
+            Int code = text.charAt(index).code();
+            if (code == 10) { return index; }
+            index = index + 1;
+        }
+        return index;
+    }
+
+    private static Void parseLine(SublangTextResult result, String line, Int lineNumber) {
+        result.setLine(lineNumber);
+        SublangTextCursor cursor = SublangTextLexer.lex(line, lineNumber);
+        if (cursor.failed()) {
+            result.fail(cursor.error());
+            return;
+        }
+        if (cursor.atEnd()) { return; }
+        SublangTextParser.record(result, cursor);
+    }
+
+    private static Void record(SublangTextResult result, SublangTextCursor cursor) {
+        String word = cursor.keyword();
+        if (cursor.failed()) {
+            SublangTextParser.reportFailure(result, cursor);
+            return;
+        }
+        if (result.endSeen()) {
+            cursor.failLast("TX001", "record after end");
+            SublangTextParser.reportFailure(result, cursor);
+            return;
+        }
+        Int rank = SublangTextParser.rankOf(word);
+        if (rank < 0) {
+            cursor.failLast("TX002", "unknown record " + word);
+            SublangTextParser.reportFailure(result, cursor);
+            return;
+        }
+        if (!SublangTextParser.ordered(result, cursor, word, rank)) {
+            SublangTextParser.reportFailure(result, cursor);
+            return;
+        }
+        SublangTextParser.dispatchRecord(result, cursor, word);
+        cursor.expectEnd();
+        if (cursor.failed()) {
+            SublangTextParser.reportFailure(result, cursor);
+            return;
+        }
+        result.setRank(rank);
+    }
+
+    private static Void reportFailure(SublangTextResult result, SublangTextCursor cursor) {
+        if (cursor.failed()) { result.fail(cursor.error()); }
+    }
+
+    private static Int rankOf(String word) {
+        if (word == "sublang-text") { return 0; }
+        if (word == "feature") { return 1; }
+        if (word == "module") { return 2; }
+        if (word == "source") { return 3; }
+        if (word == "span") { return 4; }
+        if (word == "type") { return 5; }
+        if (word == "field") { return 6; }
+        if (word == "profile") { return 7; }
+        if (word == "failure") { return 8; }
+        if (word == "location") { return 9; }
+        if (word == "alias") { return 10; }
+        if (word == "effect" || word == "fact") { return 11; }
+        if (word == "class") { return 12; }
+        if (word == "group") { return 13; }
+        if (word == "entry") { return 14; }
+        if (word == "func") { return 15; }
+        if (word == "value") { return 16; }
+        if (word == "param") { return 17; }
+        if (word == "block") { return 18; }
+        if (word == "op") { return 19; }
+        if (word == "end") { return 20; }
+        return -1;
+    }
+
+    // Section order: a record may not precede a section that was already started. Function body
+    // records are checked against the record before them, so one function can follow another.
+    private static Bool ordered(SublangTextResult result, SublangTextCursor cursor, String word, Int rank) {
+        if (word == "sublang-text") {
+            if (result.rank() != -1) {
+                cursor.failLast("TX001", "the header must be the first record");
+                return false;
+            }
+            return true;
+        }
+        if (result.rank() == -1) {
+            cursor.failLast("TX001", "the header sublang-text must come first");
+            return false;
+        }
+        if (rank >= 3 && rank <= 19 && !result.moduleSeen()) {
+            cursor.failLast("TX001", "record " + word + " before the module record");
+            return false;
+        }
+        if (rank <= 14 && rank < result.rank()) {
+            cursor.failLast("TX001", "record " + word + " is out of order");
+            return false;
+        }
+        if (word == "fact" && result.rank() != 11) {
+            cursor.failLast("TX001", "fact must follow an effect or another fact");
+            return false;
+        }
+        if (word == "value" && (result.rank() < 15 || result.rank() > 16)) {
+            cursor.failLast("TX001", "value must follow func or another value");
+            return false;
+        }
+        if (word == "param" && (result.rank() < 15 || result.rank() > 17)) {
+            cursor.failLast("TX001", "param must come before the blocks of its func");
+            return false;
+        }
+        if (word == "block" && result.rank() < 15) {
+            cursor.failLast("TX001", "block must follow func");
+            return false;
+        }
+        if (word == "op" && result.rank() < 18) {
+            cursor.failLast("TX001", "op must follow a block or another op");
+            return false;
+        }
+        return true;
+    }
+
+    private static Void dispatchRecord(SublangTextResult result, SublangTextCursor cursor, String word) {
+        if (word == "sublang-text") { SublangTextParser.header(result, cursor); return; }
+        if (word == "feature") { SublangTextParser.feature(result, cursor); return; }
+        if (word == "module") { SublangTextParser.moduleRecord(result, cursor); return; }
+        if (word == "source") { SublangTextParser.source(result, cursor); return; }
+        if (word == "span") { SublangTextParser.span(result, cursor); return; }
+        if (word == "type") { SublangTextParser.typeRecord(result, cursor); return; }
+        if (word == "field") { SublangTextParser.field(result, cursor); return; }
+        if (word == "profile") { SublangTextParser.profile(result, cursor); return; }
+        if (word == "failure") { SublangTextParser.failure(result, cursor); return; }
+        if (word == "location") { SublangTextParser.location(result, cursor); return; }
+        if (word == "alias") { SublangTextParser.alias(result, cursor); return; }
+        if (word == "effect") { SublangTextParser.effect(result, cursor); return; }
+        if (word == "fact") { SublangTextParser.fact(result, cursor); return; }
+        if (word == "class") { SublangTextParser.classRecord(result, cursor); return; }
+        if (word == "group") { SublangTextParser.group(result, cursor); return; }
+        if (word == "entry") { SublangTextParser.entry(result, cursor); return; }
+        if (word == "end") {
+            result.markEnd();
+            return;
+        }
+        SublangTextBodyParser.bodyRecord(result, cursor, word);
+    }
+
+    private static Void header(SublangTextResult result, SublangTextCursor cursor) {
+        Int version = cursor.intPositional();
+        Int schema = cursor.intAttr("schema");
+        String stage = cursor.wordAttr("stage");
+        Int revision = cursor.intAttr("revision");
+        if (cursor.failed()) { return; }
+        if (version != 1) {
+            cursor.failLast("TX005", "unsupported text format version " + version.toString());
+            return;
+        }
+        if (schema != 1 || stage != "High" || revision != 1) {
+            cursor.failLast("TX005", "unsupported schema, stage or revision");
+        }
+    }
+
+    private static Void feature(SublangTextResult result, SublangTextCursor cursor) {
+        String name = cursor.strPositional();
+        if (cursor.failed()) { return; }
+        if (!SublangWireFeatures.known(name)) {
+            cursor.failLast("TX002", "unknown feature " + name);
+            return;
+        }
+        result.addFeature(name);
+    }
+
+    private static Void moduleRecord(SublangTextResult result, SublangTextCursor cursor) {
+        if (result.moduleSeen()) {
+            cursor.failLast("TX001", "duplicate module record");
+            return;
+        }
+        String name = cursor.strPositional();
+        Int entry = cursor.intAttr("entry");
+        if (cursor.failed()) { return; }
+        result.setModule(SublangModule(name));
+        result.module().setEntry(entry);
+    }
+
+    private static Void source(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().sourceCount() + 1)) { return; }
+        String name = cursor.strAttr("name");
+        if (cursor.failed()) { return; }
+        result.module().addSource(name);
+    }
+
+    private static Void span(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().spanCount() + 1)) { return; }
+        Int source = cursor.intAttr("source");
+        Int line = cursor.intAttr("line");
+        Int column = cursor.intAttr("column");
+        String origin = cursor.strAttr("origin");
+        if (cursor.failed()) { return; }
+        result.module().addSpan(source, line, column, origin);
+    }
+
+    private static Void typeRecord(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().types().typeCount() + 1)) { return; }
+        String kind = cursor.strAttr("kind");
+        String name = cursor.strAttr("name");
+        Int width = cursor.intAttr("width");
+        Bool signed = cursor.boolAttr("signed");
+        Int target = cursor.intAttr("target");
+        Bool nullable = cursor.boolAttr("nullable");
+        Int span = cursor.intAttr("span");
+        if (cursor.failed()) { return; }
+        Int created = result.module().types().addType(kind, name, width, signed, target, span);
+        result.module().types().typeAt(created).setNullable(nullable);
+    }
+
+    private static Void field(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().types().fieldCount() + 1)) { return; }
+        Int owner = cursor.intAttr("owner");
+        String name = cursor.strAttr("name");
+        Int typeId = cursor.intAttr("type");
+        Bool mutable = cursor.boolAttr("mutable");
+        Int span = cursor.intAttr("span");
+        if (cursor.failed()) { return; }
+        result.module().types().addField(owner, name, typeId, mutable, span);
+    }
+
+    private static Void profile(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().semantics().profileCount() + 1)) { return; }
+        String name = cursor.strAttr("name");
+        Int version = cursor.intAttr("version");
+        String integerRules = cursor.strAttr("integer-rules");
+        String floatRules = cursor.strAttr("float-rules");
+        String failureModel = cursor.strAttr("failure-model");
+        String unwindingModel = cursor.strAttr("unwinding-model");
+        if (cursor.failed()) { return; }
+        result.module().semantics().addProfile(name, version, integerRules, floatRules, failureModel, unwindingModel);
+    }
+
+    private static Void failure(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().semantics().failureCount() + 1)) { return; }
+        String name = cursor.strAttr("name");
+        String behavior = cursor.strAttr("behavior");
+        String binding = cursor.strAttr("binding");
+        String signature = cursor.strAttr("signature");
+        Bool continues = cursor.boolAttr("continues");
+        String unwinding = cursor.strAttr("unwinding");
+        Int span = cursor.intAttr("span");
+        if (cursor.failed()) { return; }
+        result.module().semantics().addFailureAction(name, behavior, binding, signature, continues, unwinding, span);
+    }
+
+    private static Void location(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().aliases().locationCount() + 1)) { return; }
+        String kind = cursor.strAttr("kind");
+        String name = cursor.strAttr("name");
+        Int span = cursor.intAttr("span");
+        if (cursor.failed()) { return; }
+        result.module().aliases().addLocation(kind, name, span);
+    }
+
+    private static Void alias(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().aliases().aliasFactCount() + 1)) { return; }
+        Int left = cursor.intAttr("left");
+        Int right = cursor.intAttr("right");
+        String answer = cursor.strAttr("answer");
+        String origin = cursor.strAttr("origin");
+        String label = cursor.strAttr("label");
+        Int revision = cursor.intAttr("revision");
+        if (cursor.failed()) { return; }
+        if (revision != result.module().revision()) {
+            cursor.failLast("TX005", "alias revision " + revision.toString() + " differs from the module revision");
+            return;
+        }
+        Int span = cursor.intAttr("span");
+        String analysis = cursor.strAttr("proof-analysis");
+        Int proofRevision = cursor.intAttr("proof-revision");
+        List<Int> dependencies = cursor.intListAttr("proof-deps");
+        if (cursor.failed()) { return; }
+        SublangProofReference proof = SublangProofReference(analysis, proofRevision, dependencies);
+        result.module().aliases().importAliasFact(left, right, answer, origin, label, proof, span);
+    }
+
+    private static Void effect(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().semantics().effectSummaryCount() + 1)) { return; }
+        String name = cursor.strAttr("name");
+        Int span = cursor.intAttr("span");
+        if (cursor.failed()) { return; }
+        Int created = result.module().semantics().addEffectSummary(name, span);
+        result.setCurrentEffect(created);
+    }
+
+    private static Void fact(SublangTextResult result, SublangTextCursor cursor) {
+        String area = cursor.strAttr("area");
+        String value = cursor.strAttr("value");
+        String provenance = cursor.strAttr("provenance");
+        String detail = cursor.strAttr("detail");
+        String label = cursor.strAttr("label");
+        String analysis = cursor.strAttr("proof-analysis");
+        Int proofRevision = cursor.intAttr("proof-revision");
+        List<Int> dependencies = cursor.intListAttr("proof-deps");
+        List<Int> locations = cursor.intListAttr("locations");
+        if (cursor.failed()) { return; }
+        SublangProofReference proof = SublangProofReference(analysis, proofRevision, dependencies);
+        result.module().semantics().effectSummaryAt(result.currentEffect()).importFact(area, value, provenance, detail, label, proof, locations);
+    }
+
+    private static Void classRecord(SublangTextResult result, SublangTextCursor cursor) {
+        Int typeId = cursor.intAttr("type");
+        Int tag = cursor.intAttr("tag");
+        if (cursor.failed()) { return; }
+        result.module().dispatch().addClass(typeId, tag);
+    }
+
+    private static Void group(SublangTextResult result, SublangTextCursor cursor) {
+        Int id = cursor.intAttr("id");
+        if (!cursor.sequential(id, result.module().dispatch().groupCount() + 1)) { return; }
+        String name = cursor.strAttr("name");
+        Int root = cursor.intAttr("root");
+        Int tagField = cursor.intAttr("field");
+        Int prototype = cursor.intAttr("prototype");
+        if (cursor.failed()) { return; }
+        result.module().dispatch().addGroup(name, root, tagField, prototype);
+    }
+
+    private static Void entry(SublangTextResult result, SublangTextCursor cursor) {
+        Int group = cursor.intAttr("group");
+        Int tag = cursor.intAttr("tag");
+        Int function = cursor.intAttr("function");
+        if (cursor.failed()) { return; }
+        if (!result.module().dispatch().hasGroup(group)) {
+            cursor.failLast("TX005", "entry names unknown group " + group.toString());
+            return;
+        }
+        result.module().dispatch().addEntry(group, tag, function);
+    }
+
+    // Freezes the module, checks the feature records against it, and verifies it.
+    private static Void finish(SublangTextResult result) {
+        if (!result.valid()) { return; }
+        if (!result.endSeen()) {
+            result.fail("SUBLANG-TX001: line " + result.line().toString() + " column 1: missing end record (truncated input)");
+            return;
+        }
+        if (!result.moduleSeen()) {
+            result.fail("SUBLANG-TX001: line " + result.line().toString() + " column 1: missing module record");
+            return;
+        }
+        SublangModule module = result.module();
+        module.freeze();
+        if (!SublangTextParser.sameFeatures(result, SublangWireFeatures.needed(module))) {
+            result.fail("SUBLANG-TX005: feature records do not match the features the module needs");
+            return;
+        }
+        SublangVerification verdict = SublangVerifier(module).verify();
+        if (!verdict.structurallyValid() || verdict.semanticsStatus() != "valid") {
+            result.fail(SublangTextParser.verifyFailure(verdict));
+        }
+    }
+
+    private static Bool sameFeatures(SublangTextResult result, List<String> needed) {
+        if (result.featureCount() != needed.length()) { return false; }
+        Int index = 0;
+        while (index < needed.length()) {
+            if (result.featureAt(index) != needed.get(index)) { return false; }
+            index = index + 1;
+        }
+        return true;
+    }
+
+    private static String verifyFailure(SublangVerification verdict) {
+        if (verdict.diagnostics().length() == 0) {
+            return "SUBLANG-TX006: verification failed without a diagnostic";
+        }
+        return "SUBLANG-TX006: verification failed: " + verdict.diagnostics().get(0).code() + " " + verdict.diagnostics().get(0).message();
+    }
+}

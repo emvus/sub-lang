@@ -1,0 +1,477 @@
+namespace sublang::low;
+
+use sublang::low::SublangLowBlock;
+use sublang::low::SublangLowFunction;
+use sublang::low::SublangLowModule;
+use sublang::low::SublangLowOp;
+use sublang::low::target::SublangLowLayout;
+use sublang::low::target::SublangLowProvider;
+
+// Verifies a Low module: block shape, single definitions, dominance, operand and result types
+// per opcode, branch-argument agreement, call signatures and the runtime provider contract.
+// Codes: L001 structure, L002 types, L003 dominance/reachability, L004 calls and provider.
+// At most sixteen findings are collected; the first one is always the earliest in function order.
+public class SublangLowVerifier {
+    private SublangLowModule module;
+    private SublangLowLayout layout;
+    private List<String> findings;
+
+    public SublangLowVerifier(SublangLowModule target, SublangLowLayout sizes) {
+        this.module = target;
+        this.layout = sizes;
+        this.findings = List();
+    }
+
+    public List<String> verify() {
+        Int id = 1;
+        while (id <= this.module.functionCount() && this.findings.length() < 16) {
+            this.checkFunction(this.module.functionAt(id));
+            id = id + 1;
+        }
+        return this.findings;
+    }
+
+    private Void report(String code, SublangLowFunction function, Int block, Int index, String message) {
+        if (this.findings.length() >= 16) { return; }
+        this.findings.add("SUBLANG-" + code + ": function " + function.name() + " block " + block.toString() + " op " + index.toString() + ": " + message);
+    }
+
+    private Void checkFunction(SublangLowFunction function) {
+        if (function.blockCount() < 1) { this.report("L001", function, 0, 0, "function has no entry block"); return; }
+        if (!this.layout.known(function.returnType())) { this.report("L002", function, 0, 0, "unknown return type " + function.returnType()); }
+        List<Int> definedIn = this.definitions(function);
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            this.checkShape(function, block);
+            block = block + 1;
+        }
+        if (this.findings.length() > 0) { return; }
+        this.checkDominance(function, definedIn);
+        block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).opCount()) {
+                this.checkOperation(function, block, index);
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+    }
+
+    // Defining block of every value (0 = never defined); a second definition is reported.
+    private List<Int> definitions(SublangLowFunction function) {
+        List<Int> definedIn = List();
+        Int value = 0;
+        while (value <= function.valueCount()) {
+            definedIn.add(0);
+            value = value + 1;
+        }
+        Int param = 0;
+        while (param < function.paramCount()) {
+            definedIn.set(function.paramAt(param), 1);
+            param = param + 1;
+        }
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            this.defineBlock(function, block, definedIn);
+            block = block + 1;
+        }
+        return definedIn;
+    }
+
+    private Void defineBlock(SublangLowFunction function, Int block, List<Int> definedIn) {
+        Int slot = 0;
+        while (slot < function.blockAt(block).paramCount()) {
+            this.define(function, block, 0, function.blockAt(block).paramAt(slot), definedIn);
+            slot = slot + 1;
+        }
+        Int index = 0;
+        while (index < function.blockAt(block).opCount()) {
+            if (function.blockAt(block).opAt(index).result() != 0) { this.define(function, block, index, function.blockAt(block).opAt(index).result(), definedIn); }
+            index = index + 1;
+        }
+    }
+
+    private Void define(SublangLowFunction function, Int block, Int index, Int value, List<Int> definedIn) {
+        if (!function.hasValue(value)) { this.report("L001", function, block, index, "defines unknown value " + value.toString()); return; }
+        if (definedIn.get(value) != 0) { this.report("L001", function, block, index, "value " + value.toString() + " is defined twice"); return; }
+        definedIn.set(value, block);
+    }
+
+    private Void checkShape(SublangLowFunction function, Int block) {
+        Int count = function.blockAt(block).opCount();
+        if (count == 0 || !function.blockAt(block).opAt(count - 1).isTerminator()) {
+            this.report("L001", function, block, count, "block does not end in a terminator");
+            return;
+        }
+        Int index = 0;
+        while (index < count - 1) {
+            if (function.blockAt(block).opAt(index).isTerminator()) { this.report("L001", function, block, index, "terminator before the end of the block"); }
+            if (function.blockAt(block).opAt(index).opcode() == "stack.alloc" && block != 1) { this.report("L001", function, block, index, "stack.alloc outside the entry block"); }
+            index = index + 1;
+        }
+    }
+
+    // Dominator sets by iteration; every operand's definition must dominate its use.
+    private Void checkDominance(SublangLowFunction function, List<Int> definedIn) {
+        Int blocks = function.blockCount();
+        List<Bool> dom = List();
+        Int cell = 0;
+        while (cell < blocks * blocks) {
+            dom.add(true);
+            cell = cell + 1;
+        }
+        Int column = 0;
+        while (column < blocks) {
+            if (column != 0) { dom.set(column, false); }
+            column = column + 1;
+        }
+        List<Bool> reachable = this.reachability(function);
+        Bool changed = true;
+        while (changed) {
+            changed = false;
+            Int block = 2;
+            while (block <= blocks) {
+                if (reachable.get(block - 1) && this.refine(function, block, dom, reachable)) { changed = true; }
+                block = block + 1;
+            }
+        }
+        Int block = 1;
+        while (block <= blocks) {
+            if (!reachable.get(block - 1)) { this.report("L003", function, block, 0, "block is unreachable"); }
+            if (reachable.get(block - 1)) { this.checkUses(function, block, definedIn, dom); }
+            block = block + 1;
+        }
+    }
+
+    private Bool refine(SublangLowFunction function, Int block, List<Bool> dom, List<Bool> reachable) {
+        Int blocks = function.blockCount();
+        List<Bool> next = List();
+        Int index = 0;
+        while (index < blocks) {
+            next.add(true);
+            index = index + 1;
+        }
+        Int pred = 1;
+        while (pred <= blocks) {
+            if (reachable.get(pred - 1) && this.branchesTo(function, pred, block)) {
+                Int slot = 0;
+                while (slot < blocks) {
+                    if (!dom.get((pred - 1) * blocks + slot)) { next.set(slot, false); }
+                    slot = slot + 1;
+                }
+            }
+            pred = pred + 1;
+        }
+        next.set(block - 1, true);
+        Bool changed = false;
+        Int slot = 0;
+        while (slot < blocks) {
+            if (dom.get((block - 1) * blocks + slot) != next.get(slot)) { dom.set((block - 1) * blocks + slot, next.get(slot)); changed = true; }
+            slot = slot + 1;
+        }
+        return changed;
+    }
+
+    private Bool branchesTo(SublangLowFunction function, Int from, Int to) {
+        SublangLowBlock block = function.blockAt(from);
+        if (block.opCount() == 0) { return false; }
+        SublangLowOp last = block.opAt(block.opCount() - 1);
+        Int target = 0;
+        while (target < last.targetCount()) {
+            if (last.targetAt(target) == to) { return true; }
+            target = target + 1;
+        }
+        return false;
+    }
+
+    private List<Bool> reachability(SublangLowFunction function) {
+        List<Bool> seen = List();
+        Int index = 0;
+        while (index < function.blockCount()) {
+            seen.add(false);
+            index = index + 1;
+        }
+        List<Int> work = List();
+        work.add(1);
+        seen.set(0, true);
+        while (work.length() > 0) {
+            Int block = work.get(work.length() - 1);
+            work.removeAt(work.length() - 1);
+            SublangLowBlock current = function.blockAt(block);
+            if (current.opCount() > 0) {
+                SublangLowOp last = current.opAt(current.opCount() - 1);
+                Int target = 0;
+                while (target < last.targetCount()) {
+                    Int next = last.targetAt(target);
+                    if (function.hasBlock(next) && !seen.get(next - 1)) { seen.set(next - 1, true); work.add(next); }
+                    target = target + 1;
+                }
+            }
+        }
+        return seen;
+    }
+
+    private Void checkUses(SublangLowFunction function, Int block, List<Int> definedIn, List<Bool> dom) {
+        Int blocks = function.blockCount();
+        Int index = 0;
+        while (index < function.blockAt(block).opCount()) {
+            SublangLowOp op = function.blockAt(block).opAt(index);
+            Int operand = 0;
+            while (operand < op.operandCount()) {
+                Int value = op.operandAt(operand);
+                if (!function.hasValue(value) || definedIn.get(value) == 0) {
+                    this.report("L001", function, block, index, "uses undefined value " + value.toString());
+                }
+                if (function.hasValue(value) && definedIn.get(value) != 0) {
+                    Int site = definedIn.get(value);
+                    Int normal = this.normalSuccessor(function, value);
+                    if (normal != 0 && block != normal && !dom.get((block - 1) * blocks + (normal - 1))) {
+                        this.report("L003", function, block, index, "invoke result " + value.toString() + " is only defined on the normal edge");
+                    }
+                    if (site != block && !dom.get((block - 1) * blocks + (site - 1))) {
+                        this.report("L003", function, block, index, "value " + value.toString() + " is not dominated by its definition");
+                    }
+                    if (site == block && this.definedLater(function, block, index, value)) {
+                        this.report("L003", function, block, index, "value " + value.toString() + " is used before its definition");
+                    }
+                }
+                operand = operand + 1;
+            }
+            index = index + 1;
+        }
+    }
+
+    // Normal successor of the invoke that defines `value`, or 0 for any other value.
+    private Int normalSuccessor(SublangLowFunction function, Int value) {
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int count = function.blockAt(block).opCount();
+            if (count > 0) {
+                SublangLowOp last = function.blockAt(block).opAt(count - 1);
+                if (last.opcode() == "invoke" && last.result() == value && last.targetCount() == 2) { return last.targetAt(0); }
+            }
+            block = block + 1;
+        }
+        return 0;
+    }
+
+    private Bool definedLater(SublangLowFunction function, Int block, Int index, Int value) {
+        Int later = index;
+        while (later < function.blockAt(block).opCount()) {
+            if (function.blockAt(block).opAt(later).result() == value) { return true; }
+            later = later + 1;
+        }
+        return false;
+    }
+
+    private Void checkOperation(SublangLowFunction function, Int block, Int index) {
+        SublangLowOp op = function.blockAt(block).opAt(index);
+        String code = op.opcode();
+        if (op.result() != 0 && function.hasValue(op.result()) && function.valueType(op.result()) != op.resultType()) {
+            this.report("L002", function, block, index, "result type " + function.valueType(op.result()) + " differs from " + op.resultType());
+        }
+        if (code.startsWith("const.")) { this.checkConstant(function, block, index, op); return; }
+        if (code == "sym.addr") { this.expect(function, block, index, op, "ptr"); this.shape(function, block, index, op, 0); return; }
+        if (code == "stack.alloc") { this.expect(function, block, index, op, "ptr"); this.shape(function, block, index, op, 0); this.knownType(function, block, index, op.typeText()); return; }
+        if (code.startsWith("i64.") || code.startsWith("f64.")) { this.checkArithmetic(function, block, index, op); return; }
+        if (code == "cmp") { this.checkCompare(function, block, index, op); return; }
+        if (code == "load" || code == "store" || code == "field.addr" || code == "byte.addr" || code == "elem.addr") { this.checkMemory(function, block, index, op); return; }
+        if (code.startsWith("agg.") || code.startsWith("str.") || code == "zext" || code == "trunc" || code == "sitofp" || code == "fptosi") { this.checkValueOp(function, block, index, op); return; }
+        if (code == "call" || code == "rt.call" || code == "invoke") { this.checkCall(function, block, index, op); this.checkInvoke(function, block, index, op); return; }
+        if (code == "eh.catch") { this.shape(function, block, index, op, 0); this.expect(function, block, index, op, "i64"); if (index != 0) { this.report("L005", function, block, index, "eh.catch must be the first operation of an unwind block"); } return; }
+        this.checkControl(function, block, index, op);
+    }
+
+    private Void shape(SublangLowFunction function, Int block, Int index, SublangLowOp op, Int operands) {
+        if (op.operandCount() != operands) { this.report("L002", function, block, index, op.opcode() + " expects " + operands.toString() + " operands"); }
+    }
+
+    private Void expect(SublangLowFunction function, Int block, Int index, SublangLowOp op, String type) {
+        if (op.resultType() != type) { this.report("L002", function, block, index, op.opcode() + " must produce " + type); }
+    }
+
+    private Void knownType(SublangLowFunction function, Int block, Int index, String type) {
+        if (!this.layout.known(type) || type == "void") { this.report("L002", function, block, index, "unknown or unsized type " + type); }
+    }
+
+    private Bool operandIs(SublangLowFunction function, SublangLowOp op, Int position, String type) {
+        return position < op.operandCount() && function.hasValue(op.operandAt(position)) && function.valueType(op.operandAt(position)) == type;
+    }
+
+    private Void checkConstant(SublangLowFunction function, Int block, Int index, SublangLowOp op) {
+        String code = op.opcode();
+        this.shape(function, block, index, op, 0);
+        if (code == "const.i64" || code == "const.size") { this.expect(function, block, index, op, "i64"); }
+        if (code == "const.i1") { this.expect(function, block, index, op, "i1"); }
+        if (code == "const.i32") { this.expect(function, block, index, op, "i32"); }
+        if (code == "const.f64") { this.expect(function, block, index, op, "f64"); }
+        if (code == "const.null" || code == "const.ptr") { this.expect(function, block, index, op, "ptr"); }
+        if (code == "const.str") { this.expect(function, block, index, op, "str"); }
+        if (code == "const.zero") { this.expect(function, block, index, op, op.typeText()); this.knownType(function, block, index, op.typeText()); }
+        if (code == "const.size") { this.knownType(function, block, index, op.typeText()); }
+        if (code == "const.i1" && op.immediate() != 0 && op.immediate() != 1) { this.report("L002", function, block, index, "const.i1 must be 0 or 1"); }
+    }
+
+    private Void checkArithmetic(SublangLowFunction function, Int block, Int index, SublangLowOp op) {
+        String type = "i64";
+        if (op.opcode().startsWith("f64.")) { type = "f64"; }
+        this.expect(function, block, index, op, type);
+        Int operands = 2;
+        if (op.opcode() == "i64.neg") { operands = 1; }
+        this.shape(function, block, index, op, operands);
+        Int position = 0;
+        while (position < operands) {
+            if (!this.operandIs(function, op, position, type)) { this.report("L002", function, block, index, op.opcode() + " operand " + position.toString() + " must be " + type); }
+            position = position + 1;
+        }
+    }
+
+    private Void checkCompare(SublangLowFunction function, Int block, Int index, SublangLowOp op) {
+        this.expect(function, block, index, op, "i1");
+        this.shape(function, block, index, op, 2);
+        String type = op.typeText();
+        if (type != "i64" && type != "f64" && type != "i1" && type != "ptr" && type != "i32") { this.report("L002", function, block, index, "cmp has unsupported operand type " + type); }
+        if (!this.operandIs(function, op, 0, type) || !this.operandIs(function, op, 1, type)) { this.report("L002", function, block, index, "cmp operands must be " + type); }
+        Bool known = op.text() == "eq" || op.text() == "ne";
+        if (type == "i64") { known = known || op.text() == "lt" || op.text() == "le" || op.text() == "gt" || op.text() == "ge" || op.text() == "ult" || op.text() == "ule" || op.text() == "ugt" || op.text() == "uge"; }
+        if (type == "f64") { known = known || op.text().startsWith("o") || op.text().startsWith("u"); }
+        if (!known) { this.report("L002", function, block, index, "cmp predicate " + op.text() + " does not apply to " + type); }
+    }
+
+    private Void checkMemory(SublangLowFunction function, Int block, Int index, SublangLowOp op) {
+        String code = op.opcode();
+        if (!this.operandIs(function, op, 0, "ptr")) { this.report("L002", function, block, index, code + " needs a pointer operand"); }
+        if (code == "load") { this.shape(function, block, index, op, 1); this.expect(function, block, index, op, op.typeText()); this.knownType(function, block, index, op.typeText()); }
+        if (code == "store") {
+            this.shape(function, block, index, op, 2);
+            this.expect(function, block, index, op, "void");
+            if (!this.operandIs(function, op, 1, op.typeText())) { this.report("L002", function, block, index, "store value must be " + op.typeText()); }
+        }
+        if (code == "field.addr") {
+            this.shape(function, block, index, op, 1);
+            this.expect(function, block, index, op, "ptr");
+            if ((!op.typeText().startsWith("%t") && !op.typeText().startsWith("hdr%t") && op.typeText() != "list") || op.index() < 0 || op.index() >= this.layout.fieldCount(op.typeText())) { this.report("L002", function, block, index, "field.addr names no field of " + op.typeText()); }
+        }
+        if (code == "byte.addr" || code == "elem.addr") {
+            this.shape(function, block, index, op, 2);
+            this.expect(function, block, index, op, "ptr");
+            if (!this.operandIs(function, op, 1, "i64")) { this.report("L002", function, block, index, code + " index must be i64"); }
+        }
+    }
+
+    private Void checkValueOp(SublangLowFunction function, Int block, Int index, SublangLowOp op) {
+        String code = op.opcode();
+        if (code == "agg.extract") {
+            this.shape(function, block, index, op, 1);
+            if (!this.operandIs(function, op, 0, op.typeText()) || this.layout.fieldType(op.typeText(), op.index()) != op.resultType()) { this.report("L002", function, block, index, "agg.extract does not match its aggregate"); }
+        }
+        if (code == "agg.insert") {
+            this.shape(function, block, index, op, 2);
+            this.expect(function, block, index, op, op.typeText());
+            if (!this.operandIs(function, op, 0, op.typeText()) || !this.operandIs(function, op, 1, this.layout.fieldType(op.typeText(), op.index()))) { this.report("L002", function, block, index, "agg.insert does not match its aggregate"); }
+        }
+        if (code == "str.len") { this.shape(function, block, index, op, 1); this.expect(function, block, index, op, "i64"); if (!this.operandIs(function, op, 0, "str")) { this.report("L002", function, block, index, "str.len needs a str"); } }
+        if (code == "str.ptr") { this.shape(function, block, index, op, 1); this.expect(function, block, index, op, "ptr"); if (!this.operandIs(function, op, 0, "str")) { this.report("L002", function, block, index, "str.ptr needs a str"); } }
+        if (code == "sitofp") { this.shape(function, block, index, op, 1); this.expect(function, block, index, op, "f64"); if (!this.operandIs(function, op, 0, "i64")) { this.report("L002", function, block, index, "sitofp converts an i64"); } }
+        if (code == "fptosi") { this.shape(function, block, index, op, 1); this.expect(function, block, index, op, "i64"); if (!this.operandIs(function, op, 0, "f64")) { this.report("L002", function, block, index, "fptosi converts an f64"); } }
+        if (code == "trunc") {
+            this.shape(function, block, index, op, 1);
+            if (!this.operandIs(function, op, 0, "i64") || (op.typeText() != "i8" && op.typeText() != "i32")) { this.report("L002", function, block, index, "trunc narrows i64 to i8 or i32"); }
+            this.expect(function, block, index, op, op.typeText());
+        }
+        if (code == "zext") { this.shape(function, block, index, op, 1); this.expect(function, block, index, op, "i64"); if (!this.operandIs(function, op, 0, op.typeText()) || (op.typeText() != "i8" && op.typeText() != "i32")) { this.report("L002", function, block, index, "zext widens i8 or i32 to i64"); } }
+    }
+
+    private Void checkCall(SublangLowFunction function, Int block, Int index, SublangLowOp op) {
+        if (op.opcode() == "rt.call" && !SublangLowProvider.known(op.text())) {
+            this.report("L004", function, block, index, "runtime symbol " + op.text() + " is not part of the provider");
+            return;
+        }
+        if ((op.opcode() == "call" || op.opcode() == "invoke") && (op.index() < 1 || op.index() > this.module.functionCount())) {
+            this.report("L004", function, block, index, "call names no function");
+            return;
+        }
+        List<String> parameters = this.calleeParameters(op);
+        String result = this.calleeResult(op);
+        if (parameters.length() != op.operandCount()) { this.report("L004", function, block, index, "call passes " + op.operandCount().toString() + " arguments, expected " + parameters.length().toString()); return; }
+        Int position = 0;
+        while (position < parameters.length()) {
+            if (!this.operandIs(function, op, position, parameters.get(position))) { this.report("L004", function, block, index, "argument " + position.toString() + " must be " + parameters.get(position)); }
+            position = position + 1;
+        }
+        if (op.resultType() != result) { this.report("L004", function, block, index, "call result must be " + result); }
+    }
+
+    // invoke: two distinct parameterless successors; the unwind one starts with eh.catch.
+    private Void checkInvoke(SublangLowFunction function, Int block, Int index, SublangLowOp op) {
+        if (op.opcode() != "invoke") { return; }
+        if (op.targetCount() != 2 || !function.hasBlock(op.targetAt(0)) || !function.hasBlock(op.targetAt(1)) || op.targetAt(0) == op.targetAt(1)) {
+            this.report("L005", function, block, index, "invoke needs distinct normal and unwind blocks");
+            return;
+        }
+        if (function.blockAt(op.targetAt(0)).paramCount() != 0 || function.blockAt(op.targetAt(1)).paramCount() != 0) {
+            this.report("L005", function, block, index, "invoke successors take no block parameters");
+        }
+        SublangLowBlock landing = function.blockAt(op.targetAt(1));
+        if (landing.opCount() == 0 || landing.opAt(0).opcode() != "eh.catch") {
+            this.report("L005", function, block, index, "the unwind block of invoke must start with eh.catch");
+        }
+    }
+
+    private List<String> calleeParameters(SublangLowOp op) {
+        if (op.opcode() == "rt.call") { return SublangLowProvider.parameterTypes(op.text()); }
+        return this.parameters(this.module.functionAt(op.index()));
+    }
+
+    private String calleeResult(SublangLowOp op) {
+        if (op.opcode() == "rt.call") { return SublangLowProvider.returnType(op.text()); }
+        return this.module.functionAt(op.index()).returnType();
+    }
+
+    private List<String> parameters(SublangLowFunction callee) {
+        List<String> types = List();
+        Int index = 0;
+        while (index < callee.paramCount()) {
+            types.add(callee.valueType(callee.paramAt(index)));
+            index = index + 1;
+        }
+        return types;
+    }
+
+    private Void checkControl(SublangLowFunction function, Int block, Int index, SublangLowOp op) {
+        String code = op.opcode();
+        if (code == "abort") { this.shape(function, block, index, op, 0); return; }
+        if (code == "throw") {
+            this.shape(function, block, index, op, 1);
+            if (!this.operandIs(function, op, 0, "i64")) { this.report("L002", function, block, index, "throw needs an i64 exception code"); }
+            return;
+        }
+        if (code == "ret") {
+            Int expected = 0;
+            if (function.returnType() != "void") { expected = 1; }
+            this.shape(function, block, index, op, expected);
+            if (expected == 1 && !this.operandIs(function, op, 0, function.returnType())) { this.report("L002", function, block, index, "ret value must be " + function.returnType()); }
+            return;
+        }
+        if (code == "br") { this.checkEdge(function, block, index, op, 0, 0, op.operandCount()); return; }
+        if (code == "cond_br") {
+            if (!this.operandIs(function, op, 0, "i1") || op.targetCount() != 2) { this.report("L002", function, block, index, "cond_br needs an i1 condition and two targets"); return; }
+            this.checkEdge(function, block, index, op, 0, 1, 1 + op.trueArguments());
+            this.checkEdge(function, block, index, op, 1, 1 + op.trueArguments(), op.operandCount());
+            return;
+        }
+        this.report("L001", function, block, index, "unknown opcode " + code);
+    }
+
+    private Void checkEdge(SublangLowFunction function, Int block, Int index, SublangLowOp op, Int target, Int from, Int to) {
+        if (op.targetCount() <= target || !function.hasBlock(op.targetAt(target))) { this.report("L001", function, block, index, "branch to a missing block"); return; }
+        SublangLowBlock destination = function.blockAt(op.targetAt(target));
+        if (to - from != destination.paramCount()) { this.report("L002", function, block, index, "branch passes " + (to - from).toString() + " values to block " + op.targetAt(target).toString() + " with " + destination.paramCount().toString() + " parameters"); return; }
+        Int slot = 0;
+        while (slot < destination.paramCount()) {
+            if (!this.operandIs(function, op, from + slot, function.valueType(destination.paramAt(slot)))) { this.report("L002", function, block, index, "branch argument " + slot.toString() + " must be " + function.valueType(destination.paramAt(slot))); }
+            slot = slot + 1;
+        }
+    }
+}

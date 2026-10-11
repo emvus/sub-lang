@@ -1,0 +1,113 @@
+namespace sublang::effects;
+
+// Flow-insensitive region sets for one function. A token names a region: one per parameter, one
+// per allocation site and one unknown region. origin(value, token) says the value may point into
+// that region; contents(from, to) says memory of region `from` may hold a reference into `to`.
+// Both only grow, which is what makes the surrounding fixpoint terminate.
+public class SublangRegionFlow {
+    private Int tokenTotal;
+    private List<Bool> origins;
+    private List<Bool> contents;
+
+    public SublangRegionFlow(Int valueCount, Int tokens) {
+        this.tokenTotal = tokens;
+        this.origins = List();
+        this.contents = List();
+        Int cell = 0;
+        while (cell < (valueCount + 1) * tokens) {
+            this.origins.add(false);
+            cell = cell + 1;
+        }
+        cell = 0;
+        while (cell < tokens * tokens) {
+            this.contents.add(false);
+            cell = cell + 1;
+        }
+    }
+
+    public Int tokens() { return this.tokenTotal; }
+
+    public Bool has(Int value, Int token) {
+        return this.origins.get(value * this.tokenTotal + token);
+    }
+
+    public Bool addOrigin(Int value, Int token) {
+        Int cell = value * this.tokenTotal + token;
+        if (this.origins.get(cell)) { return false; }
+        this.origins.set(cell, true);
+        return true;
+    }
+
+    // target gains every region of source.
+    public Bool unite(Int target, Int source) {
+        Bool changed = false;
+        Int token = 0;
+        while (token < this.tokenTotal) {
+            if (this.has(source, token) && this.addOrigin(target, token)) { changed = true; }
+            token = token + 1;
+        }
+        return changed;
+    }
+
+    public Bool addEdge(Int from, Int to) {
+        Int cell = from * this.tokenTotal + to;
+        if (this.contents.get(cell)) { return false; }
+        this.contents.set(cell, true);
+        return true;
+    }
+
+    // Memory behind every region of `receiver` may now hold references into the regions of `stored`.
+    public Bool link(Int receiver, Int stored) {
+        Bool changed = false;
+        Int from = 0;
+        while (from < this.tokenTotal) {
+            if (this.has(receiver, from)) { changed = this.linkFrom(from, stored) || changed; }
+            from = from + 1;
+        }
+        return changed;
+    }
+
+    public Bool linkFrom(Int fromToken, Int stored) {
+        Bool changed = false;
+        Int to = 0;
+        while (to < this.tokenTotal) {
+            if (this.has(stored, to) && this.addEdge(fromToken, to)) { changed = true; }
+            to = to + 1;
+        }
+        return changed;
+    }
+
+    public Bool hasEdge(Int from, Int to) {
+        return this.contents.get(from * this.tokenTotal + to);
+    }
+
+    // Regions reachable from the seeds through contents edges, seeds included.
+    public List<Bool> closure(List<Bool> seeds) {
+        List<Bool> reached = List();
+        Int token = 0;
+        while (token < this.tokenTotal) {
+            reached.add(seeds.get(token));
+            token = token + 1;
+        }
+        Bool changed = true;
+        while (changed) {
+            changed = false;
+            Int from = 0;
+            while (from < this.tokenTotal) {
+                if (reached.get(from)) { changed = this.spread(reached, from) || changed; }
+                from = from + 1;
+            }
+        }
+        return reached;
+    }
+
+    private Bool spread(List<Bool> reached, Int from) {
+        Bool changed = false;
+        Int to = 0;
+        while (to < this.tokenTotal) {
+            if (this.hasEdge(from, to) && !reached.get(to)) { reached.set(to, true); changed = true; }
+            to = to + 1;
+        }
+        return changed;
+    }
+}

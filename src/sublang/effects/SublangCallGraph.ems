@@ -1,0 +1,157 @@
+namespace sublang::effects;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+
+// Direct-call graph with strongly connected components. components() lists callees before their
+// callers, so a bottom-up fixpoint can solve each component after everything it depends on.
+// Recursion depth is bounded by the number of functions.
+public class SublangCallGraph {
+    private Int functionTotal;
+    private List<Int> edgeFrom;
+    private List<Int> edgeTo;
+    private List<Bool> selfCalls;
+    private List<Int> discovery;
+    private List<Int> lowLink;
+    private List<Bool> onStack;
+    private List<Int> stack;
+    private Int counter;
+    private List<Int> componentOf;
+    private List<Int> orderedFunctions;
+    private List<Int> componentStart;
+
+    public SublangCallGraph(SublangModule module) {
+        this.functionTotal = module.functionCount();
+        this.edgeFrom = List();
+        this.edgeTo = List();
+        this.selfCalls = List();
+        this.discovery = List();
+        this.lowLink = List();
+        this.onStack = List();
+        this.stack = List();
+        this.counter = 0;
+        this.componentOf = List();
+        this.orderedFunctions = List();
+        this.componentStart = List();
+        Int id = 1;
+        while (id <= this.functionTotal) {
+            this.selfCalls.add(false);
+            this.discovery.add(0);
+            this.lowLink.add(0);
+            this.onStack.add(false);
+            this.componentOf.add(0);
+            id = id + 1;
+        }
+        this.collectEdges(module);
+        id = 1;
+        while (id <= this.functionTotal) {
+            if (this.discovery.get(id - 1) == 0) { this.visit(id); }
+            id = id + 1;
+        }
+    }
+
+    private Void collectEdges(SublangModule module) {
+        Int id = 1;
+        while (id <= this.functionTotal) {
+            SublangFunction function = module.functionAt(id);
+            Int block = 1;
+            while (block <= function.blockCount()) {
+                Int index = 0;
+                while (index < function.blockAt(block).operationCount()) {
+                    SublangOperation op = function.blockAt(block).operationAt(index);
+                    if ((op.opcode() == "call.direct" || op.opcode() == "invoke") && module.hasFunction(op.ref())) { this.addEdge(id, op.ref()); }
+                    if (op.opcode() == "call.virtual") { this.addGroupEdges(module, id, op.ref()); }
+                    index = index + 1;
+                }
+                block = block + 1;
+            }
+            id = id + 1;
+        }
+    }
+
+    private Void addGroupEdges(SublangModule module, Int from, Int group) {
+        Int entry = 0;
+        while (entry < module.dispatch().entryCount(group)) {
+            Int function = module.dispatch().entryFunction(group, entry);
+            if (module.hasFunction(function)) { this.addEdge(from, function); }
+            entry = entry + 1;
+        }
+    }
+
+    private Void addEdge(Int from, Int to) {
+        if (from == to) { this.selfCalls.set(from - 1, true); }
+        Int index = 0;
+        while (index < this.edgeFrom.length()) {
+            if (this.edgeFrom.get(index) == from && this.edgeTo.get(index) == to) { return; }
+            index = index + 1;
+        }
+        this.edgeFrom.add(from);
+        this.edgeTo.add(to);
+    }
+
+    // Tarjan's algorithm: a component is emitted only after all components it reaches.
+    private Void visit(Int function) {
+        this.counter = this.counter + 1;
+        this.discovery.set(function - 1, this.counter);
+        this.lowLink.set(function - 1, this.counter);
+        this.stack.add(function);
+        this.onStack.set(function - 1, true);
+        Int edge = 0;
+        while (edge < this.edgeFrom.length()) {
+            if (this.edgeFrom.get(edge) == function) { this.follow(function, this.edgeTo.get(edge)); }
+            edge = edge + 1;
+        }
+        if (this.lowLink.get(function - 1) == this.discovery.get(function - 1)) { this.emitComponent(function); }
+    }
+
+    private Void follow(Int function, Int callee) {
+        if (this.discovery.get(callee - 1) == 0) {
+            this.visit(callee);
+            if (this.lowLink.get(callee - 1) < this.lowLink.get(function - 1)) { this.lowLink.set(function - 1, this.lowLink.get(callee - 1)); }
+            return;
+        }
+        if (this.onStack.get(callee - 1) && this.discovery.get(callee - 1) < this.lowLink.get(function - 1)) {
+            this.lowLink.set(function - 1, this.discovery.get(callee - 1));
+        }
+    }
+
+    private Void emitComponent(Int root) {
+        this.componentStart.add(this.orderedFunctions.length());
+        Int component = this.componentStart.length();
+        Bool done = false;
+        while (!done) {
+            Int member = this.stack.get(this.stack.length() - 1);
+            this.stack.removeAt(this.stack.length() - 1);
+            this.onStack.set(member - 1, false);
+            this.componentOf.set(member - 1, component);
+            this.orderedFunctions.add(member);
+            if (member == root) { done = true; }
+        }
+    }
+
+    public Int functionCount() { return this.functionTotal; }
+    public Int componentCount() { return this.componentStart.length(); }
+    public Int componentOf(Int function) { return this.componentOf.get(function - 1); }
+
+    public Int memberCount(Int component) {
+        Int start = this.componentStart.get(component - 1);
+        Int end = this.orderedFunctions.length();
+        if (component < this.componentStart.length()) { end = this.componentStart.get(component); }
+        return end - start;
+    }
+
+    public Int memberAt(Int component, Int index) {
+        return this.orderedFunctions.get(this.componentStart.get(component - 1) + index);
+    }
+
+    // True for a function that can call itself directly or through other functions.
+    public Bool isRecursive(Int function) {
+        if (this.selfCalls.get(function - 1)) { return true; }
+        return this.memberCount(this.componentOf(function)) > 1;
+    }
+
+    public Int edgeCount() { return this.edgeFrom.length(); }
+    public Int edgeFromAt(Int index) { return this.edgeFrom.get(index); }
+    public Int edgeToAt(Int index) { return this.edgeTo.get(index); }
+}

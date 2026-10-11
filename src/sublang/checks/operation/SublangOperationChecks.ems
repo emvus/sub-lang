@@ -7,10 +7,14 @@ use sublang::ir::SublangModule;
 use sublang::vocabulary::SublangVocabulary;
 use sublang::checks::operation::SublangArithmeticChecks;
 use sublang::checks::operation::SublangControlChecks;
+use sublang::checks::operation::SublangConversionChecks;
+use sublang::checks::operation::SublangExceptionChecks;
+use sublang::checks::operation::SublangObjectChecks;
 use sublang::checks::operation::SublangMemoryChecks;
 use sublang::checks::data::SublangStringChecks;
 use sublang::checks::data::SublangCollectionChecks;
 use sublang::checks::data::SublangBondChecks;
+use sublang::checks::data::SublangTextChecks;
 
 // Rules that apply to every operation: a known opcode, a valid span, passing modes that fit the
 // operand kinds, and a result that matches the value it defines. Opcode-specific rules live in
@@ -48,7 +52,7 @@ public class SublangOperationChecks {
             this.findings.report("SUBLANG-S005", opcode + " has " + op.operandCount().toString() + " operands but " + op.modeCount().toString() + " passing modes", span);
             return false;
         }
-        if (op.hasResult() && !SublangVocabulary.producesValue(opcode) && opcode != "call.direct") {
+        if (op.hasResult() && !SublangVocabulary.producesValue(opcode) && opcode != "call.direct" && opcode != "call.virtual") {
             this.findings.report("SUBLANG-T001", opcode + " must not produce a value", span);
         }
         return true;
@@ -97,6 +101,10 @@ public class SublangOperationChecks {
 
     public Void checkByOpcode(SublangFunction fnEntry, SublangOperation op) {
         if (op.opcode().startsWith("bond.")) { SublangBondChecks.check(this.findings, this.module, fnEntry, op); return; }
+        if (SublangVocabulary.isObjectOpcode(op.opcode())) { SublangObjectChecks.check(this.findings, this.module, fnEntry, op); return; }
+        if (SublangVocabulary.isExceptionOpcode(op.opcode())) { SublangExceptionChecks.check(this.findings, this.module, fnEntry, op); return; }
+        if (SublangVocabulary.isNumericOpcode(op.opcode())) { SublangConversionChecks.check(this.findings, this.module, fnEntry, op); return; }
+        if (SublangVocabulary.isTextOpcode(op.opcode())) { SublangTextChecks.check(this.findings, this.module, fnEntry, op); return; }
         if (op.opcode().startsWith("list.")) { SublangCollectionChecks.check(this.findings, this.module, fnEntry, op); return; }
         if (SublangStringChecks.handles(op.opcode())) { SublangStringChecks.check(this.findings, this.module, fnEntry, op); return; }
         if (this.arithmetic.handles(op.opcode())) {

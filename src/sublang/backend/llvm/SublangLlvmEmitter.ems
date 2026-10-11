@@ -25,20 +25,44 @@ use sublang::backend::llvmflow::SublangLlvmBondEmitter;
 use sublang::backend::llvmflow::SublangLlvmPoolRuntime;
 use sublang::backend::llvmbond::SublangLlvmBondTrial;
 use sublang::backend::llvmbond::SublangLlvmBondCache;
+use sublang::backend::lowllvm::SublangLowLlvm;
+use sublang::low::SublangLowModule;
+use sublang::wire::SublangWireFeatures;
+use sublang::effects::SublangEffectReport;
+use sublang::effects::SublangEffectResult;
 
 // Textual LLVM is the backend boundary, not a public Sublang input format.
 public class SublangLlvmEmitter {
-    public static String emit(SublangModule module, Bool optimize, SublangMemoryPlan plan) {
+    // Runtime provider text and per-type generated routines; function bodies are appended by the
+    // legacy path (emit) or from verified Low IR (emitLow).
+    private static String provider(SublangModule module, SublangMemoryPlan plan) {
         String text = "; Sublang initial native LLVM slice\n" + SublangLlvmRuntime.definitions() + SublangLlvmFlowRuntime.definitions() + SublangLlvmShardRuntime.definitions() + SublangLlvmTypes.definitions(module) + SublangLlvmDropEmitter.definitions(module);
         text = text + SublangLlvmStrings.definitions(module);
         text = text + SublangLlvmListRuntime.definitions() + SublangLlvmLists.definitions(module);
         text = text + SublangLlvmBondRuntime.definitions() + SublangLlvmBonds.definitions(module);
         text = text + SublangLlvmBondTrial.definitions() + SublangLlvmBondCache.definitions();
         text = text + SublangLlvmPoolRuntime.definitions(module, plan.enabled());
+        if (SublangWireFeatures.usesExceptions(module)) { text = text + SublangLowLlvm.exceptionDeclarations(); }
+        return text;
+    }
+
+    public static String emitLow(SublangModule module, SublangMemoryPlan plan, SublangLowModule low) {
+        String text = SublangLlvmEmitter.provider(module, plan);
+        Int id = 1;
+        while (id <= low.functionCount()) {
+            text = text + SublangLowLlvm.function(low.functionAt(id));
+            id = id + 1;
+        }
+        if (module.entryFunction() != 0) { text = text + SublangLlvmEmitter.entry(module.entryFunction()); }
+        return text;
+    }
+
+    public static String emit(SublangModule module, Bool optimize, SublangMemoryPlan plan, SublangEffectResult effects) {
+        String text = SublangLlvmEmitter.provider(module, plan);
         Int id = 1;
         while (id <= module.functionCount()) {
             SublangLlvmContext context = SublangLlvmContext(module, module.functionAt(id), plan.functionAt(id));
-            text = text + SublangLlvmEmitter.functionText(context, optimize);
+            text = text + SublangLlvmEmitter.functionText(context, optimize, SublangEffectReport.attributes(module, effects, id));
             id = id + 1;
         }
         if (module.entryFunction() != 0) {
@@ -47,10 +71,10 @@ public class SublangLlvmEmitter {
         return text;
     }
 
-    private static String functionText(SublangLlvmContext context, Bool optimize) {
+    private static String functionText(SublangLlvmContext context, Bool optimize, String attributes) {
         SublangFunction function = context.function;
         SublangValueFacts facts = SublangOptimind.analyzeModule(context.module, function, optimize);
-        String text = SublangLlvmEmitter.header(context) + SublangLlvmEmitter.slots(context);
+        String text = SublangLlvmEmitter.header(context, attributes) + SublangLlvmEmitter.slots(context);
         Int block = 1;
         while (block <= function.blockCount()) {
             text = text + "b" + block.toString() + ":\n";
@@ -64,7 +88,7 @@ public class SublangLlvmEmitter {
         return text + "}\n";
     }
 
-    private static String header(SublangLlvmContext context) {
+    private static String header(SublangLlvmContext context, String attributes) {
         String text = "define " + context.type(context.function.returnType()) + " @fn" + context.function.id().toString() + "(";
         Int index = 0;
         while (index < context.function.paramCount()) {
@@ -73,6 +97,7 @@ public class SublangLlvmEmitter {
             text = text + context.type(context.function.valueTypeAt(value)) + " %arg" + value.toString();
             index = index + 1;
         }
+        if (attributes != "") { return text + ") " + attributes + " {\nentry:\n"; }
         return text + ") {\nentry:\n";
     }
 

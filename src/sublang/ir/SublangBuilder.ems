@@ -59,6 +59,14 @@ public class SublangBuilder {
         return this.module.types().intType();
     }
 
+    public Int byteType() {
+        return this.module.types().byteType();
+    }
+
+    public Int stringType() {
+        return this.module.types().stringType();
+    }
+
     public Int floatType() {
         return this.module.types().floatType();
     }
@@ -78,6 +86,16 @@ public class SublangBuilder {
     public Int recordType(String name, Int span) {
         return this.module.types().addType("Record", name, 0, false, 0, span);
     }
+
+    // A class that extends `base`; its fields must begin with the base fields.
+    public Int classTypeExtending(String name, Int base, Int span) {
+        return this.module.types().addType("Class", name, 0, false, base, span);
+    }
+
+    // Closed-world dispatch registration (Wire feature ext.oo.v1).
+    public Void registerClass(Int type, Int tag) { this.module.dispatch().addClass(type, tag); }
+    public Int dispatchGroup(String name, Int root, Int tagField, Int prototype) { return this.module.dispatch().addGroup(name, root, tagField, prototype); }
+    public Void dispatchEntry(Int group, Int tag, Int function) { this.module.dispatch().addEntry(group, tag, function); }
 
     public Int classType(String name, Int span) {
         return this.module.types().addType("Class", name, 0, false, 0, span);

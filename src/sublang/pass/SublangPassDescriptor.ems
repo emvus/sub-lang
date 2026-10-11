@@ -1,0 +1,53 @@
+namespace sublang::pass;
+
+// Static description of one pass: version, the IR stage it accepts, the analyses it needs and the
+// analyses it claims to preserve. Everything not named in preserves() is invalidated. A claim is
+// only honored when the manager can re-establish the named invariant on the new snapshot.
+public class SublangPassDescriptor {
+    private String nameText;
+    private Int versionNumber;
+    private String stageName;
+    private List<String> requiredAnalyses;
+    private List<String> preservedAnalyses;
+
+    public SublangPassDescriptor(String name, Int version, String stage, List<String> requires, List<String> preserves) {
+        this.nameText = name + "";
+        this.versionNumber = version;
+        this.stageName = stage + "";
+        this.requiredAnalyses = List();
+        this.preservedAnalyses = List();
+        Int index = 0;
+        while (index < requires.length()) {
+            this.requiredAnalyses.add(requires.get(index) + "");
+            index = index + 1;
+        }
+        index = 0;
+        while (index < preserves.length()) {
+            this.preservedAnalyses.add(preserves.get(index) + "");
+            index = index + 1;
+        }
+    }
+
+    public String name() { return this.nameText; }
+    public Int version() { return this.versionNumber; }
+    public String stage() { return this.stageName; }
+    public Int requiredCount() { return this.requiredAnalyses.length(); }
+    public String requiredAt(Int index) { return this.requiredAnalyses.get(index); }
+    public Bool requires(String analysis) { return this.requiredAnalyses.contains(analysis); }
+    public Bool preserves(String analysis) { return this.preservedAnalyses.contains(analysis); }
+
+    public static SublangPassDescriptor fold() {
+        List<String> requires = List();
+        List<String> preserves = List();
+        preserves.add("callgraph");
+        return SublangPassDescriptor("optimind.fold", 1, "High", requires, preserves);
+    }
+
+    public static SublangPassDescriptor deadComputation() {
+        List<String> requires = List();
+        requires.add("effects");
+        List<String> preserves = List();
+        preserves.add("callgraph");
+        return SublangPassDescriptor("optimind.dce", 1, "High", requires, preserves);
+    }
+}

@@ -1,6 +1,7 @@
 namespace sublang::hyperalloc;
 
 use sublang::ir::SublangModule;
+use sublang::effects::SublangEffectResult;
 use sublang::hyperalloc::SublangFunctionMemoryPlan;
 
 // Compilation-local plan. The compiler constructs this after validating its frozen
@@ -9,14 +10,18 @@ public class SublangMemoryPlan {
     private List<SublangFunctionMemoryPlan> functions;
     private String report;
     private Bool active;
+    private SublangModule sourceModule;
+    private Int revisionValue;
 
-    public SublangMemoryPlan(SublangModule module, Bool enabled) {
+    public SublangMemoryPlan(SublangModule module, Bool enabled, SublangEffectResult effects) {
+        this.sourceModule = module;
+        this.revisionValue = module.revision();
         this.functions = List();
         this.report = "";
         this.active = enabled;
         Int id = 1;
         while (id <= module.functionCount()) {
-            SublangFunctionMemoryPlan plan = SublangFunctionMemoryPlan(module, module.functionAt(id), enabled);
+            SublangFunctionMemoryPlan plan = SublangFunctionMemoryPlan(module, module.functionAt(id), enabled, effects);
             this.functions.add(plan);
             this.report = this.report + plan.explain();
             id = id + 1;
@@ -26,4 +31,11 @@ public class SublangMemoryPlan {
     public SublangFunctionMemoryPlan functionAt(Int id) { return this.functions.get(id - 1); }
     public String explain() { return this.report; }
     public Bool enabled() { return this.active; }
+
+    // The plan is valid only for the snapshot it was made from.
+    public Bool matches(SublangModule module) {
+        return module == this.sourceModule && module.revision() == this.revisionValue;
+    }
+
+    public Int revision() { return this.revisionValue; }
 }

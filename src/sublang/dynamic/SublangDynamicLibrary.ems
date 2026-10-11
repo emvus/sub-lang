@@ -1,0 +1,82 @@
+namespace sublang::dynamic;
+
+use sublang::ir::SublangBuilder;
+use sublang::dynamic::SublangDynamicLayout;
+use sublang::dynamic::SublangDynamicValues;
+use sublang::dynamic::SublangDynamicOperations;
+use sublang::dynamic::SublangDynamicArithmetic;
+
+// IR library generator for the dyn-v1 Dynamic profile.
+//
+// Profile (dyn-v1 library):
+//   class Dyn { tag: Int; num: Int; real: Float; text: owned Ref<List<Byte>> }
+//   tag 0 nil, 1 bool, 2 int, 3 float, 4 text.
+//   num: bool as 0 or 1, or the int value. real: the float value. text: the bytes of a text value;
+//   cleared for every other tag.
+//   Values are `owned Ref<Dyn>`. Constructors return owned values; inspection functions borrow.
+//
+// Functions added to the module, each an ordinary Sublang function:
+//   dyn_nil() -> owned Dyn
+//   dyn_bool(Bool) -> owned Dyn
+//   dyn_int(Int) -> owned Dyn
+//   dyn_float(Float) -> owned Dyn
+//   dyn_text(String) -> owned Dyn            (copies the bytes with text.from_str)
+//   dyn_truthy(borrow_read Dyn) -> Bool      (nil false; bool and int num != 0; float not zero and not NaN;
+//                                             text length > 0)
+//   dyn_add(borrow_read Dyn, borrow_read Dyn) -> owned Dyn
+//                                            (Int+Int checked trap; Int+Float promotes the Int exactly
+//                                             with int.to_float; Float+Float IEEE rne; Text+Text
+//                                             concatenates; any other pair fails with dyn.type_error)
+//   dyn_equal(borrow_read Dyn, borrow_read Dyn) -> Bool
+//                                            (same-tag payload equality; Int vs Float uses the exact
+//                                             number.equal and never rounds the Int; text by bytes;
+//                                             other tag pairs are unequal)
+//   dyn_to_int(borrow_read Dyn) -> Int       (int returns num; float uses the exact float.to_int;
+//                                             anything else fails with dyn.type_error)
+//
+// Failures use the default abort record (libc.abort), so a failing program prints nothing and
+// terminates with SIGABRT. No Bool-to-Int coercion exists anywhere in the library.
+//
+// Documentation: docs/Sublang_Dynamic_Library.md. Status and open items: docs/Sublang_Dynamic_Profile.md.
+public class SublangDynamicLibrary {
+    private SublangDynamicLayout layoutValue;
+    private Int fnNil;
+    private Int fnBool;
+    private Int fnInt;
+    private Int fnFloat;
+    private Int fnText;
+    private Int fnTruthy;
+    private Int fnAdd;
+    private Int fnEqual;
+    private Int fnToInt;
+
+    // Adds the Dyn class and the nine library functions to the module under construction.
+    // The builder must not have begun any function that is still open.
+    public SublangDynamicLibrary(SublangBuilder builder) {
+        Int span = builder.syntheticSpan("dyn:library");
+        this.layoutValue = SublangDynamicLayout(builder, span);
+        SublangDynamicValues values = SublangDynamicValues(builder, this.layoutValue, span);
+        SublangDynamicOperations operations = SublangDynamicOperations(builder, this.layoutValue, span);
+        SublangDynamicArithmetic arithmetic = SublangDynamicArithmetic(builder, this.layoutValue, values, span);
+        this.fnNil = values.defineNil();
+        this.fnBool = values.defineBool();
+        this.fnInt = values.defineInt();
+        this.fnFloat = values.defineFloat();
+        this.fnText = values.defineText();
+        this.fnTruthy = operations.defineTruthy();
+        this.fnAdd = arithmetic.defineAdd();
+        this.fnEqual = operations.defineEqual();
+        this.fnToInt = operations.defineToInt();
+    }
+
+    public SublangDynamicLayout layout() { return this.layoutValue; }
+    public Int nilFunction() { return this.fnNil; }
+    public Int boolFunction() { return this.fnBool; }
+    public Int intFunction() { return this.fnInt; }
+    public Int floatFunction() { return this.fnFloat; }
+    public Int textFunction() { return this.fnText; }
+    public Int truthyFunction() { return this.fnTruthy; }
+    public Int addFunction() { return this.fnAdd; }
+    public Int equalFunction() { return this.fnEqual; }
+    public Int toIntFunction() { return this.fnToInt; }
+}

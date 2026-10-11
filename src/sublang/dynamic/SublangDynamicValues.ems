@@ -1,0 +1,111 @@
+namespace sublang::dynamic;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangOperationBuilder;
+use sublang::dynamic::SublangDynamicLayout;
+use sublang::dynamic::SublangDynamicBranch;
+
+// Constructors dyn_nil, dyn_bool, dyn_int, dyn_float and dyn_text, plus the object builders that the
+// other library functions use. Each constructor opens its own scope, builds the object in it, and
+// returns the object owned. A Dyn is fully initialized before it is returned: tag, num and real are
+// set, and text is either adopted (tag 4) or cleared.
+public class SublangDynamicValues {
+    private SublangBuilder builder;
+    private SublangDynamicLayout layout;
+    private Int span;
+
+    public SublangDynamicValues(SublangBuilder builder, SublangDynamicLayout layout, Int span) {
+        this.builder = builder;
+        this.layout = layout;
+        this.span = span;
+    }
+
+    // A non-text Dyn in `scope`: the text field is cleared, so the object is complete.
+    public Int plain(Int scope, Int tag, Int number, Int real) {
+        SublangOperationBuilder ops = this.builder.ops();
+        Int object = ops.classNew(this.layout.dynType(), scope, this.span);
+        ops.fieldInit(object, this.layout.tagField(), ops.constInt(tag, this.span), this.span);
+        ops.fieldInit(object, this.layout.numField(), number, this.span);
+        ops.fieldInit(object, this.layout.realField(), real, this.span);
+        ops.fieldClear(object, this.layout.textField(), this.span);
+        return object;
+    }
+
+    // A text Dyn in `scope` that adopts `bytes`, an owned List<Byte> allocated in that same scope.
+    public Int text(Int scope, Int bytes) {
+        SublangOperationBuilder ops = this.builder.ops();
+        Int object = ops.classNew(this.layout.dynType(), scope, this.span);
+        ops.fieldInit(object, this.layout.tagField(), ops.constInt(4, this.span), this.span);
+        ops.fieldInit(object, this.layout.numField(), ops.constInt(0, this.span), this.span);
+        ops.fieldInit(object, this.layout.realField(), ops.constFloatBits(0, this.span), this.span);
+        ops.fieldInitOwned(object, this.layout.textField(), bytes, this.span);
+        return object;
+    }
+
+    public Int defineNil() {
+        Int function = this.builder.beginFunction("dyn_nil", this.layout.dynRef(), 0, this.span);
+        this.builder.beginBlock();
+        SublangOperationBuilder ops = this.builder.ops();
+        Int scope = ops.scopeBegin(this.span);
+        Int object = this.plain(scope, 0, ops.constInt(0, this.span), ops.constFloatBits(0, this.span));
+        ops.returnOwned(object, this.span);
+        return function;
+    }
+
+    // Bool becomes num 0 or 1 through a join block; no Bool-to-Int operation is used.
+    public Int defineBool() {
+        Int function = this.builder.beginFunction("dyn_bool", this.layout.dynRef(), 0, this.span);
+        Int value = this.builder.addParam("value", this.builder.boolType(), "value", false);
+        this.builder.beginBlock();
+        SublangOperationBuilder ops = this.builder.ops();
+        Int yes = this.builder.newBlock();
+        Int no = this.builder.newBlock();
+        Int join = this.builder.newBlock();
+        ops.condBranch(value, yes, SublangDynamicBranch.none(), no, SublangDynamicBranch.none(), this.span);
+        this.builder.enterBlock(yes);
+        ops.branchTo(join, SublangDynamicBranch.one(ops.constInt(1, this.span)), this.span);
+        this.builder.enterBlock(no);
+        ops.branchTo(join, SublangDynamicBranch.one(ops.constInt(0, this.span)), this.span);
+        this.builder.enterBlock(join);
+        Int number = this.builder.addBlockParam(this.builder.intType());
+        Int scope = ops.scopeBegin(this.span);
+        Int object = this.plain(scope, 1, number, ops.constFloatBits(0, this.span));
+        ops.returnOwned(object, this.span);
+        return function;
+    }
+
+    public Int defineInt() {
+        Int function = this.builder.beginFunction("dyn_int", this.layout.dynRef(), 0, this.span);
+        Int value = this.builder.addParam("value", this.builder.intType(), "value", false);
+        this.builder.beginBlock();
+        SublangOperationBuilder ops = this.builder.ops();
+        Int scope = ops.scopeBegin(this.span);
+        Int object = this.plain(scope, 2, value, ops.constFloatBits(0, this.span));
+        ops.returnOwned(object, this.span);
+        return function;
+    }
+
+    public Int defineFloat() {
+        Int function = this.builder.beginFunction("dyn_float", this.layout.dynRef(), 0, this.span);
+        Int value = this.builder.addParam("value", this.builder.floatType(), "value", false);
+        this.builder.beginBlock();
+        SublangOperationBuilder ops = this.builder.ops();
+        Int scope = ops.scopeBegin(this.span);
+        Int object = this.plain(scope, 3, ops.constInt(0, this.span), value);
+        ops.returnOwned(object, this.span);
+        return function;
+    }
+
+    // The String is copied into a new byte list owned by the constructor's scope.
+    public Int defineText() {
+        Int function = this.builder.beginFunction("dyn_text", this.layout.dynRef(), 0, this.span);
+        Int value = this.builder.addParam("value", this.builder.stringType(), "value", false);
+        this.builder.beginBlock();
+        SublangOperationBuilder ops = this.builder.ops();
+        Int scope = ops.scopeBegin(this.span);
+        Int bytes = this.builder.collections().textFrom(this.layout.bytesType(), value, scope, this.span);
+        Int object = this.text(scope, bytes);
+        ops.returnOwned(object, this.span);
+        return function;
+    }
+}

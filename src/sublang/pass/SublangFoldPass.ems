@@ -1,0 +1,80 @@
+namespace sublang::pass;
+
+use sublang::body::SublangFunction;
+use sublang::body::SublangOperation;
+use sublang::ir::SublangModule;
+use sublang::optimind::SublangOptimind;
+use sublang::optimind::SublangValueFacts;
+use sublang::snapshot::SublangEntityMap;
+
+// Rewrites scalar computations whose result Optimind proved constant into const.int/const.bool in
+// the draft snapshot. Operand computations are left in place, so a potentially failing operand is
+// never removed here. Only facts that the analysis derived without overflow/trap are used.
+public class SublangFoldPass {
+    public static Int apply(SublangModule draft, SublangEntityMap map) {
+        Int total = 0;
+        Int id = 1;
+        while (id <= draft.functionCount()) {
+            if (draft.functionAt(id).definition() == "body") {
+                total = total + SublangFoldPass.function(draft, id, map);
+            }
+            id = id + 1;
+        }
+        return total;
+    }
+
+    private static Int function(SublangModule draft, Int id, SublangEntityMap map) {
+        SublangFunction function = draft.functionAt(id);
+        SublangValueFacts facts = SublangOptimind.analyzeModule(draft, function, true);
+        Int total = 0;
+        Int block = 1;
+        while (block <= function.blockCount()) {
+            Int index = 0;
+            while (index < function.blockAt(block).operationCount()) {
+                if (SublangFoldPass.rewrite(draft, function, block, index, facts)) {
+                    map.record("op-replaced", id, function.blockAt(block).operationAt(index).id(), function.blockAt(block).operationAt(index).id());
+                    total = total + 1;
+                }
+                index = index + 1;
+            }
+            block = block + 1;
+        }
+        return total;
+    }
+
+    private static Bool rewrite(SublangModule draft, SublangFunction function, Int block, Int index, SublangValueFacts facts) {
+        SublangOperation op = function.blockAt(block).operationAt(index);
+        if (!op.hasResult() || !facts.known(op.resultValue())) { return false; }
+        String code = op.opcode();
+        if (code == "const.int" || code == "const.bool" || !SublangFoldPass.foldable(code)) { return false; }
+        String kind = draft.types().kindOf(op.resultType());
+        if (kind == "Int") {
+            function.blockAt(block).replaceOperation(index, SublangFoldPass.integer(op, facts.integer(op.resultValue())));
+            return true;
+        }
+        if (kind == "Bool") {
+            function.blockAt(block).replaceOperation(index, SublangFoldPass.boolean(op, facts.integer(op.resultValue()) != 0));
+            return true;
+        }
+        return false;
+    }
+
+    private static SublangOperation integer(SublangOperation op, Int value) {
+        SublangOperation folded = SublangOperation(op.id(), "const.int", op.span());
+        folded.setResult(op.resultValue(), op.resultType());
+        folded.setConstInt(value);
+        return folded;
+    }
+
+    private static SublangOperation boolean(SublangOperation op, Bool value) {
+        SublangOperation folded = SublangOperation(op.id(), "const.bool", op.span());
+        folded.setResult(op.resultValue(), op.resultType());
+        folded.setConstBool(value);
+        return folded;
+    }
+
+    // Opcodes whose proven-constant result may replace the operation itself.
+    private static Bool foldable(String code) {
+        return code.startsWith("int.") || code == "compare" || code == "call.direct";
+    }
+}

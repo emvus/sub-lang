@@ -1,0 +1,410 @@
+namespace sublang::snapshot;
+
+use sublang::body::SublangFunction;
+use sublang::ir::SublangModule;
+use sublang::model::SublangField;
+use sublang::model::SublangType;
+use sublang::proof::SublangProofReference;
+use sublang::semantics::SublangEffectFact;
+use sublang::semantics::SublangEffectSummary;
+use sublang::semantics::SublangFailureAction;
+use sublang::semantics::SublangSemanticProfile;
+use sublang::snapshot::SublangEntityMap;
+use sublang::snapshot::SublangFunctionLink;
+use sublang::snapshot::SublangModuleCopy;
+
+// Links a consumer module onto a provider module into one module that compiles to one program
+// with one runtime. Nothing is matched by numeric id: nominal types unify by name and identical
+// structure, imports (external contracts of the consumer) are resolved by exact name and
+// signature against body functions, failure actions unify by name and contents. A mismatch is
+// reported and no module is produced. Cyclic imports are not supported: the provider must be
+// self-contained.
+public class SublangModuleLinker {
+    private SublangModule merged;
+    private SublangModule provider;
+    private SublangModule consumer;
+    private List<String> errors;
+    private List<Int> types;
+    private List<Int> fields;
+    private List<Int> functions;
+    private List<Int> failures;
+    private List<Int> groups;
+    private List<Int> effects;
+    private List<Int> spans;
+    private List<Int> profiles;
+    private List<Int> locations;
+
+    public SublangModuleLinker(SublangModule first, SublangModule second) {
+        this.provider = first;
+        this.consumer = second;
+        this.errors = List();
+        this.types = SublangModuleLinker.zeros(second.types().typeCount() + 1);
+        this.fields = SublangModuleLinker.zeros(second.types().fieldCount() + 1);
+        this.functions = SublangModuleLinker.zeros(second.functionCount() + 1);
+        this.failures = SublangModuleLinker.zeros(second.semantics().failureCount() + 1);
+        this.groups = SublangModuleLinker.zeros(second.dispatch().groupCount() + 1);
+        this.effects = SublangModuleLinker.zeros(second.semantics().effectSummaryCount() + 1);
+        this.spans = SublangModuleLinker.zeros(second.spanCount() + 1);
+        this.profiles = SublangModuleLinker.zeros(second.semantics().profileCount() + 1);
+        this.locations = SublangModuleLinker.zeros(second.aliases().locationCount() + 1);
+        this.merged = SublangModuleCopy.copy(first, 1, SublangModuleLinker.zeros(0), SublangModuleLinker.zeros(0), SublangEntityMap("link", "link"));
+        this.run();
+    }
+
+    private static List<Int> zeros(Int count) {
+        List<Int> values = List();
+        Int index = 0;
+        while (index < count) {
+            values.add(0);
+            index = index + 1;
+        }
+        return values;
+    }
+
+    public Bool ok() { return this.errors.length() == 0; }
+    public Int errorCount() { return this.errors.length(); }
+    public String errorAt(Int index) { return this.errors.get(index); }
+    public SublangModule module() { return this.merged; }
+
+    private Void fail(String message) { this.errors.add("SUBLANG-K001: " + message); }
+
+    private Void run() {
+        this.mapSources();
+        this.mapTypes();
+        if (this.errors.length() > 0) { return; }
+        this.mapFields();
+        this.mapSemantics();
+        this.mapFunctions();
+        if (this.errors.length() > 0) { return; }
+        this.mapDispatch();
+        this.copyBodies();
+        this.mapEntry();
+    }
+
+    // --- sources and spans ----------------------------------------------------------------
+
+    private Void mapSources() {
+        Int offset = this.merged.sourceCount();
+        Int index = 1;
+        while (index <= this.consumer.sourceCount()) {
+            this.merged.addSource(this.consumer.sourceNameAt(index));
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= this.consumer.spanCount()) {
+            Int source = this.consumer.spanAt(index).source();
+            if (source != 0) { source = source + offset; }
+            this.spans.set(index, this.merged.addSpan(source, this.consumer.spanAt(index).line(), this.consumer.spanAt(index).column(), this.consumer.spanAt(index).origin()));
+            index = index + 1;
+        }
+    }
+
+    // --- types ----------------------------------------------------------------------------
+
+    private Void mapTypes() {
+        Int type = 1;
+        while (type <= 4) {
+            this.types.set(type, type);
+            type = type + 1;
+        }
+        Int rounds = 0;
+        Bool progress = true;
+        while (progress && rounds <= this.consumer.types().typeCount()) {
+            progress = false;
+            type = 5;
+            while (type <= this.consumer.types().typeCount()) {
+                if (this.types.get(type) == 0 && this.mapType(type)) { progress = true; }
+                type = type + 1;
+            }
+            rounds = rounds + 1;
+        }
+        type = 5;
+        while (type <= this.consumer.types().typeCount()) {
+            if (this.types.get(type) == 0) { this.fail("type " + this.consumer.types().typeNameOf(type) + " depends on a type that cannot be mapped"); }
+            type = type + 1;
+        }
+    }
+
+    // Maps one type when its dependencies are mapped; returns true when it was mapped.
+    private Bool mapType(Int type) {
+        SublangType entry = this.consumer.types().typeAt(type);
+        Int target = entry.target();
+        if (target != 0 && this.types.get(target) == 0) { return false; }
+        Int mappedTarget = 0;
+        if (target != 0) { mappedTarget = this.types.get(target); }
+        if (entry.isNominal()) { return this.mapNominal(type, entry, mappedTarget); }
+        Int existing = this.find(entry.kind(), entry.name(), entry.width(), entry.isSigned(), mappedTarget);
+        if (existing == 0) {
+            existing = this.merged.types().addType(entry.kind(), this.mappedName(entry, mappedTarget), entry.width(), entry.isSigned(), mappedTarget, this.spans.get(entry.span()));
+        }
+        this.types.set(type, existing);
+        return true;
+    }
+
+    private String mappedName(SublangType entry, Int mappedTarget) {
+        if (entry.kind() == "Ref") { return "Ref<" + this.merged.types().typeNameOf(mappedTarget) + ">"; }
+        if (entry.kind() == "List") { return "List<" + this.merged.types().typeNameOf(mappedTarget) + ">"; }
+        if (entry.kind() == "Bond") { return "Bond<" + this.merged.types().typeNameOf(mappedTarget) + ">"; }
+        return entry.name();
+    }
+
+    private Int find(String kind, String name, Int width, Bool signed, Int target) {
+        Int index = 1;
+        while (index <= this.merged.types().typeCount()) {
+            SublangType candidate = this.merged.types().typeAt(index);
+            if (candidate.kind() == kind && candidate.width() == width && candidate.isSigned() == signed && candidate.target() == target && (target != 0 || candidate.name() == name)) { return index; }
+            index = index + 1;
+        }
+        return 0;
+    }
+
+    // Nominal types unify by name; the structures must agree or the link fails.
+    private Bool mapNominal(Int type, SublangType entry, Int mappedBase) {
+        Int existing = 0;
+        Int index = 5;
+        while (index <= this.merged.types().typeCount()) {
+            if (this.merged.types().typeAt(index).isNominal() && this.merged.types().typeAt(index).name() == entry.name()) { existing = index; }
+            index = index + 1;
+        }
+        if (existing == 0) {
+            this.types.set(type, this.merged.types().addType(entry.kind(), entry.name(), entry.width(), entry.isSigned(), mappedBase, this.spans.get(entry.span())));
+            return true;
+        }
+        SublangType other = this.merged.types().typeAt(existing);
+        if (other.kind() != entry.kind() || other.target() != mappedBase || other.fieldCount() != entry.fieldCount()) {
+            this.fail("type " + entry.name() + " is declared with incompatible structure in the two modules");
+        }
+        this.types.set(type, existing);
+        return true;
+    }
+
+    // --- fields ---------------------------------------------------------------------------
+
+    private Void mapFields() {
+        Int type = 5;
+        while (type <= this.consumer.types().typeCount()) {
+            if (this.consumer.types().typeAt(type).isNominal()) { this.mapFieldsOf(type); }
+            type = type + 1;
+        }
+    }
+
+    private Void mapFieldsOf(Int type) {
+        Int mapped = this.types.get(type);
+        Bool fresh = this.merged.types().typeAt(mapped).fieldCount() == 0 && this.consumer.types().typeAt(type).fieldCount() > 0;
+        Int index = 0;
+        while (index < this.consumer.types().typeAt(type).fieldCount()) {
+            Int source = this.consumer.types().typeAt(type).fieldAt(index);
+            SublangField entry = this.consumer.types().fieldAt(source);
+            if (fresh) {
+                this.fields.set(source, this.merged.types().addField(mapped, entry.name(), this.types.get(entry.typeId()), entry.isMutable(), this.spans.get(entry.span())));
+            }
+            if (!fresh) { this.unifyField(source, entry, mapped, index); }
+            index = index + 1;
+        }
+    }
+
+    private Void unifyField(Int source, SublangField entry, Int mapped, Int index) {
+        if (index >= this.merged.types().typeAt(mapped).fieldCount()) { return; }
+        Int existing = this.merged.types().typeAt(mapped).fieldAt(index);
+        SublangField other = this.merged.types().fieldAt(existing);
+        if (other.name() != entry.name() || other.typeId() != this.types.get(entry.typeId()) || other.isMutable() != entry.isMutable()) {
+            this.fail("field " + entry.name() + " of " + this.merged.types().typeNameOf(mapped) + " differs between the modules");
+        }
+        this.fields.set(source, existing);
+    }
+
+    // --- semantics ------------------------------------------------------------------------
+
+    private Void mapSemantics() {
+        Int index = 1;
+        while (index <= this.consumer.semantics().failureCount()) {
+            this.mapFailure(index);
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= this.consumer.semantics().profileCount()) {
+            this.mapProfile(index);
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= this.consumer.aliases().locationCount()) {
+            this.locations.set(index, this.merged.aliases().addLocation(this.consumer.aliases().locationAt(index).kind(), this.consumer.aliases().locationAt(index).name(), this.spans.get(this.consumer.aliases().locationAt(index).span())));
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= this.consumer.semantics().effectSummaryCount()) {
+            this.mapEffect(index);
+            index = index + 1;
+        }
+    }
+
+    private Void mapFailure(Int source) {
+        SublangFailureAction entry = this.consumer.semantics().failureActionAt(source);
+        Int existing = 0;
+        Int index = 1;
+        while (index <= this.merged.semantics().failureCount()) {
+            if (this.merged.semantics().failureActionAt(index).name() == entry.name()) { existing = index; }
+            index = index + 1;
+        }
+        if (existing == 0) {
+            this.failures.set(source, this.merged.semantics().addFailureAction(entry.name(), entry.behavior(), entry.binding(), entry.signature(), entry.continues(), entry.unwinding(), this.spans.get(entry.span())));
+            return;
+        }
+        SublangFailureAction other = this.merged.semantics().failureActionAt(existing);
+        if (other.behavior() != entry.behavior() || other.binding() != entry.binding() || other.signature() != entry.signature() || other.continues() != entry.continues() || other.unwinding() != entry.unwinding()) {
+            this.fail("failure action " + entry.name() + " is defined differently in the two modules");
+        }
+        this.failures.set(source, existing);
+    }
+
+    private Void mapProfile(Int source) {
+        SublangSemanticProfile entry = this.consumer.semantics().profileAt(source);
+        Int index = 1;
+        while (index <= this.merged.semantics().profileCount()) {
+            SublangSemanticProfile other = this.merged.semantics().profileAt(index);
+            if (other.name() == entry.name() && other.version() == entry.version() && other.integerRules() == entry.integerRules() && other.floatRules() == entry.floatRules() && other.failureModel() == entry.failureModel() && other.unwindingModel() == entry.unwindingModel()) {
+                this.profiles.set(source, index);
+                return;
+            }
+            index = index + 1;
+        }
+        this.profiles.set(source, this.merged.semantics().addProfile(entry.name(), entry.version(), entry.integerRules(), entry.floatRules(), entry.failureModel(), entry.unwindingModel()));
+    }
+
+    // Facts keep their declared content; a proven claim is demoted because its proof names a
+    // revision of another module and is not evidence in the linked one.
+    private Void mapEffect(Int source) {
+        SublangEffectSummary entry = this.consumer.semantics().effectSummaryAt(source);
+        Int created = this.merged.semantics().addEffectSummary(entry.name(), this.spans.get(entry.span()));
+        this.effects.set(source, created);
+        Int index = 0;
+        while (index < entry.factCount()) {
+            SublangEffectFact fact = entry.factAt(index);
+            List<Int> places = List();
+            Int place = 0;
+            while (place < fact.locationCount()) {
+                places.add(this.locations.get(fact.locationAt(place)));
+                place = place + 1;
+            }
+            String provenance = fact.provenance();
+            String label = fact.proof();
+            SublangProofReference evidence = SublangProofReference.missing();
+            if (provenance == "proven") {
+                provenance = "declared";
+                label = "stale-proof:" + fact.proofReference().analysis() + "@r" + fact.proofReference().revision().toString();
+            }
+            this.merged.semantics().effectSummaryAt(created).importFact(fact.area(), fact.value(), provenance, fact.detail(), label, evidence, places);
+            index = index + 1;
+        }
+    }
+
+    // --- functions ------------------------------------------------------------------------
+
+    private Void mapFunctions() {
+        Int index = 1;
+        while (index <= this.consumer.functionCount()) {
+            SublangFunction function = this.consumer.functionAt(index);
+            if (function.definition() == "body") {
+                this.functions.set(index, this.merged.addFunction(function.name(), this.types.get(function.returnType()), function.methodOf(), this.spans.get(function.span())));
+            }
+            index = index + 1;
+        }
+        index = 1;
+        while (index <= this.consumer.functionCount()) {
+            if (this.consumer.functionAt(index).definition() != "body") { this.resolveImport(index); }
+            index = index + 1;
+        }
+    }
+
+    private Void resolveImport(Int source) {
+        SublangFunction wanted = this.consumer.functionAt(source);
+        Int found = 0;
+        Int count = 0;
+        Int index = 1;
+        while (index <= this.provider.functionCount()) {
+            if (this.provider.functionAt(index).definition() == "body" && this.provider.functionAt(index).name() == wanted.name()) { found = index; count = count + 1; }
+            index = index + 1;
+        }
+        if (count == 0) { this.fail("unresolved import " + wanted.name()); return; }
+        if (count > 1) { this.fail("import " + wanted.name() + " is ambiguous: the provider defines it " + count.toString() + " times"); return; }
+        SublangFunction candidate = this.provider.functionAt(found);
+        if (!this.sameSignature(wanted, candidate)) {
+            this.fail("import " + wanted.name() + " has a signature that differs from the provider's definition");
+            return;
+        }
+        this.functions.set(source, found);
+    }
+
+    // The provider's ids are the merged ids for its own types (they were copied unchanged).
+    private Bool sameSignature(SublangFunction wanted, SublangFunction offered) {
+        if (wanted.paramCount() != offered.paramCount() || this.types.get(wanted.returnType()) != offered.returnType()) { return false; }
+        Int index = 0;
+        while (index < wanted.paramCount()) {
+            if (this.types.get(wanted.paramAt(index).typeId()) != offered.paramAt(index).typeId() || wanted.paramAt(index).passing() != offered.paramAt(index).passing()) { return false; }
+            index = index + 1;
+        }
+        return true;
+    }
+
+    private Void copyBodies() {
+        Int offset = SublangModuleLinker.largestOperationId(this.merged);
+        this.merged.advanceOperationTotal(offset + SublangModuleLinker.largestOperationId(this.consumer));
+        Int index = 1;
+        while (index <= this.consumer.functionCount()) {
+            if (this.consumer.functionAt(index).definition() == "body") {
+                SublangFunctionLink.copy(this.merged, this.consumer.functionAt(index), this.functions.get(index), offset, this.types, this.fields, this.functions, this.failures, this.groups, this.effects, this.spans, this.profiles);
+            }
+            index = index + 1;
+        }
+    }
+
+    // --- dispatch and entry ---------------------------------------------------------------
+
+    private Void mapDispatch() {
+        Int index = 0;
+        while (index < this.consumer.dispatch().classCount()) {
+            Int type = this.types.get(this.consumer.dispatch().classTypeAt(index));
+            Int tag = this.consumer.dispatch().classTagAt(index);
+            Int known = this.merged.dispatch().tagOf(type);
+            if (known < 0) { this.merged.dispatch().addClass(type, tag); }
+            if (known >= 0 && known != tag) { this.fail("class " + this.merged.types().typeNameOf(type) + " is registered with different tags in the two modules"); }
+            index = index + 1;
+        }
+        Int group = 1;
+        while (group <= this.consumer.dispatch().groupCount()) {
+            Int created = this.merged.dispatch().addGroup(this.consumer.dispatch().groupName(group), this.types.get(this.consumer.dispatch().groupRoot(group)), this.fields.get(this.consumer.dispatch().groupTagField(group)), this.functions.get(this.consumer.dispatch().groupPrototype(group)));
+            this.groups.set(group, created);
+            Int entry = 0;
+            while (entry < this.consumer.dispatch().entryCount(group)) {
+                this.merged.dispatch().addEntry(created, this.consumer.dispatch().entryTag(group, entry), this.functions.get(this.consumer.dispatch().entryFunction(group, entry)));
+                entry = entry + 1;
+            }
+            group = group + 1;
+        }
+    }
+
+    private Void mapEntry() {
+        if (this.consumer.entryFunction() == 0) { return; }
+        if (this.merged.entryFunction() != 0) { this.fail("both modules define an entry function"); return; }
+        this.merged.setEntry(this.functions.get(this.consumer.entryFunction()));
+    }
+
+    // A module read from Wire does not track its id counter, so the largest id in use is scanned.
+    private static Int largestOperationId(SublangModule module) {
+        Int largest = module.operationTotal();
+        Int function = 1;
+        while (function <= module.functionCount()) {
+            Int block = 1;
+            while (block <= module.functionAt(function).blockCount()) {
+                Int index = 0;
+                while (index < module.functionAt(function).blockAt(block).operationCount()) {
+                    if (module.functionAt(function).blockAt(block).operationAt(index).id() > largest) { largest = module.functionAt(function).blockAt(block).operationAt(index).id(); }
+                    index = index + 1;
+                }
+                block = block + 1;
+            }
+            function = function + 1;
+        }
+        return largest;
+    }
+}

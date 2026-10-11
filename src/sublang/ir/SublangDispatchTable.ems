@@ -1,0 +1,106 @@
+namespace sublang::ir;
+
+// Closed-world dispatch contract of one module revision. A hierarchy is a class tree through the
+// class descriptor's target. A tag field of the root class (an Int) identifies the concrete class
+// of every object; `classes` registers the tag each concrete class stores, and a group names the
+// functions that implement one method for every tag. A call through a group can therefore only
+// reach the listed functions, which is what lets the compiler join their effects and devirtualize.
+public class SublangDispatchTable {
+    private Bool frozenFlag;
+    private Int refusalCounter;
+    private List<Int> classTypes;
+    private List<Int> classTags;
+    private List<String> groupNames;
+    private List<Int> groupRoots;
+    private List<Int> groupTagFields;
+    private List<Int> groupPrototypes;
+    private List<Int> entryGroups;
+    private List<Int> entryTags;
+    private List<Int> entryFunctions;
+
+    public SublangDispatchTable() {
+        this.frozenFlag = false;
+        this.refusalCounter = 0;
+        this.classTypes = List();
+        this.classTags = List();
+        this.groupNames = List();
+        this.groupRoots = List();
+        this.groupTagFields = List();
+        this.groupPrototypes = List();
+        this.entryGroups = List();
+        this.entryTags = List();
+        this.entryFunctions = List();
+    }
+
+    public Void freeze() { this.frozenFlag = true; }
+    public Int refusalCount() { return this.refusalCounter; }
+    public Bool isEmpty() { return this.classTypes.length() == 0 && this.groupNames.length() == 0; }
+
+    public Int addClass(Int type, Int tag) {
+        if (this.frozenFlag) { this.refusalCounter = this.refusalCounter + 1; return 0; }
+        this.classTypes.add(type);
+        this.classTags.add(tag);
+        return this.classTypes.length();
+    }
+
+    public Int classCount() { return this.classTypes.length(); }
+    public Int classTypeAt(Int index) { return this.classTypes.get(index); }
+    public Int classTagAt(Int index) { return this.classTags.get(index); }
+
+    // Tag value registered for a class type, or -1 when the class is not registered.
+    public Int tagOf(Int type) {
+        Int index = this.classTypes.indexOf(type);
+        if (index < 0) { return -1; }
+        return this.classTags.get(index);
+    }
+
+    public Int addGroup(String name, Int root, Int tagField, Int prototype) {
+        if (this.frozenFlag) { this.refusalCounter = this.refusalCounter + 1; return 0; }
+        this.groupNames.add(name + "");
+        this.groupRoots.add(root);
+        this.groupTagFields.add(tagField);
+        this.groupPrototypes.add(prototype);
+        return this.groupNames.length();
+    }
+
+    public Int groupCount() { return this.groupNames.length(); }
+    public Bool hasGroup(Int group) { return group >= 1 && group <= this.groupNames.length(); }
+    public String groupName(Int group) { return this.groupNames.get(group - 1); }
+    public Int groupRoot(Int group) { return this.groupRoots.get(group - 1); }
+    public Int groupTagField(Int group) { return this.groupTagFields.get(group - 1); }
+    public Int groupPrototype(Int group) { return this.groupPrototypes.get(group - 1); }
+
+    public Void addEntry(Int group, Int tag, Int function) {
+        if (this.frozenFlag) { this.refusalCounter = this.refusalCounter + 1; return; }
+        this.entryGroups.add(group);
+        this.entryTags.add(tag);
+        this.entryFunctions.add(function);
+    }
+
+    public Int entryCount(Int group) {
+        Int total = 0;
+        Int index = 0;
+        while (index < this.entryGroups.length()) {
+            if (this.entryGroups.get(index) == group) { total = total + 1; }
+            index = index + 1;
+        }
+        return total;
+    }
+
+    // The n-th entry (0-based) of a group, in insertion order.
+    private Int position(Int group, Int nth) {
+        Int seen = 0;
+        Int index = 0;
+        while (index < this.entryGroups.length()) {
+            if (this.entryGroups.get(index) == group) {
+                if (seen == nth) { return index; }
+                seen = seen + 1;
+            }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    public Int entryTag(Int group, Int nth) { return this.entryTags.get(this.position(group, nth)); }
+    public Int entryFunction(Int group, Int nth) { return this.entryFunctions.get(this.position(group, nth)); }
+}

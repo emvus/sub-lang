@@ -1,0 +1,125 @@
+namespace sublang::harness::pass;
+
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+
+// Closed-world object fixtures: Shape (tag, w), Rect (+ h) and Holder (+ an owned child Shape).
+// Expected: kind 0 returns 19 (2 + 12 + 5) and releases the Holder subtree through its base type;
+// kind 1 has an implementation whose passing mode differs (rejected); kind 2 uses a group with a
+// single implementation (devirtualized, returns 2); kind 3 downcasts a Shape to Rect (aborts).
+public class SublangObjectFixtures {
+    private static List<Int> one(Int value) {
+        List<Int> values = List();
+        values.add(value);
+        return values;
+    }
+
+    private static List<String> readMode() {
+        List<String> modes = List();
+        modes.add("borrow_read");
+        return modes;
+    }
+
+    private static Int implementation(SublangBuilder builder, String name, Int shape, Int field, Int span) {
+        Int function = builder.beginFunction(name, builder.intType(), 0, span);
+        Int self = builder.addParam("self", builder.refType(shape), "borrow_read", false);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.ops().fieldRead(self, field, span), span);
+        return function;
+    }
+
+    public static SublangModule build(Int kind) {
+        SublangBuilder builder = SublangBuilder("objects");
+        Int span = builder.syntheticSpan("oo:fixture");
+        Int shape = builder.classType("Shape", span);
+        Int tag = builder.classField(shape, "tag", builder.intType(), true, span);
+        Int width = builder.classField(shape, "w", builder.intType(), true, span);
+        Int rect = builder.classTypeExtending("Rect", shape, span);
+        builder.classField(rect, "tag", builder.intType(), true, span);
+        builder.classField(rect, "w", builder.intType(), true, span);
+        Int height = builder.classField(rect, "h", builder.intType(), true, span);
+        Int holder = builder.classTypeExtending("Holder", shape, span);
+        builder.classField(holder, "tag", builder.intType(), true, span);
+        builder.classField(holder, "w", builder.intType(), true, span);
+        Int child = builder.classField(holder, "child", builder.refType(shape), true, span);
+        builder.registerClass(shape, 0);
+        Int base = SublangObjectFixtures.implementation(builder, "areaShape", shape, width, span);
+        Int group = builder.dispatchGroup("area", shape, tag, base);
+        builder.dispatchEntry(group, 0, base);
+        if (kind != 2) { SublangObjectFixtures.derived(builder, kind, group, shape, rect, holder, width, height, span); }
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+        if (kind == 2) { return SublangObjectFixtures.single(builder, shape, tag, width, group, span); }
+        if (kind == 3) { return SublangObjectFixtures.mismatch(builder, shape, tag, width, rect, span); }
+        return SublangObjectFixtures.run(builder, shape, rect, holder, tag, width, height, child, group, span);
+    }
+
+    // Rect and Holder implementations; kind 1 registers a wrongly typed implementation for tag 1.
+    private static Void derived(SublangBuilder builder, Int kind, Int group, Int shape, Int rect, Int holder, Int width, Int height, Int span) {
+        builder.registerClass(rect, 1);
+        builder.registerClass(holder, 2);
+        Int areaRect = builder.beginFunction("areaRect", builder.intType(), 0, span);
+        Int self = builder.addParam("self", builder.refType(shape), "borrow_read", false);
+        builder.beginBlock();
+        Int view = builder.ops().downcast(self, rect, span);
+        Int area = builder.ops().intBinary("int.mul", builder.ops().fieldRead(view, width, span), builder.ops().fieldRead(view, height, span), "wrap", 0, span);
+        builder.ops().returnValue(area, span);
+        Int areaHolder = SublangObjectFixtures.implementation(builder, "areaHolder", shape, width, span);
+        Int tagOne = areaRect;
+        if (kind == 1) {
+            tagOne = builder.beginFunction("areaWrong", builder.intType(), 0, span);
+            Int other = builder.addParam("self", builder.refType(shape), "borrow_write", false);
+            builder.beginBlock();
+            builder.ops().returnValue(builder.ops().fieldRead(other, width, span), span);
+        }
+        builder.dispatchEntry(group, 1, tagOne);
+        builder.dispatchEntry(group, 2, areaHolder);
+    }
+
+    private static Int objectOf(SublangBuilder builder, Int type, Int scope, Int tagField, Int tag, Int widthField, Int width, Int span) {
+        Int object = builder.ops().classNew(type, scope, span);
+        builder.ops().fieldInit(object, tagField, builder.ops().constInt(tag, span), span);
+        builder.ops().fieldInit(object, widthField, builder.ops().constInt(width, span), span);
+        return object;
+    }
+
+    private static SublangModule run(SublangBuilder builder, Int shape, Int rect, Int holder, Int tag, Int width, Int height, Int child, Int group, Int span) {
+        Int scope = builder.ops().scopeBegin(span);
+        Int plain = SublangObjectFixtures.objectOf(builder, shape, scope, tag, 0, width, 2, span);
+        Int box = SublangObjectFixtures.objectOf(builder, rect, scope, tag, 1, width, 3, span);
+        builder.ops().fieldInit(box, height, builder.ops().constInt(4, span), span);
+        Int leaf = SublangObjectFixtures.objectOf(builder, rect, scope, tag, 1, width, 7, span);
+        builder.ops().fieldInit(leaf, height, builder.ops().constInt(1, span), span);
+        Int owner = SublangObjectFixtures.objectOf(builder, holder, scope, tag, 2, width, 5, span);
+        builder.ops().fieldInitOwned(owner, child, builder.ops().upcastOwned(leaf, shape, scope, span), span);
+        Int first = builder.ops().callVirtual(group, SublangObjectFixtures.one(plain), SublangObjectFixtures.readMode(), builder.intType(), span);
+        Int second = builder.ops().callVirtual(group, SublangObjectFixtures.one(builder.ops().upcastView(box, shape, span)), SublangObjectFixtures.readMode(), builder.intType(), span);
+        Int third = builder.ops().callVirtual(group, SublangObjectFixtures.one(builder.ops().upcastView(owner, shape, span)), SublangObjectFixtures.readMode(), builder.intType(), span);
+        Int sum = builder.ops().intBinary("int.add", builder.ops().intBinary("int.add", first, second, "wrap", 0, span), third, "wrap", 0, span);
+        Int inner = builder.ops().scopeBegin(span);
+        builder.ops().upcastOwned(owner, shape, inner, span);
+        builder.ops().scopeEnd(inner, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(sum, span);
+        return builder.module();
+    }
+
+    private static SublangModule single(SublangBuilder builder, Int shape, Int tag, Int width, Int group, Int span) {
+        Int scope = builder.ops().scopeBegin(span);
+        Int plain = SublangObjectFixtures.objectOf(builder, shape, scope, tag, 0, width, 2, span);
+        Int answer = builder.ops().callVirtual(group, SublangObjectFixtures.one(plain), SublangObjectFixtures.readMode(), builder.intType(), span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(answer, span);
+        return builder.module();
+    }
+
+    private static SublangModule mismatch(SublangBuilder builder, Int shape, Int tag, Int width, Int rect, Int span) {
+        Int scope = builder.ops().scopeBegin(span);
+        Int plain = SublangObjectFixtures.objectOf(builder, shape, scope, tag, 0, width, 2, span);
+        builder.ops().downcast(plain, rect, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(builder.ops().constInt(1, span), span);
+        return builder.module();
+    }
+}

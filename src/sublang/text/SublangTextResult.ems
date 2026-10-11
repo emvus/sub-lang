@@ -1,0 +1,142 @@
+namespace sublang::text;
+
+use sublang::ir::SublangModule;
+
+// Outcome of SublangTextParser.parse: either a verified, frozen module, or the first failure as one
+// line of text. While a parse runs the same object carries the parser state: the module being built,
+// the feature records seen, the rank of the last record, the current effect summary, function and
+// block, and the operation ids seen so far (bucketed, so duplicate checks stay cheap).
+public class SublangTextResult {
+    private String failureText;
+    private SublangModule moduleValue;
+    private Bool moduleSeen;
+    private List<String> featureNames;
+    private Int lastRank;
+    private Bool endSeen;
+    private Int lastLine;
+    private Int currentEffect;
+    private Int currentFunction;
+    private Int currentBlock;
+    private List<List<Int>> operationBuckets;
+
+    public SublangTextResult() {
+        this.failureText = "";
+        this.moduleValue = SublangModule("");
+        this.moduleSeen = false;
+        this.featureNames = List();
+        this.lastRank = -1;
+        this.endSeen = false;
+        this.lastLine = 0;
+        this.currentEffect = 0;
+        this.currentFunction = 0;
+        this.currentBlock = 0;
+        this.operationBuckets = List();
+        Int bucket = 0;
+        while (bucket < 256) {
+            this.operationBuckets.add(SublangTextResult.emptyIds());
+            bucket = bucket + 1;
+        }
+    }
+
+    private static List<Int> emptyIds() {
+        return List();
+    }
+
+    public Bool valid() {
+        return this.failureText == "";
+    }
+
+    public String error() {
+        return this.failureText;
+    }
+
+    public Void fail(String text) {
+        if (this.failureText == "") { this.failureText = text + ""; }
+    }
+
+    public SublangModule module() {
+        return this.moduleValue;
+    }
+
+    public Bool moduleSeen() {
+        return this.moduleSeen;
+    }
+
+    public Void setModule(SublangModule created) {
+        this.moduleValue = created;
+        this.moduleSeen = true;
+    }
+
+    public Void addFeature(String name) {
+        this.featureNames.add(name + "");
+    }
+
+    public Int featureCount() {
+        return this.featureNames.length();
+    }
+
+    public String featureAt(Int index) {
+        return this.featureNames.get(index);
+    }
+
+    public Int rank() {
+        return this.lastRank;
+    }
+
+    public Void setRank(Int rank) {
+        this.lastRank = rank;
+    }
+
+    public Bool endSeen() {
+        return this.endSeen;
+    }
+
+    public Void markEnd() {
+        this.endSeen = true;
+    }
+
+    public Int line() {
+        return this.lastLine;
+    }
+
+    public Void setLine(Int line) {
+        this.lastLine = line;
+    }
+
+    public Int currentEffect() {
+        return this.currentEffect;
+    }
+
+    public Void setCurrentEffect(Int effect) {
+        this.currentEffect = effect;
+    }
+
+    public Int currentFunction() {
+        return this.currentFunction;
+    }
+
+    public Void setCurrentFunction(Int function) {
+        this.currentFunction = function;
+    }
+
+    public Int currentBlock() {
+        return this.currentBlock;
+    }
+
+    public Void setCurrentBlock(Int block) {
+        this.currentBlock = block;
+    }
+
+    // Records an operation id; false when the same id was already seen in this module.
+    public Bool addOperationId(Int id) {
+        Int bucket = ((id % 256) + 256) % 256;
+        List<Int> ids = this.operationBuckets.get(bucket);
+        Int index = 0;
+        while (index < ids.length()) {
+            if (ids.get(index) == id) { return false; }
+            index = index + 1;
+        }
+        ids.add(id);
+        return true;
+    }
+}

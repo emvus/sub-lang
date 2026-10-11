@@ -1,0 +1,75 @@
+namespace sublang::pass;
+
+use sublang::ir::SublangModule;
+use sublang::snapshot::SublangEntityMap;
+use sublang::snapshot::SublangSnapshotKey;
+
+// Outcome of one pass run. A rejected or unchanged run returns the input snapshot untouched, so
+// a caller can always continue with module(). Structure and semantics verdicts are those of the
+// produced snapshot. Memory validation is explicitly scoped to the manager's target/provider.
+public class SublangPassResult {
+    private SublangModule moduleValue;
+    private SublangSnapshotKey keyValue;
+    private SublangSnapshotKey previousValue;
+    private Bool changedFlag;
+    private Bool rejectedFlag;
+    private Int rewriteTotal;
+    private Int removalTotal;
+    private List<String> messages;
+    private List<String> preservedNames;
+    private SublangEntityMap mapValue;
+    private String structureText;
+    private String semanticsText;
+    private String memoryText;
+
+    public SublangPassResult(SublangModule module, SublangSnapshotKey key, SublangSnapshotKey previous, SublangEntityMap map) {
+        this.moduleValue = module;
+        this.keyValue = key;
+        this.previousValue = previous;
+        this.mapValue = map;
+        this.changedFlag = false;
+        this.rejectedFlag = false;
+        this.rewriteTotal = 0;
+        this.removalTotal = 0;
+        this.messages = List();
+        this.preservedNames = List();
+        this.structureText = "not_checked";
+        this.semanticsText = "not_checked";
+        this.memoryText = "not_checked";
+    }
+
+    public SublangModule module() { return this.moduleValue; }
+    public SublangSnapshotKey key() { return this.keyValue; }
+    public SublangSnapshotKey previous() { return this.previousValue; }
+    public SublangEntityMap entityMap() { return this.mapValue; }
+    public Bool changed() { return this.changedFlag; }
+    public Bool rejected() { return this.rejectedFlag; }
+    public Int rewrites() { return this.rewriteTotal; }
+    public Int removals() { return this.removalTotal; }
+    public Int messageCount() { return this.messages.length(); }
+    public String messageAt(Int index) { return this.messages.get(index); }
+    public Bool preserved(String analysis) { return this.preservedNames.contains(analysis); }
+    public String structureStatus() { return this.structureText; }
+    public String semanticsStatus() { return this.semanticsText; }
+    public String memoryStatus() { return this.memoryText; }
+
+    public Void markVerified(String structure, String semantics, String memory) {
+        this.structureText = structure + "";
+        this.semanticsText = semantics + "";
+        this.memoryText = memory + "";
+    }
+
+    public Void markChanged(Int rewrites, Int removals) {
+        this.changedFlag = true;
+        this.rewriteTotal = rewrites;
+        this.removalTotal = removals;
+    }
+
+    public Void reject(String message) {
+        this.rejectedFlag = true;
+        this.messages.add(message + "");
+    }
+
+    public Void note(String message) { this.messages.add(message + ""); }
+    public Void markPreserved(String analysis) { this.preservedNames.add(analysis + ""); }
+}

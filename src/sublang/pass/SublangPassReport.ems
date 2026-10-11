@@ -1,0 +1,25 @@
+namespace sublang::pass;
+
+use sublang::ir::SublangModule;
+use sublang::pass::SublangPassResult;
+
+// Plan text for the Optimind pipeline: which passes ran, how the snapshot lineage moved and how
+// many decisions each function received (replaced plus erased operations).
+public class SublangPassReport {
+    public static String disabled() {
+        return "optimind: disabled; no transformation decisions\n";
+    }
+
+    public static String render(SublangModule target, SublangPassResult fold, SublangPassResult sweep) {
+        String text = "optimind: enabled; decisions are safe constant folds and removal of unused effect-free computations\n";
+        text = text + "optimind: snapshots " + fold.previous().text() + " -> " + sweep.key().text() + "; fold rewrote " + fold.rewrites().toString() + "; dce removed " + sweep.removals().toString() + "\n";
+        text = text + "optimind: validation structure=" + sweep.structureStatus() + " semantics=" + sweep.semanticsStatus() + " memory=" + sweep.memoryStatus() + " (native64-host-libc)\n";
+        Int id = 1;
+        while (id <= target.functionCount()) {
+            Int decisions = fold.entityMap().countFor(id) + sweep.entityMap().countFor(id);
+            text = text + "optimind: fn" + id.toString() + " " + target.functionAt(id).name() + ": " + decisions.toString() + " decisions\n";
+            id = id + 1;
+        }
+        return text;
+    }
+}

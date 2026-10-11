@@ -65,6 +65,16 @@ public class SublangTypeTable {
         return this.addType("String", "String", 0, false, 0, 0);
     }
 
+    // Interned unsigned 8-bit element type of byte lists (dynamic strings).
+    public Int byteType() {
+        Int index = 1;
+        while (index <= this.typeCount()) {
+            if (this.isKind(index, "Byte")) { return index; }
+            index = index + 1;
+        }
+        return this.addType("Byte", "Byte", 8, false, 0, 0);
+    }
+
     public Int bondTypeOrZero(Int target) {
         Int index = 1;
         while (index <= this.typeCount()) {

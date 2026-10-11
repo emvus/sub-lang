@@ -1,0 +1,73 @@
+namespace sublang::low;
+
+use sublang::low::SublangLowBlock;
+use sublang::low::SublangLowOp;
+
+// Function of Low IR. Values are SSA and typed by their Low type name; parameters are the first
+// values. Block 1 is the entry block. origin() names the High function the body was lowered from.
+public class SublangLowFunction {
+    private Int idValue;
+    private String nameText;
+    private String returnTypeText;
+    private Int originFunction;
+    private String attributeText;
+    private List<String> valueTypes;
+    private List<String> valueHints;
+    private List<Int> paramValues;
+    private List<SublangLowBlock> blockList;
+
+    public SublangLowFunction(Int id, String name, String returnType, Int origin) {
+        this.idValue = id;
+        this.nameText = name + "";
+        this.returnTypeText = returnType + "";
+        this.originFunction = origin;
+        this.attributeText = "";
+        this.valueTypes = List();
+        this.valueHints = List();
+        this.paramValues = List();
+        this.blockList = List();
+    }
+
+    public Int id() { return this.idValue; }
+    public String name() { return this.nameText; }
+    public String returnType() { return this.returnTypeText; }
+    public Int origin() { return this.originFunction; }
+    public String attributes() { return this.attributeText; }
+    public Void setAttributes(String text) { this.attributeText = text + ""; }
+    public Int valueCount() { return this.valueTypes.length(); }
+    public Bool hasValue(Int value) { return value >= 1 && value <= this.valueTypes.length(); }
+    public String valueType(Int value) { return this.valueTypes.get(value - 1); }
+    public String valueHint(Int value) { return this.valueHints.get(value - 1); }
+    public Int paramCount() { return this.paramValues.length(); }
+    public Int paramAt(Int index) { return this.paramValues.get(index); }
+    public Int blockCount() { return this.blockList.length(); }
+    public Bool hasBlock(Int id) { return id >= 1 && id <= this.blockList.length(); }
+    public SublangLowBlock blockAt(Int id) { return this.blockList.get(id - 1); }
+
+    public Int newValue(String type, String hint) {
+        this.valueTypes.add(type + "");
+        this.valueHints.add(hint + "");
+        return this.valueTypes.length();
+    }
+
+    public Int addParam(String type, String hint) {
+        Int value = this.newValue(type, hint);
+        this.paramValues.add(value);
+        return value;
+    }
+
+    public Int addBlock() {
+        this.blockList.add(SublangLowBlock(this.blockList.length() + 1));
+        return this.blockList.length();
+    }
+
+    public Int addBlockParam(Int block, String type, String hint) {
+        Int value = this.newValue(type, hint);
+        this.blockList.get(block - 1).addParam(value);
+        return value;
+    }
+
+    public Void emit(Int block, SublangLowOp op) {
+        this.blockList.get(block - 1).add(op);
+    }
+}

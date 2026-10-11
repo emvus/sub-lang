@@ -1,8 +1,14 @@
 # Sublang first-release support contract
 
+The optional Linux LLVM 23.1.3 full distribution and its process driver are documented in
+[Bundled LLVM](Sublang_Bundled_LLVM.md). Historical thin-package/toolchain observations below
+describe the core binary and development image; they do not describe the full bundle's default
+tool resolution. The full distribution remains a development artifact, with the release limits
+listed in that document.
+
 Updated **October 11, 2026**. This contract defines the first Sublang release: the IR and input forms it accepts, the runtime behavior of accepted programs, the versions it is built against, the resource budgets it enforces, and what must be installed to use it. It describes the bounded native64 subset in [Native Slice](Sublang_Native_Slice.md) and the transport in [Wire and CLI](Sublang_Wire.md). It is not a permanent public ABI and promises no delivery date.
 
-Source references point to the repository at commit `f9b9236`. Anything that cannot be checked in the repository or in a recorded artifact is marked `UNVERIFIED:`.
+Source references point to the working tree as it was when this revision was written (HEAD `0eba7ba`, with uncommitted changes). Anything that cannot be checked in the repository or in a recorded artifact is marked `UNVERIFIED:`.
 
 Related: [Roadmap section 1](Roadmap.md), [IR developer guide](Sublang_IR_Guide.md), [HyperAlloc IR](HyperAlloc_IR.md), [IR architecture contracts](Sublang_IR_Contracts.md).
 
@@ -10,11 +16,11 @@ Related: [Roadmap section 1](Roadmap.md), [IR developer guide](Sublang_IR_Guide.
 
 | Item | First-release contract | Source |
 | --- | --- | --- |
-| Compiler product | `build/sublang`, built by Emerald. `sublang emit-llvm INPUT OUTPUT.ll auto\|on\|off on\|off` writes LLVM IR text and `OUTPUT.ll.plan`. | `src/SublangMain.ems`, `src/sublang/cli/SublangCommand.ems` |
-| Native executables | Produced by `scripts/sublang-build.sh`: LLVM verification and optimization, linking and optional execution, all inside Docker. | `scripts/sublang-build.sh`, `scripts/sublang-build-worker.sh` |
+| Compiler product | `build/sublang`, built by Emerald. `sublang emit-llvm INPUT OUTPUT.ll auto\|on\|off on\|off` writes LLVM IR text and `OUTPUT.ll.plan`. Also `link`, `dump`, `dump-low`, `text-dump`, `text-build`, `capabilities` and `--version` (section 3.1; [Wire and CLI](Sublang_Wire.md)). | `src/SublangMain.ems`, `src/sublang/cli/SublangCommand.ems` |
+| Native executables | Produced by `scripts/sublang-build.sh`: LLVM verification and optimization, linking and optional execution, all inside Docker. Output kinds (`--emit`), LTO and PGO are launcher options ([Wire and CLI](Sublang_Wire.md), Build launcher). | `scripts/sublang-build.sh`, `scripts/sublang-build-worker.sh` |
 | Target | `native64-host-libc`, `provider=none`. Allocation, abort and output bind to the host libc. | `SublangCommand.ems` (`capabilities`), `src/sublang/backend/llvm/SublangLlvmRuntime.ems` |
-| Semantic subset | Scalars, value records, scoped classes with owned references, owned and borrowed calls, lists, static strings, Flow regions and shared Bond graphs. | `docs/Sublang_Native_Slice.md`, `docs/HyperAlloc_IR.md` |
-| Excluded | Dynamic AOT, closures, inheritance and virtual dispatch, exceptions and unwinding, weak references, threads, finalizers, dynamic strings, nullable references, external contracts, canonical Low IR, a versioned pass manager. | `docs/Roadmap.md` sections 2, 6 and 10; `SublangBackendGate.ems` (`contract` definitions rejected as B004); `SublangTypeChecks.ems` (nullable references, U001); `SublangSemanticChecks.ems` (U004, U005) |
+| Semantic subset | Scalars, value records, scoped classes with owned references, owned and borrowed calls, lists, static strings, Flow regions and shared Bond graphs. Opt-in extensions, declared in the header when used: byte text (`ext.bytes.v1`), exact numeric conversions (`ext.numeric.v1`), `Int`-coded exceptions (`ext.eh.v1`), and single-inheritance closed-world objects (`ext.oo.v1`). | `docs/Sublang_Native_Slice.md`, `docs/HyperAlloc_IR.md`, `docs/Sublang_Extensions.md` |
+| Excluded | Dynamic AOT (in progress, see `docs/Sublang_Dynamic_Profile.md`), closures, interfaces, object identity or reflection, typed exceptions and `finally`, weak references, threads, finalizers, a dynamic `String` type, nullable references, external contracts, serialized (public) Low IR, a complete versioned pass manager, C ownership import, targets other than `native64-host-libc`. | `docs/Roadmap.md` sections 2, 6 and 10; `SublangBackendGate.ems` (`contract` definitions rejected as B004); `SublangTypeChecks.ems` (nullable references, U001); `SublangSemanticChecks.ems` (U004, U005) |
 
 ## 2. Accepted IR (release subset)
 
@@ -26,7 +32,7 @@ Related: [Roadmap section 1](Roadmap.md), [IR developer guide](Sublang_IR_Guide.
 | `*.ems` builder defining `SublangProgram.build()` | Emerald compiler inside the sandbox, then `SublangBuild.emit` | Emerald toolchain mounted read-only | `src/sublang/backend/SublangBuild.ems`, worker builder branch |
 | `*.c`, one translation unit | Clang, then LLVM verifier and optimizer, then native. No Sublang IR and no Flow or Optimind. | Clang in the image; `--flow=on` is rejected (C001) | `docs/Sublang_C_Support.md`, worker C branch |
 
-Any other extension is rejected by the launcher. `.sublang` and `.sublang-ir` files have no parser (section 6).
+Any other extension is rejected by the launcher. `sublang text-build` also reads canonical text files (`.sublang-text`, [Text IR](Sublang_Text_IR.md)); the launcher does not accept them. `.sublang` and `.sublang-ir` files have no parser (section 6).
 
 ### 2.2 Wire transport
 
@@ -43,10 +49,16 @@ Encoded example of the first header tokens:
 12:SUBLANG-WIRE,1:2,1:1,4:High,1:1,1:1,16:core.native64.v2,
 ```
 
+A module that uses `list.set` (which needs `ext.bytes.v1`) declares two required features, so the count is 2:
+
+```text
+12:SUBLANG-WIRE,1:2,1:1,4:High,1:1,1:2,16:core.native64.v2,12:ext.bytes.v1,
+```
+
 Rules enforced by the reader (`src/sublang/wire/SublangWire.ems`, `SublangWireStream.ems`):
 
 - Transport must be 1 or 2. Schema must be 1, stage `High`, revision 1.
-- Exactly one required feature is accepted, and it must be the core token: `core.native64.v1` for transport 1, `core.native64.v2` for transport 2. Unknown or duplicate features are rejected.
+- The first required feature is the core token: `core.native64.v1` for transport 1, `core.native64.v2` for transport 2. Transport 1 accepts no other feature. Under transport 2 the header may also declare the extension tokens of section 2.9. Unknown or duplicate tokens are rejected. A module that uses an extension without declaring its token is rejected (`module uses ext.X without declaring the feature`).
 - Transport 1 rejects `String`, `List` and `Bond` types and `const.string` (`SublangWireTables.ems`, `SublangWireBody.ems`).
 - Trailing bytes after `end` are rejected. Malformed input reports `SUBLANG-W001` with a byte offset.
 
@@ -58,11 +70,12 @@ The transport is an experimental encoding, not a permanent compatibility commitm
 | --- | --- | --- |
 | `Void` | Function return type only. | `SublangVocabulary.ems` (`isKnownTypeKind`) |
 | `Bool`, `Int`, `Float` | Primitive values. `Int` is signed i64; `Float` is IEEE binary64. | `SublangVocabulary.ems`; `docs/Sublang_Native_Slice.md` |
+| `Byte` (`ext.bytes.v1`) | Unsigned 8-bit primitive. No constant, arithmetic or comparison. Made only by `byte.from_int`; read by `byte.to_int`. | `docs/Sublang_Extensions.md` section 2 |
 | `String` | Static, immutable, `{ pointer, i64 byteLength }`. Copying does not allocate. Byte semantics only. | `docs/HyperAlloc_IR.md` (Static values); `src/sublang/checks/data/SublangStringChecks.ems` |
 | `Record` | Value record. Field read and write are for primitive fields. The gate also accepts `String` fields (see section 9, item 6). | `SublangBackendGate.ems` (`types`); `SublangMemoryChecks.ems` (U001) |
-| `Class` | Scoped object. Fields may be `Int`, `Bool`, `Float`, `String`, an owned `Ref` child, or a `Bond` edge. A class with `Bond` fields must be built with `bond.new`. | `SublangBackendGate.ems` (`types`); `SublangMemoryChecks.ems` (T003) |
+| `Class` | Scoped object. Fields may be `Int`, `Bool`, `Float`, `String`, an owned `Ref` child, or a `Bond` edge. A class with `Bond` fields must be built with `bond.new`. A class may have one base class (single inheritance; `ext.oo.v1`, section 2.9). | `SublangBackendGate.ems` (`types`); `SublangMemoryChecks.ems` (T003) |
 | `Ref<Class>` | Reference. Results must carry ownership information (T004). Reference returns must be `owned`. | `SublangOperationChecks.ems` (`checkResult`) |
-| `List<E>` | Layout reached through `Ref<List>`. Element kinds: primitive, `String`, `Record` (contiguous value storage), and `Class` (owned on push, borrowed view on read). | `docs/HyperAlloc_IR.md` (Collections); `SublangCollectionChecks.ems` |
+| `List<E>` | Layout reached through `Ref<List>`. Element kinds: primitive, `String`, `Record` (contiguous value storage), and `Class` (owned on push, borrowed view on read). `List<Byte>` is dynamic byte text under `ext.bytes.v1`. | `docs/HyperAlloc_IR.md` (Collections); `SublangCollectionChecks.ems` |
 | `Bond<Class>` | Explicitly shared non-null handle. Bond graph fields may be value data, owned `Ref` children, or `Bond` edges. `Record`, `Class` and `List` fields are rejected. | `docs/HyperAlloc_IR.md` (Bond); `SublangBondChecks.ems` |
 
 ### 2.4 Operations
@@ -83,6 +96,10 @@ The verifier vocabulary (`src/sublang/vocabulary/SublangVocabulary.ems`, `isKnow
 | Lists | `list.new`, `list.push`, `list.length`, `list.get`, `list.borrow`, `list.clear` | `Ref<List>` receiver. `list.get` is for non-class elements. `list.borrow` is for class elements. `list.push` of a class takes an owned argument. | `SublangCollectionChecks.ems` |
 | Strings | `const.string`, `string.length`, `string.byte`, `string.equal` | String operands in `value` mode. `string.byte` takes an Int index. | `SublangStringChecks.ems` |
 | Bond | `bond.new`, `bond.retain`, `bond.borrow`, `bond.get`, `bond.link`, `bond.own`, `bond.clear`, `bond.write` | `bond.own` consumes an exclusive `Ref` child. Bond edges use `borrow_read`. Mutation needs a mutable field. | `SublangBondChecks.ems` |
+| Byte and text (`ext.bytes.v1`) | `byte.from_int`, `byte.to_int`, `list.set`, `list.replace`, `text.from_str`, `text.append`, `text.concat`, `text.slice`, `text.equal` | `text.from_str`, `text.concat` and `text.slice` return owned values with a destination scope; `text.slice` copies. `list.set` is for non-class elements; `list.replace` takes an owned class element. Out-of-range values and indexes abort. | `docs/Sublang_Extensions.md` section 2; `src/sublang/checks/data/SublangTextChecks.ems` |
+| Numeric (`ext.numeric.v1`) | `int.to_float`, `float.to_int`, `float.is_int`, `number.equal` | Exact conversions. `float.to_int` aborts unless the value is finite, integral and in `[-2^63, 2^63)`. `number.equal` compares an `Int` with a `Float` exactly. | `docs/Sublang_Extensions.md` section 3; `src/sublang/checks/operation/SublangConversionChecks.ems` |
+| Exceptions (`ext.eh.v1`) | `invoke`, `throw`, `resume` | `Int` codes only. `invoke` has a normal and an unwind successor and names a body function. A `throw` or `resume` with an active scope is rejected (B005). | `docs/Sublang_Extensions.md` section 4; `src/sublang/checks/operation/SublangExceptionChecks.ems` |
+| Objects (`ext.oo.v1`) | `class.upcast`, `class.downcast`, `call.virtual` | Closed-world dispatch groups (section 2.9). `class.downcast` takes a borrowed reference and aborts on a tag mismatch. `call.virtual` names a group and matches its prototype. | `docs/Sublang_Extensions.md` section 5; `src/sublang/checks/operation/SublangObjectChecks.ems` |
 
 ### 2.5 Ownership and passing forms
 
@@ -123,15 +140,17 @@ Two runtime fallback labels also appear in the plan: `ScopeOwned` (ownership tra
 6. Failure bindings must be `unbound` or `libc.abort` (`B004`).
 7. Function definitions must be `body`. Reference parameter modes must be supported. Lifetime analysis must pass (`B004`, `B005`).
 8. Entry, if any, must be `() -> i64` (`B006`).
+9. If Optimind is on, `optimind.fold` and then `optimind.dce` run on snapshots (`SublangCompiler.ems`). A rejected result, or one that fails the gate, is discarded, the original snapshot is compiled, and the plan says so.
+10. Effects and the memory plan are derived, and the module is lowered to Low IR and checked by the Low verifier (`docs/Sublang_Low_IR.md`). If lowering is not ready or the verifier reports a finding, the legacy LLVM emitter is used. That fallback is refused (`SUBLANG-B009`) for a module that uses an extension operation (`ext.bytes.v1`, `ext.numeric.v1`, `ext.eh.v1` or `ext.oo.v1`).
 
-The generic verifier still reports effects and lifetime as `not_checked`. Native readiness applies only to this subset (`docs/Sublang_Native_Slice.md`).
+Steps 9 and 10 end in an error only through the `SUBLANG-B009` refusal of step 10. The generic verifier still reports effect and memory status as `not_checked` (`src/sublang/analysis/SublangVerification.ems`). Native readiness applies only to this subset (`docs/Sublang_Native_Slice.md`).
 
 ### 2.8 Not accepted
 
 These inputs are rejected with a diagnostic. None is silently ignored.
 
 - Calling conventions other than `sublang` (U003).
-- Failure behaviors other than `abort`, continuing failures (F003) and unwinding models other than `none` (U005).
+- Failure behaviors other than `abort`, continuing failures (F003), and failure actions whose unwinding model is not `none` (U005). Exceptions are not failure actions; they use `ext.eh.v1` (section 2.9).
 - Failure bindings other than `unbound` or `libc.abort` (B004).
 - Nullable references (U001).
 - Floating-point modes other than `rne` (A003).
@@ -139,23 +158,40 @@ These inputs are rejected with a diagnostic. None is silently ignored.
 - External function definitions (`contract`) (B004).
 - Arbitrary bidirectional Root and Bond conversion, weak references, finalizers and threads (`docs/HyperAlloc_IR.md`).
 
+### 2.9 Extension tokens
+
+Each extension is one required-feature token of the transport 2 header. Sources: `src/sublang/wire/SublangWire.ems`, `SublangWireFeatures.ems`. Details are in [Wire extensions](Sublang_Extensions.md).
+
+| Token | Declared exactly when the module uses | Opcodes and types (section 2.3 and 2.4) |
+| --- | --- | --- |
+| `ext.bytes.v1` | a `Byte` type, or a byte-text opcode (`list.set` and `list.replace` included) | `Byte`; `byte.*`, `list.set`, `list.replace`, `text.*` |
+| `ext.numeric.v1` | a numeric-conversion opcode | `int.to_float`, `float.to_int`, `float.is_int`, `number.equal` |
+| `ext.eh.v1` | `invoke`, `throw` or `resume` | `invoke`, `throw`, `resume` |
+| `ext.oo.v1` | a dispatch table, a class with a base, or an object opcode | `class.upcast`, `class.downcast`, `call.virtual`; the dispatch section |
+
+- The writer emits the extension tokens in the order `bytes, numeric, eh, oo`. The reader accepts any order.
+- Extension tokens are accepted only under transport 2. An unknown or repeated token is rejected.
+- The dispatch section (groups, entries and classes registered for dispatch) is read and written only when `ext.oo.v1` is declared (`SublangWire.transfer`).
+- `sublang capabilities` lists only the core features; extension tokens are not listed there.
+- `UNVERIFIED:` the reader accepts a declared extension that the module does not use. No test covers this.
+
 ## 3. Runtime semantics
 
 Everything in this section is as implemented in the native backend.
 
 **Integers.** `Int` is signed i64. In `trap` mode, add, sub, mul and neg use LLVM overflow intrinsics and call `abort` on overflow (`src/sublang/backend/llvm/SublangLlvmRuntime.ems`). In `wrap` mode they wrap. A division by zero always aborts. For `MIN / -1`, `trap` aborts and `wrap` returns `MIN`. For `MIN % -1`, `trap` aborts and `zero` returns 0. A remainder by zero aborts. These paths are tested in `scripts/sublang-backend-sandbox.sh` (overflow cases, including a discarded result that still aborts; `MIN` remainder `-1` with zero mode returns 0).
 
-**Floats.** `Float` is IEEE binary64 with round-to-nearest-even. Operations use LLVM constrained intrinsics with `fpexcept.ignore`. Constants are raw bits. Comparisons name an ordered or unordered predicate. Optimind performs no Float reassociation or host arithmetic folding (`docs/Sublang_Wire.md`).
+**Floats.** `Float` is IEEE binary64 with round-to-nearest-even. Operations use LLVM constrained intrinsics with `fpexcept.ignore`. Constants are raw bits. Comparisons name an ordered or unordered predicate. Optimind performs no Float reassociation or host arithmetic folding (`docs/Sublang_Wire.md`). The `ext.numeric.v1` conversions are exact: `int.to_float` rounds to nearest even (source comment; `UNVERIFIED:` on the built binary), and `float.to_int` aborts unless the value is finite, integral and in range (section 2.9).
 
 **Bool.** Constants and `eq`/`ne` comparisons only.
 
-**Strings.** A static `String` is `{ pointer, i64 byteLength }`. `string.length` returns the byte length. `string.byte` is bounds-checked and aborts when out of range (`src/sublang/backend/llvmdata/SublangLlvmStrings.ems`). `string.equal` compares lengths and then bytes. The empty string never dereferences its pointer. UTF-8 bytes are preserved and indexing does not decode code points. There is no concatenation, builder or dynamic string allocation (`docs/HyperAlloc_IR.md`). A string literal is one Wire token, so it is limited to 65,536 bytes (section 5).
+**Strings.** A static `String` is `{ pointer, i64 byteLength }`. `string.length` returns the byte length. `string.byte` is bounds-checked and aborts when out of range (`src/sublang/backend/llvmdata/SublangLlvmStrings.ems`). `string.equal` compares lengths and then bytes. The empty string never dereferences its pointer. UTF-8 bytes are preserved and indexing does not decode code points. A static `String` is never concatenated or allocated. Dynamic text is a separate `List<Byte>` under `ext.bytes.v1` (`text.from_str`, `text.append`, `text.concat`, `text.slice` (which copies) and `text.equal`). It is byte-oriented, with no encoding interpretation (section 2.9; `docs/Sublang_Extensions.md`, section 2). A string literal is one Wire token, so it is limited to 65,536 bytes (section 5).
 
 **Lists.** A `List` owns its buffer. Length and capacity are i32. `list.length` returns an i64. The first allocation has capacity 8, then capacity doubles. Capacity is capped at 2,147,483,647 elements. Pushing at that limit aborts. A byte-size overflow or a `realloc` failure aborts without publishing a null buffer. `list.get`, `list.borrow` and the internal index check compare the index as unsigned against the length and abort when out of range (`src/sublang/backend/llvmdata/SublangLlvmListRuntime.ems`, `SublangLlvmLists.ems`). `list.clear` destroys owned elements and sets the length to 0 (`SublangLlvmLists.ems`). Views are invalidated by push, clear, mutable calls and scope cleanup.
 
 **Objects and ownership.** `scope.end` releases the owned roots of that scope (`docs/Sublang_Native_Slice.md`). Iterative destruction is used for deep Root and Bond structures (`docs/HyperAlloc_IR.md`). No destructor or finalizer order is defined. Ownership errors such as use after move, double initialization and missing cleanup are compile-time rejections, not runtime behavior (`docs/Sublang_Native_Slice.md`). Runtime aborts on empty access: `field.take` and `bond.get` of an empty field abort, and `field.borrow` of an empty field aborts (`SublangLlvmMemory.ems`, `docs/HyperAlloc_IR.md`).
 
-**Failures.** Every accepted failure action has behavior `abort`, is `noreturn`, does not continue, and has unwinding model `none`. A `fail` operation lowers to a call to libc `abort()` (`src/sublang/backend/llvm/SublangLlvmControl.ems`). Both accepted bindings (`unbound` and `libc.abort`) lower to the same abort call. Allocation returning null aborts (`sublang.allocate`). A Flow size that overflows with its 16-byte prefix aborts. An abort terminates the process. No exception cleanup is claimed (`docs/Sublang_Native_Slice.md`). In the overflow cases of `scripts/sublang-backend-sandbox.sh`, stdout is empty.
+**Failures.** Every accepted failure action has behavior `abort`, is `noreturn`, does not continue, and has unwinding model `none`. A `fail` operation lowers to a call to libc `abort()` (`src/sublang/backend/llvm/SublangLlvmControl.ems`). Both accepted bindings (`unbound` and `libc.abort`) lower to the same abort call. Allocation returning null aborts (`sublang.allocate`). A Flow size that overflows with its 16-byte prefix aborts. An abort terminates the process. Runtime aborts (overflow, division, bounds, `byte.from_int`, `text.slice`, `float.to_int` and `class.downcast` tag mismatch) cannot be caught. Exceptions are a separate mechanism (`ext.eh.v1`, section 2.9). An uncaught exception ends the process through the C++ terminate path; the `uncaught` case of `scripts/sublang-backend-sandbox.sh` asserts status 134 (SIGABRT). In the overflow cases of that script, stdout is empty.
 
 **Program output.** When the module has an entry, the generated `main` calls the entry, flushes the Pool caches, prints the `i64` result with `printf("%lld\n")`, and returns 0 (`SublangLlvmEmitter.ems`, `entry`). A module without an entry emits no `main`.
 
@@ -171,7 +207,9 @@ Everything in this section is as implemented in the native backend.
 | 1 | Invalid Wire input, backend rejection or write failure. | `SUBLANG-W001`, `SUBLANG-B0xx`, `SUBLANG-CLI003` |
 | 2 | Command-line or input error. | `SUBLANG-CLI001` (Optimind), `SUBLANG-CLI002` (input file) |
 
-Launcher exit codes come from `scripts/sublang-build.sh`: 2 for invalid arguments or unsupported extensions, and 1 for a missing exported artifact.
+Launcher exit codes come from `scripts/sublang-build.sh`: 2 for invalid arguments or unsupported extensions, and 1 for a missing exported artifact. A non-zero status of the worker is returned unchanged; for example `SUBLANG-PGO001` (a profile that does not match the program) exits 3 (`scripts/sublang-build-worker.sh`).
+
+Other CLI commands (`src/sublang/cli/SublangCommand.ems`): `dump`, `dump-low`, `text-dump` and `text-build` exit 2 for usage errors and for a missing or non-regular input (`SUBLANG-CLI002`). `dump` and `dump-low` also exit 2 for an input over 16 MiB. Malformed input exits 1. `text-dump` and `text-build` report their size limit (`SUBLANG-TX004`) with exit 1. `link` prints the usage text and exits 2 when given fewer than three files; any other failure, including a missing input, exits 1.
 
 Code families (`SublangVocabulary.dimensionOf`: `S` and `T` are structure; the rest are semantics):
 
@@ -179,16 +217,22 @@ Code families (`SublangVocabulary.dimensionOf`: `S` and `T` are structure; the r
 | --- | --- |
 | `SUBLANG-W` | Wire transport: malformed input, limits, feature or version mismatch |
 | `SUBLANG-CLI` | Command-line, input-size and output errors |
-| `SUBLANG-B` | Backend gate: frozen input, verifier, budgets, bindings, lifetime, entry, Flow mode, duplicate operation ids |
+| `SUBLANG-B` | Backend gate: frozen input, verifier, budgets, bindings, lifetime, entry, Flow mode, duplicate operation ids; B009 extension operation that cannot be lowered to Low IR |
 | `SUBLANG-S` | Structure: unknown opcode or passing mode (S001), invalid span or reference (S002), scope (S003), operand and mode arity (S005) |
 | `SUBLANG-T` | Types and ownership: type mismatch (T001), mode or type (T002), class, bond and list rules (T003), ownership (T004) |
 | `SUBLANG-A` | Arithmetic: missing mode (A001), missing failure action (A002), unsupported mode or predicate (A003) |
 | `SUBLANG-E` | Effect and alias facts: references to missing summaries or locations, or invalid evidence |
 | `SUBLANG-F` | Failure actions: abort signature other than `noreturn void()` (F002), continuing action (F003) |
-| `SUBLANG-P` | Semantic profiles and function profiles |
+| `SUBLANG-P` | Semantic profiles and function profiles; pass manager rejections P010 to P015 (`docs/Sublang_Passes_And_Effects.md`, section 4) |
 | `SUBLANG-U` | Unsupported features in v0.1: nullable references, non-primitive field access, calling conventions, failure behavior and unwinding |
+| `SUBLANG-TX` | Text IR (`text-build`, `text-dump`): syntax, record, id, consistency, limit and verification errors (`docs/Sublang_Text_IR.md`) |
+| `SUBLANG-K` | `link`: K001 import, signature and structure errors between modules; K002 linked module does not verify |
+| `SUBLANG-X` and `SUBLANG-O` | `ext.eh.v1` shape (X001); `ext.oo.v1` hierarchy, dispatch and operation rules (O001 to O004) |
+| `SUBLANG-L` | Low IR: verifier findings (L001 to L005) and binding problems (L010 to L013); L014 when `dump-low` has no Low module |
+| `SUBLANG-PGO` | Launcher profile errors: PGO001 profile does not match the program or toolchain; PGO002 `--pgo=use` without a profile |
+| `SUBLANG-C` | C path: C001 `--flow=on` is rejected, because C ownership import is not implemented |
 
-The CLI prints the `SUBLANG-W`, `SUBLANG-CLI` and `SUBLANG-B` codes that its own code path produces. A verifier or check failure reaches the CLI as `SUBLANG-B002: <code> <message> (line L, column C)` for the first finding only, where `<code>` is the verifier's own `S`, `T`, `A`, `E`, `U`, `F` or `P` code (`src/sublang/backend/SublangBackendGate.ems`; verified for an unknown opcode by `scripts/sublang-tiny-check.sh`). Later findings, the entity and blockers are not printed.
+The CLI prints the codes that its own code paths produce, for example `SUBLANG-W`, `SUBLANG-CLI`, `SUBLANG-B`, `SUBLANG-K` (link) and `SUBLANG-TX` (text). A verifier or check failure reaches the CLI as `SUBLANG-B002: <code> <message> (line L, column C)` for the first finding only, where `<code>` is the verifier's own `S`, `T`, `A`, `E`, `U`, `F` or `P` code (`src/sublang/backend/SublangBackendGate.ems`; verified for an unknown opcode by `scripts/sublang-tiny-check.sh`). Later findings, the entity and blockers are not printed.
 
 ## 4. Compatibility matrix
 
@@ -201,7 +245,11 @@ Status: **V** means verified in the repository or in a recorded artifact. **U** 
 | IR schema | 1 (`ir.schema=1`; header `IR-schema=1`) | `SublangVocabulary.ems` (`schemaVersion`); `SublangCommand.ems` | V |
 | IR stage and revision | High, revision 1 | `SublangWire.ems` (`transfer`); `capabilities`: `ir.stage=High` | V |
 | Architecture contracts | v0.4 | Title of `docs/Sublang_IR_Contracts.md`, which states that it is required architecture, not an implementation claim | V (document) |
-| Profile | `core.native64.v2` (v1 with transport 1: `core.native64.v1`) | `SublangWire.ems` (`features`); `capabilities`: `feature=core.native64.v1`, `feature=core.native64.v2` | V |
+| Profile | Core token `core.native64.v2` (transport 2) or `core.native64.v1` (transport 1). Transport 1 takes no extension token. | `SublangWire.ems` (`features`); `capabilities`: `feature=core.native64.v1`, `feature=core.native64.v2` | V |
+| Extension tokens | `ext.bytes.v1`, `ext.numeric.v1`, `ext.eh.v1`, `ext.oo.v1`; each declared exactly when used (section 2.9) | `src/sublang/wire/SublangWireFeatures.ems`; not listed by `capabilities` | V (source); the unused-declaration case is `UNVERIFIED:` (section 2.9) |
+| Dispatch section | Read and written only when `ext.oo.v1` is declared | `src/sublang/wire/SublangWire.ems` (`transfer`) | V (source) |
+| Low IR route | Function bodies for `native64-host-libc`; Low verifier before Low text is used; legacy emitter for core modules only | `src/sublang/backend/SublangCompiler.ems`; `dump-low` (backend sandbox checks the target line and determinism) | V (source) |
+| Text IR | `sublang-text 1 schema=1 stage=High revision=1` | `src/sublang/text/`; `scripts/sublang-text-sandbox.sh` (round trip and negative cases) | V (source); the sandbox result is `UNVERIFIED:` for this revision (section 9, item 16) |
 | Target and provider | `native64-host-libc`; `provider=none` | `capabilities` output | V |
 | CLI | `Sublang 0.1-dev` | `--version`; `capabilities` (`compiler=Sublang 0.1-dev`); `dist/sublang-0.1-dev/MANIFEST.txt` (`sublang-version`) | V |
 | Flow modes | `auto`, `on`, `off` (launcher default `auto`) | `SublangOptions.ems` (`isValid`); `capabilities` (`flow=auto,on,off`); `scripts/sublang-build.sh` | V |
@@ -245,8 +293,12 @@ All limits are enforced at the point cited. A violation is an error with no LLVM
 | Operations per block | 4,096 | `SublangWireBody.ems` (`operations`) |
 | Operands per operation | 4,096 | `SublangWireBody.ems` (`arguments`) |
 | Targets per operation | 2 | `SublangWireBody.ems` (`arguments`) |
+| Text input to `text-build` (and `text-dump` output) | 4 MiB (4,194,304 bytes) | `src/sublang/text/SublangTextParser.ems` (`SUBLANG-TX004`); `SublangCommand.ems` (`textBuild`) |
+| Text lines and line length | 200,000 lines; 64 KiB (65,536 bytes) per line | `src/sublang/text/SublangTextParser.ems` (`SUBLANG-TX004`) |
 
 ### 5.2 Backend gate
+
+The `B003` and `B008` rows below were checked on 2026-10-11 against `src/sublang/backend/SublangBackendBudget.ems`, and they match it. The extensions did not change these limits. The two lifetime rows were not re-checked.
 
 | Limit | Value | Source |
 | --- | --- | --- |
@@ -319,8 +371,10 @@ The roadmap sets an upper bound of 8 GB for compiler and program execution and p
 | `examples/ir/extended-ir.md`, `examples/ir/verification.txt`, `examples/ir/readme.md`, `examples/ir/v0.4/readme.md` | Documentation | Explains the examples and their status. | Documentation |
 | `sublang dump FILE` output | Rendering | Read-only rendering of a decoded Wire file. Not an input format. | Not an input |
 | `archive/` | Archived | Inactive collector-integration material. | Not supported |
+| `*.sublang-text` (canonical text) | Input to `sublang text-build` only. Produced by `sublang text-dump`. Not accepted by the launcher. | [Text IR](Sublang_Text_IR.md) | Supported (CLI) |
+| `examples/frontend/tiny/*.tiny` | Source of the independent Python frontend `tiny.py`, which writes `.sublang-wire`. Run it with `python3 -I`. | `scripts/sublang-tiny-check.sh` | Supported (second frontend) |
 
-`docs/Sublang_Wire.md` and `examples/ir/readme.md` state that `.sublang` dumps and `.sublang-ir` files are not parser inputs. The only file input for the release is `.sublang-wire`, plus the builder and C entries above.
+`docs/Sublang_Wire.md` and `examples/ir/readme.md` state that `.sublang` dumps and `.sublang-ir` files are not parser inputs. The launcher accepts `.sublang-wire`, the builder and the C entry above. The CLI additionally reads canonical text (`.sublang-text`) through `text-build`.
 
 ## 7. Distribution prerequisites
 
@@ -360,8 +414,8 @@ Emerald version: `UNVERIFIED:` the repository does not record the Emerald compil
 
 - [ ] Install Docker and the sandbox image, and build `build/sublang` (section 7.1).
 - [ ] Record `build/sublang --version` and `build/sublang capabilities` with each build. Their output is the release identity (section 4).
-- [ ] Start from `examples/wire/*.sublang-wire`. Use `build/sublang dump FILE` to read them. This command is read-only.
-- [ ] Write the Wire header exactly as in section 2.2: transport 2, schema 1, `High`, revision 1, one core feature, module name, entry id.
+- [ ] Start from `examples/wire/*.sublang-wire`. Use `build/sublang text-dump FILE` for the canonical text, or `build/sublang dump FILE` for the older rendering. Both only read the file.
+- [ ] Write the Wire header exactly as in section 2.2: transport 2, schema 1, `High`, revision 1, the core feature, each extension token your module uses (section 2.9), module name, entry id. Alternatively, write canonical text and run `build/sublang text-build INPUT.sublang-text OUTPUT.sublang-wire`.
 - [ ] Use only the accepted opcodes, types and passing modes in section 2. Reject anything else in your frontend.
 - [ ] Name a failure action on every trapping operation (`libc.abort` or `unbound`). Use `trap` or `wrap` for integer overflow explicitly.
 - [ ] Give every reference result an owner and every owned call a destination scope.
@@ -389,3 +443,6 @@ Status against the criterion: **not met yet**. No compiler version is pinned (se
 11. Discrepancy: the task's "reads 1" is narrower than the code. `--version` reports `reads 1/2`, and `capabilities` reports `wire.read=1,2`. This document states the code behavior.
 12. Discrepancy: `build/sublang` was rebuilt after packaging, and its hash differs from `dist/sublang-0.1-dev/sublang`. The package is not a release of the current build.
 13. Not reviewed: while this document was written, the working tree also gained uncommitted edits to `docs/Roadmap.md`, `docs/Sublang_Wire.md` and `readme.md`, and untracked files `docs/Sublang_Diagnostics.md`, `docs/Sublang_Dynamic_Profile.md`, `docs/Sublang_Wire_Spec.md`, `docs/diagnostic-codes.tsv`, `examples/frontend/` and `scripts/sublang-tiny-check.sh`. None of them was used as a source for this contract. They may overlap with it and should be reconciled. Items 1, 2 and 10 above were written by a later edit to this file. This agent did not run Docker or the sandbox checks.
+14. Discrepancy: `docs/Sublang_Extensions.md` (sections 1 and 5) and `docs/Sublang_Wire_Spec.md` (section 13.6) say that `ext.oo.v1` is outside the `SUBLANG-B009` guard. `src/sublang/backend/SublangCompiler.ems` (line 55) includes `usesObjects`. This section follows the source.
+15. Discrepancy: `docs/Sublang_Wire_Spec.md` (section 13.1) says the reader's required-feature count limit is 1. `SublangWireStream.count` checks the parsed count against the limit 32 (`src/sublang/wire/SublangWire.ems`, `features`). `SublangPassChecks.wireFeature` reads back a module that declares `ext.bytes.v1`. This section does not repeat the claim.
+16. `UNVERIFIED:` The sandbox runs named in this document (backend, pass, text, Tiny, output-mode and package smoke checks) were reported by the author as passing on 2026-10-11. This revision did not re-run them.

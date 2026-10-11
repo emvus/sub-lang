@@ -1,0 +1,205 @@
+namespace sublang::harness::pass;
+
+use sublang::dump::SublangDump;
+use sublang::effects::SublangEffectAnalysis;
+use sublang::effects::SublangEffectChecks;
+use sublang::effects::SublangEffectResult;
+use sublang::harness::pass::SublangPassFixtures;
+use sublang::harness::pass::SublangTextFixtures;
+use sublang::wire::SublangWire;
+use sublang::wire::SublangWireResult;
+use sublang::ir::SublangModule;
+use sublang::pass::SublangAnalysisCache;
+use sublang::pass::SublangPassManager;
+use sublang::pass::SublangPassContext;
+use sublang::pass::SublangPassResult;
+use sublang::snapshot::SublangSnapshotKey;
+use sublang::snapshot::SublangSnapshotStore;
+use sublang::snapshot::SublangEntityMap;
+use sublang::snapshot::SublangModuleCopy;
+
+// Focused checks of snapshots, pass invalidation and derived effects. Each method returns the
+// first failure as text, or "" when every assertion held.
+public class SublangPassChecks {
+    public static String forkAndLifetime() {
+        SublangSnapshotStore store = SublangSnapshotStore();
+        SublangPassManager manager = SublangPassManager(store, SublangAnalysisCache());
+        SublangModule original = SublangPassFixtures.foldable("fork", true);
+        SublangPassResult folded = manager.run("optimind.fold", original);
+        if (folded.rejected() || folded.memoryStatus() != "valid") { return "the transformed snapshot has no native lifetime verdict"; }
+        List<Int> noFunctions = List();
+        List<Int> noOperations = List();
+        SublangEntityMap staleMap = SublangEntityMap("old", "new");
+        SublangModule stale = SublangModuleCopy.copy(original, 3, noFunctions, noOperations, staleMap);
+        stale.freeze();
+        if (store.commit(stale, original)) { return "a superseded parent committed over the current head"; }
+        if (store.headRevision(folded.key().instance()) != 2) { return "a failed commit changed the head"; }
+        SublangPassResult forked = manager.fork(original);
+        if (forked.rejected() || !forked.changed() || forked.key().instance() == folded.key().instance()) { return "fork did not create an independent lineage"; }
+        if (forked.entityMap().to() != forked.key().text() || forked.previous().text() != store.keyOf(original).text()) { return "fork origin mapping is wrong"; }
+        SublangPassResult branch = manager.run("optimind.fold", forked.module());
+        if (branch.rejected() || !branch.changed() || branch.key().revision() != 3) { return "the fork cannot be transformed independently"; }
+        if (store.headRevision(folded.key().instance()) != 2) { return "fork transformation changed the original lineage"; }
+        SublangModule dangling = SublangPassFixtures.danglingReturn();
+        SublangPassResult refused = manager.run("optimind.fold", dangling);
+        if (!refused.rejected() || refused.structureStatus() != "valid" || refused.memoryStatus() != "invalid") { return "a structurally valid escaping borrow passed lifetime validation"; }
+        if (refused.messageAt(0).indexOf("borrowed reference cannot be returned as owned") < 0) { return "lifetime rejection lost its cause"; }
+        if (!store.isHead(refused.key()) || refused.changed()) { return "a rejected lifetime proof advanced its lineage"; }
+        return "";
+    }
+
+    public static String cacheContexts() {
+        SublangAnalysisCache cache = SublangAnalysisCache();
+        SublangSnapshotStore firstStore = SublangSnapshotStore();
+        SublangPassManager first = SublangPassManager(firstStore, cache);
+        SublangModule source = SublangPassFixtures.foldable("cache", false);
+        first.effects(source);
+        Int misses = cache.misses();
+        SublangSnapshotStore otherStore = SublangSnapshotStore();
+        SublangPassManager other = SublangPassManager(otherStore, cache);
+        SublangEffectResult unknown = other.effects(SublangPassFixtures.externalCall());
+        if (cache.misses() != misses + 1 || unknown.functionAt(1).area(2) != 2) { return "a shared cache leaked facts between snapshot stores"; }
+        List<String> values = List();
+        values.add("native64-host-libc"); values.add("host-libc-runtime"); values.add("low.native64.v1"); values.add("module-profiles"); values.add("flow=auto;optimind=on");
+        Int changed = 0;
+        while (changed < 5) {
+            String previous = values.get(changed) + "";
+            values.set(changed, previous + ":other");
+            SublangPassContext context = SublangPassContext(values.get(0), values.get(1), values.get(2), values.get(3), values.get(4));
+            SublangPassManager configured = SublangPassManager.forContext(firstStore, cache, context);
+            misses = cache.misses();
+            configured.effects(source);
+            if (cache.misses() != misses + 1) { return "an analysis ignored a changed context field"; }
+            configured.effects(source);
+            if (cache.misses() != misses + 1) { return "an identical context missed its cached result"; }
+            values.set(changed, previous);
+            changed = changed + 1;
+        }
+        SublangPassContext foreign = SublangPassContext("foreign", "host-libc-runtime", "low.native64.v1", "module-profiles", "");
+        SublangPassManager unsupported = SublangPassManager.forContext(firstStore, cache, foreign);
+        if (!unsupported.run("optimind.fold", source).rejected()) { return "an unsupported target received a lifetime proof"; }
+        Int retained = cache.size();
+        SublangModule draft = SublangModule("mutable-draft");
+        first.effects(draft);
+        first.callGraph(draft);
+        if (cache.size() != retained) { return "mutable draft facts entered the snapshot cache"; }
+        Int variant = 0;
+        while (variant < 70) {
+            SublangPassContext churn = SublangPassContext("native64-host-libc", "host-libc-runtime", "low.native64.v1", "module-profiles", variant.toString());
+            SublangPassManager bounded = SublangPassManager.forContext(firstStore, cache, churn);
+            bounded.effects(source);
+            bounded.callGraph(source);
+            if (cache.size() > 128) { return "analysis entries are not bounded"; }
+            variant = variant + 1;
+        }
+        return "";
+    }
+
+    public static String snapshots() {
+        SublangSnapshotStore store = SublangSnapshotStore();
+        SublangAnalysisCache cache = SublangAnalysisCache();
+        SublangPassManager manager = SublangPassManager(store, cache);
+        SublangModule first = SublangPassFixtures.foldable("same", true);
+        SublangModule twin = SublangPassFixtures.foldable("same", false);
+        if (store.admit(first).instance() == store.admit(twin).instance()) { return "equal-named modules share an instance"; }
+        manager.effects(first);
+        Int misses = cache.misses();
+        manager.effects(first);
+        if (cache.misses() != misses || cache.hits() < 1) { return "effects were not served from the cache for the same snapshot"; }
+        manager.effects(twin);
+        if (cache.misses() != misses + 1) { return "equal-named module reused another module's analysis"; }
+        String before = SublangDump.render(first);
+        SublangPassResult folded = manager.run("optimind.fold", first);
+        if (!folded.changed() || folded.rejected() || folded.rewrites() != 1) { return "fold did not rewrite exactly one operation"; }
+        if (folded.key().revision() != 2 || folded.previous().revision() != 1 || folded.module().parentRevision() != 1) { return "revision lineage is wrong"; }
+        if (folded.entityMap().replacedCount("op-replaced") != 1) { return "origin map lacks the replaced operation"; }
+        if (SublangDump.render(first) != before) { return "the old snapshot changed"; }
+        if (SublangDump.render(folded.module()).indexOf("const.int value=4000000000") < 0) { return "folded constant missing from the new snapshot"; }
+        if (folded.module().aliases().aliasFactAt(1).origin() != "declared" || !folded.module().aliases().aliasFactAt(1).proof().startsWith("stale-proof:")) { return "stale proof was carried into the new revision"; }
+        if (!manager.run("optimind.fold", first).rejected()) { return "a superseded snapshot was accepted as pass input"; }
+        SublangPassResult again = manager.run("optimind.fold", folded.module());
+        if (again.changed() || again.key().revision() != 2) { return "a no-op pass created a new snapshot"; }
+        return SublangPassChecks.eliminate(manager, cache, folded.module());
+    }
+
+    private static String eliminate(SublangPassManager manager, SublangAnalysisCache cache, SublangModule folded) {
+        SublangPassResult swept = manager.run("optimind.dce", folded);
+        if (!swept.changed() || swept.removals() != 2 || swept.key().revision() != 3) { return "dce did not remove the two dead constants"; }
+        if (SublangDump.render(swept.module()).indexOf("value=2000000000") >= 0) { return "removed constants are still in the new snapshot"; }
+        if (swept.module().functionAt(1).valueCount() != 1) { return "values were not renumbered densely"; }
+        if (swept.entityMap().erasedCount("op") != 2) { return "origin map lacks the erased operations"; }
+        if (!swept.preserved("callgraph")) { return "unchanged call graph was not preserved"; }
+        Int misses = cache.misses();
+        manager.effects(swept.module());
+        if (cache.misses() != misses + 1) { return "effects were reused across a revision change"; }
+        return "";
+    }
+
+    public static String overflowAndCalls() {
+        SublangSnapshotStore store = SublangSnapshotStore();
+        SublangPassManager manager = SublangPassManager(store, SublangAnalysisCache());
+        SublangModule discarded = SublangPassFixtures.discardedOverflow();
+        if (manager.run("optimind.fold", discarded).changed() || manager.run("optimind.dce", discarded).changed()) { return "a discarded overflowing addition was transformed"; }
+        SublangModule calls = SublangPassFixtures.deadCalls();
+        SublangPassResult swept = manager.run("optimind.dce", calls);
+        if (!swept.changed() || swept.removals() != 1) { return "only the pure unused call may be removed"; }
+        String dump = SublangDump.render(swept.module());
+        if (dump.indexOf("call.direct") < 0 || dump.indexOf("int.add") < 0) { return "the failing call disappeared"; }
+        return "";
+    }
+
+    public static String effects() {
+        SublangEffectResult derived = SublangEffectAnalysis.derive(SublangPassFixtures.effects());
+        if (derived.widened() || derived.sweeps() < 1) { return "effect analysis did not converge inside its bound"; }
+        if (!derived.functionAt(1).memoryFree()) { return "pure helper is not memory free"; }
+        if (!derived.functionAt(2).writesParam(0) || derived.functionAt(2).readsParam(0) || derived.functionAt(2).escapesParam(0)) { return "writer parameter summary is wrong"; }
+        if (derived.functionAt(2).removableWhenUnused()) { return "a memory writer is removable"; }
+        if (!derived.functionAt(3).readsParam(0) || derived.functionAt(3).writesParam(0) || !derived.functionAt(3).removableWhenUnused() || derived.functionAt(3).memoryFree()) { return "reader summary is wrong"; }
+        if (derived.functionAt(4).area(0) != 1 || derived.functionAt(4).removableWhenUnused()) { return "allocating helper was not recognised"; }
+        if (derived.functionAt(5).area(8) != 1 || derived.functionAt(5).removableWhenUnused()) { return "recursion was not classified may-diverge"; }
+        if (derived.functionAt(6).area(0) != 1 || derived.functionAt(6).area(8) != 1) { return "callee effects did not reach the caller"; }
+        return "";
+    }
+
+    public static String contradictionsAndUnknown() {
+        SublangModule lying = SublangPassFixtures.lyingDeclaration();
+        SublangEffectResult derived = SublangEffectAnalysis.derive(lying);
+        List<String> found = SublangEffectChecks.contradictions(lying, derived);
+        Bool memory = false;
+        Int index = 0;
+        while (index < found.length()) {
+            if (found.get(index).startsWith("SUBLANG-E008") && found.get(index).indexOf("memory-write=none") >= 0) { memory = true; }
+            index = index + 1;
+        }
+        if (!memory) { return "a false memory-write=none declaration was not reported"; }
+        if (derived.functionAt(1).removableWhenUnused()) { return "a declared-pure writer was trusted"; }
+        SublangEffectResult external = SublangEffectAnalysis.derive(SublangPassFixtures.externalCall());
+        if (!external.functionAt(1).external() || external.functionAt(1).area(2) != 2) { return "external target is not unknown"; }
+        if (!external.functionAt(2).writesParam(0) || !external.functionAt(2).escapesParam(0) || external.functionAt(2).removableWhenUnused()) { return "argument passed to an unknown target stayed local"; }
+        return "";
+    }
+
+    private static String swap(String text, String from, String to) {
+        Int at = text.indexOf(from);
+        if (at < 0) { return text; }
+        return text.substring(0, at) + to + text.substring(at + from.length(), text.length());
+    }
+
+    // The byte-text extension is a required header feature: declared when used, rejected when
+    // missing or unknown, and absent for modules that do not use it.
+    public static String wireFeature() {
+        SublangModule used = SublangTextFixtures.listSet();
+        used.freeze();
+        SublangWireResult written = SublangWire.write(used);
+        if (!written.valid() || written.text().indexOf("12:ext.bytes.v1,") < 0) { return "a module using list.set did not declare ext.bytes.v1"; }
+        if (!SublangWire.read(written.text()).valid()) { return "a declared extension module did not read back"; }
+        String hidden = SublangPassChecks.swap(SublangPassChecks.swap(written.text(), ",1:2,16:core.native64.v2,12:ext.bytes.v1,", ",1:1,16:core.native64.v2,"), "", "");
+        SublangWireResult undeclared = SublangWire.read(hidden);
+        if (undeclared.valid() || undeclared.error().indexOf("without declaring") < 0) { return "an undeclared extension use was accepted: " + undeclared.error(); }
+        SublangWireResult unknown = SublangWire.read(SublangPassChecks.swap(written.text(), "ext.bytes.v1", "ext.bytes.v9"));
+        if (unknown.valid() || unknown.error().indexOf("unknown or duplicate required feature") < 0) { return "an unknown extension feature was accepted"; }
+        SublangModule plain = SublangPassFixtures.foldable("plain", false);
+        if (SublangWire.write(plain).text().indexOf("ext.") >= 0) { return "a core-only module declared an extension"; }
+        return "";
+    }
+}

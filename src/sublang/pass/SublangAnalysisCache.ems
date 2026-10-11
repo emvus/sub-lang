@@ -1,0 +1,79 @@
+namespace sublang::pass;
+
+use sublang::effects::SublangCallGraph;
+use sublang::effects::SublangEffectResult;
+use sublang::snapshot::SublangSnapshotKey;
+use sublang::snapshot::SublangSnapshotStore;
+
+// Analysis results keyed by snapshot identity, analysis name/version and an options fingerprint.
+// Revision and lineage are part of the key, so equal-named modules and successor revisions never
+// reuse each other's facts. Preservation re-keys an entry explicitly; nothing is shared by default.
+public class SublangAnalysisCache {
+    private List<String> effectKeys;
+    private List<SublangEffectResult> effectResults;
+    private List<String> graphKeys;
+    private List<SublangCallGraph> graphResults;
+    private Int hitTotal;
+    private Int missTotal;
+    private List<SublangSnapshotStore> stores;
+
+    public SublangAnalysisCache() {
+        this.effectKeys = List();
+        this.effectResults = List();
+        this.graphKeys = List();
+        this.graphResults = List();
+        this.hitTotal = 0;
+        this.missTotal = 0;
+        this.stores = List();
+    }
+
+    // Store-local snapshot ids may coincide. A shared cache gives each store its own namespace.
+    public Int storeId(SublangSnapshotStore store) {
+        Int found = this.stores.indexOf(store);
+        if (found >= 0) { return found + 1; }
+        this.stores.add(store);
+        return this.stores.length();
+    }
+
+    public static String key(SublangSnapshotKey snapshot, String analysis, Int version, String options) {
+        return snapshot.text() + "|" + analysis + "/" + version.toString() + "|" + options;
+    }
+
+    public Int hits() { return this.hitTotal; }
+    public Int misses() { return this.missTotal; }
+    public Int size() { return this.effectKeys.length() + this.graphKeys.length(); }
+
+    public Bool hasEffects(String key) {
+        Bool found = this.effectKeys.contains(key);
+        if (found) { this.hitTotal = this.hitTotal + 1; }
+        if (!found) { this.missTotal = this.missTotal + 1; }
+        return found;
+    }
+
+    public SublangEffectResult effects(String key) {
+        return this.effectResults.get(this.effectKeys.indexOf(key));
+    }
+
+    public Void putEffects(String key, SublangEffectResult result) {
+        Int found = this.effectKeys.indexOf(key);
+        if (found >= 0) { this.effectResults.set(found, result); return; }
+        // Bound retained analysis entries. Eviction only loses work, never proof validity.
+        if (this.effectKeys.length() >= 64) { this.effectKeys.clear(); this.effectResults.clear(); }
+        this.effectKeys.add(key + "");
+        this.effectResults.add(result);
+    }
+
+    public Bool hasGraph(String key) { return this.graphKeys.contains(key); }
+
+    public SublangCallGraph graph(String key) {
+        return this.graphResults.get(this.graphKeys.indexOf(key));
+    }
+
+    public Void putGraph(String key, SublangCallGraph graph) {
+        Int found = this.graphKeys.indexOf(key);
+        if (found >= 0) { this.graphResults.set(found, graph); return; }
+        if (this.graphKeys.length() >= 64) { this.graphKeys.clear(); this.graphResults.clear(); }
+        this.graphKeys.add(key + "");
+        this.graphResults.add(graph);
+    }
+}
