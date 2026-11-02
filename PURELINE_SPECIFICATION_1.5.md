@@ -1,4 +1,4 @@
-# Pureline Specification 1.3
+# Pureline Specification 1.5
 
 ## Definition
 
@@ -33,9 +33,9 @@ if
 
 The central Pureline principles are:
 
-> **Linear Flow. Explicit Intent. Minimal Noise. Small Units. Clear Ownership.**
+> **Linear Flow. Explicit Intent. Minimal Noise. Small Units. Clear Ownership. Cohesion over Size.**
 
-**Version 1.3:** Adds separate Emerald (`.ems`) and Emvus (`.ev`) language profiles. All existing Pureline rule IDs remain unchanged.
+**Version 1.5:** Adds the idiomatic Rust profile (`PL-RS-001` through `PL-RS-020`) while preserving all existing rule IDs and the 1.4 Cohesion over Size principle.
 
 ---
 
@@ -66,6 +66,7 @@ These rules apply to all supported languages where the language allows them natu
 | PL-CORE-019 | Make dependencies explicit |
 | PL-CORE-020 | Optimize hot paths deliberately, not accidentally |
 | PL-CORE-021 | Keep packages and source folders small enough to scan at a glance |
+| PL-CORE-022 | Cohesion over Size: prefer one coherent responsibility over arbitrary class line limits |
 
 ---
 
@@ -295,10 +296,7 @@ storage/
     SessionStorage
 ```
 
-Classes above roughly **200 lines** should be reviewed for multiple responsibilities.
-
----
-
+A class has one clear responsibility when its members and internal state contribute to one cohesive concern. **Line count alone does not determine whether a class is well designed.** See `PL-STRUCT-003` for size guidance.
 
 # 5.1 Package and Folder Density
 
@@ -321,6 +319,7 @@ When the limit is exceeded, split the package or folder by responsibility instea
 | TypeScript | Maximum 10 production source modules per feature/source folder |
 | Go | Maximum 12 non-test, non-generated `.go` files per package directory |
 | Crystal | Maximum 10 production `.cr` files per source/namespace folder |
+| Rust | Maximum 10 hand-maintained production `.rs` files per feature/source folder |
 
 These files do not count toward the limit:
 
@@ -379,6 +378,42 @@ network/runtime/
 ```
 
 A project may override these thresholds through a future Pureline configuration file, but the default rule should remain intentionally strict.
+
+---
+
+# 5.2 Cohesion over Size
+
+## PL-STRUCT-003 — Cohesion over Size (Zusammengehörigkeit vor Zeilenbegrenzung)
+
+> **Cohesion over Size — Zusammengehörigkeit vor Zeilenbegrenzung.**
+
+The preferred maximum class size is **guidance, never a hard limit**. Keep strongly related logic together when splitting it would make the code harder to read, maintain, test, or reason about. A larger cohesive class is preferable to multiple artificial classes connected by unnecessary delegation.
+
+### Class size guidance
+
+| Class size | Pureline recommendation |
+|---|---|
+| Up to 200 lines | Preferred normal case |
+| 201–400 lines | Unproblematic when the class has a clear responsibility |
+| 401–600 lines | Deliberate architectural decision; keep its cohesion understandable |
+| More than 600 lines | Review recommended, **not prohibited** |
+
+The ranges are **heuristics, not hard limits**. Crossing a threshold must not, by itself, produce a style violation or require a split.
+
+### When larger classes are justified
+
+- **Parsers and lexers:** A cohesive state machine may become more complicated when its states and transitions are scattered across artificial abstractions.
+- **Algorithms:** Tightly coupled processing phases can be easier to understand and optimize when kept together.
+- **Central data structures:** Methods sharing the same invariants and internal state can belong in one class.
+- **Complex but cohesive logic:** Splitting is counterproductive when it adds indirection, unnecessary delegation, or more coordination than clarity.
+
+### When to split anyway
+
+Split by **real responsibility boundaries**, not by line count. Indicators include distinct subsystems evolving independently, unrelated reasons to change, weak coupling among groups of methods, or separate lifecycles that are obscured by one class.
+
+**Tooling rule:** Pureline Checker and IDE inspections may show an informational size notice with a cohesion-review suggestion, particularly above 600 lines. They must not treat the number of lines as sufficient evidence of a violation, automatically extract classes, or require suppressions merely to keep a cohesive class intact.
+
+This principle applies to **all Pureline language profiles**, including Java, JavaScript, TypeScript, Go, Crystal, Rust, Emerald, and Emvus. Language-specific syntax and idioms continue to take precedence.
 
 ---
 
@@ -1503,7 +1538,161 @@ The formatter should be AST-aware, preserve meaning, and never apply Emerald's `
 
 ---
 
-# 15. Abstraction Rules
+# 15. Rust Profile
+
+Pureline Rust follows **idiomatic Rust** rather than translating Java conventions into Rust syntax. Ownership, lifetimes, enums, pattern matching, and the type system are core strengths, not obstacles to work around.
+
+## PL-RS-001 — Idiomatic Naming and Visibility
+
+- Types, traits, and enum variants: `PascalCase`.
+- Functions, methods, modules, fields, and locals: `snake_case`.
+- Constants and statics: `SCREAMING_SNAKE_CASE`.
+- Crates: descriptive `snake_case` names (Cargo package names may use hyphens).
+- Traits do **not** inherit the Java `I` prefix. Prefer `Storage`, not `IStorage`.
+- Keep items private unless an actual consumer needs wider visibility; prefer `pub(crate)` when suitable.
+- Use `use` imports rather than repeating long fully-qualified paths, except where explicit qualification resolves ambiguity.
+
+## PL-RS-002 — Guard Clauses and Linear Flow
+
+Validate early and keep the successful path at the base indentation level.
+
+```rust
+fn open_session(request: &Request) -> Result<Session, SessionError> {
+    if !request.is_valid() {
+        return Err(SessionError::InvalidRequest);
+    }
+
+    let user = request.user().ok_or(SessionError::MissingUser)?;
+    Session::open(user)
+}
+```
+
+Avoid `else` after a branch that already returns, breaks, or continues. An `if`/`else` **expression** is allowed for genuine two-way value selection where it is clearer than alternatives. `let ... else` is a **preferred Rust guard construct**, not a violation of the avoid-`else` principle.
+
+```rust
+let Some(session) = sessions.get(&id) else {
+    return Err(SessionError::NotFound);
+};
+
+session.start()
+```
+
+## PL-RS-003 — Prefer `Result`, `Option`, and `?`
+
+- Represent expected failures with `Result<T, E>`.
+- Represent absence with `Option<T>`.
+- Use `?` for straightforward propagation and `map_err`/`ok_or_else` when error context genuinely improves.
+- Use `match` when outcomes need distinct handling; avoid convoluted chains of combinators.
+- Do not discard `Result` values silently; decide whether to propagate, log, recover, or deliberately ignore with a justified explanation.
+
+```rust
+fn load_config(path: &Path) -> Result<Config, ConfigError> {
+    let content = std::fs::read_to_string(path)?;
+    let config = toml::from_str(&content)?;
+    Ok(config)
+}
+```
+
+## PL-RS-004 — Restrict `unwrap`, `expect`, and `panic!`
+
+Never use `unwrap()` or `expect()` for ordinary recoverable production failures. They are acceptable in tests, prototypes, or documented invariants that really cannot be violated. `panic!` is not a normal error-handling strategy. Prefer explicit handling over hidden failure via unchecked indexing or conversions.
+
+## PL-RS-005 — Use `match` and Patterns for Real State Branching
+
+Use exhaustive `match` for enums and meaningful alternatives; use `if let` or `let ... else` for simple single-pattern handling. Do not force `match` onto ordinary boolean checks. Avoid broad `_` arms that silently mask future states when enumerating variants would be clearer.
+
+```rust
+fn label(state: SessionState) -> &'static str {
+    match state {
+        SessionState::Ready => "Ready",
+        SessionState::Closed => "Closed",
+        SessionState::Failed => "Failed",
+    }
+}
+```
+
+## PL-RS-006 — Ownership Must Be Deliberate
+
+- Prefer borrowing `&T` or `&mut T` when ownership transfer is unnecessary.
+- Accept owned values when the callee genuinely needs ownership.
+- Minimize cloning; use `.clone()` when its ownership cost and purpose are clear.
+- Avoid needless `Arc`, `Rc`, `Box`, and interior mutability wrappers.
+- Prefer short lifetimes and explicit ownership boundaries; do not fight the borrow checker with artificial leaks or pervasive shared ownership.
+
+## PL-RS-007 — Immutable by Default
+
+Use `let` unless mutation is needed. Keep `let mut` local and narrowly scoped. Avoid interior mutability as a default substitute for ordinary ownership design. Do not create unnecessary mutable globals.
+
+## PL-RS-008 — Traits Require a Real Abstraction
+
+Create a trait for an actual shared behavior, API boundary, interchangeable implementation, or test seam. Do not introduce traits merely to mirror Java interfaces or create factory/manager layers. Prefer simple inherent `impl` methods for single concrete implementations. Choose generics or trait objects based on actual polymorphism requirements.
+
+## PL-RS-009 — Cohesion over Size for `struct`, `impl`, and Modules
+
+`PL-STRUCT-003` applies to Rust as a **cohesion review**, not as a fixed line-count limit. A cohesive `impl` or state machine may be long. Split by independent responsibility, not by mechanically extracting traits, structs, or files. Avoid huge unrelated `mod.rs` or `lib.rs` dumping grounds.
+
+## PL-RS-010 — Module and File Density
+
+A Rust feature/source folder should contain at most **10 hand-maintained production `.rs` files** by default. Tests, generated code, bindings, and metadata-only files do not count. `mod.rs`, `lib.rs`, and `main.rs` count when they contain substantial maintained logic, not when serving only as module declarations/re-exports. This is a review threshold: split along actual responsibility boundaries, never into meaningless nested folders.
+
+Prefer explicit modules with narrow public surfaces; keep internal implementation private.
+
+## PL-RS-011 — Use Rustfmt as the Formatting Authority
+
+- Follow `rustfmt` / `cargo fmt` for indentation, line wrapping, trailing commas, and idiomatic formatting.
+- Prefer compact expressions and calls **when rustfmt supports them**; Pureline must not demand manual formatting that rustfmt will undo.
+- Write clear expression structure rather than using formatting directives to fight the formatter.
+- Use ordinary brace-delimited control flow; do not emulate Java semicolon rules inside expression-oriented Rust.
+
+This rule overrides language-independent horizontal-call preferences when they conflict with the canonical Rust formatter.
+
+## PL-RS-012 — Prefer Clear Iteration over Clever Chains
+
+Iterators, closures, and combinators are encouraged when they directly express a transformation. Prefer a regular loop when it makes branching, side effects, borrowing, debugging, or hot-path behavior clearer. Avoid chaining adapters simply to reduce line count.
+
+## PL-RS-013 — Async Tasks Have Ownership and Shutdown
+
+- Use `async`/`.await` for asynchronous workloads where appropriate.
+- Do not block an async executor with long-running synchronous I/O or CPU work; use dedicated blocking execution or worker threads as needed.
+- Track spawned tasks, cancellation, error propagation, and orderly shutdown.
+- Do not create hidden fire-and-forget tasks for important work.
+- Use channels and synchronization primitives with clearly defined ownership and backpressure.
+- Never hold a blocking or asynchronous lock across `.await` unless the design explicitly requires and safely supports it.
+
+## PL-RS-014 — Resource Lifecycles Should Be Predictable
+
+Prefer RAII and `Drop` for synchronous cleanup. Explicitly await or coordinate shutdown for asynchronous resources because `Drop` cannot itself await. Expose a `close()` / `shutdown()` method when the operation can fail or must complete before process exit. Avoid hiding significant fallible cleanup inside destructors alone.
+
+## PL-RS-015 — Unsafe Code Must Be Isolated and Justified
+
+Safe Rust is the default. Use `unsafe` only where required by a genuine FFI, hardware, or performance boundary. Keep unsafe regions small, document their invariants with `// SAFETY:`, encapsulate them behind a minimal safe API, and test the boundary. Do not use `unsafe` simply to bypass normal ownership checks.
+
+## PL-RS-016 — FFI and Platform Boundaries Are Explicit
+
+For Wayland, GPU, system libraries, and similar native integration, keep raw handles, lifetime guarantees, ownership transfer, threading assumptions, and error conversion visible. Isolate platform-specific code in focused modules. Generated bindings may be excluded from ordinary formatting and density limits.
+
+## PL-RS-017 — Prefer Types that Encode Invariants
+
+Use enums and small newtypes where they prevent real invalid states or clarify external boundaries. Do not create wrappers for every primitive without benefit. Prefer constructors that validate invariants and expose clear errors. Make invalid or uninitialized states difficult to represent.
+
+## PL-RS-018 — Avoid Macro Cleverness
+
+Prefer functions, traits, enums, and straightforward generics over macros for routine behavior. Use declarative or procedural macros when they eliminate meaningful structural repetition. Keep generated behavior discoverable and diagnostics understandable.
+
+## PL-RS-019 — Measure Performance Before Complexity
+
+Avoid unnecessary allocations, clones, reference counting, and locking in measured hot paths. Prefer predictable ownership and data structures suited to the workload. Profile before replacing clean code with complex low-level optimizations, and validate latency as well as throughput for UI/compositor workloads.
+
+## PL-RS-020 — Testing and Tooling
+
+- Run `cargo fmt --check` for formatting and `cargo clippy` with project-agreed lint settings.
+- Test normal, invalid, and failure paths, especially cancellation, lifecycle, FFI, and concurrency boundaries.
+- Make warnings intentional; avoid blanket `allow` attributes to silence broad lint groups.
+- Pureline Checker must use Rust syntax/AST-aware inspection (including `let ... else`, pattern matching, macros, and expression returns), not textual pattern matching.
+
+---
+
+# 16. Abstraction Rules
 
 ## PL-ARCH-001 — Abstraction Requires a Reason
 
@@ -1528,7 +1717,7 @@ shared domain contracts
 
 ---
 
-# 16. Architecture
+# 17. Architecture
 
 Pureline prefers clear dependency direction.
 
@@ -1561,7 +1750,7 @@ network → session → storage → network
 
 ---
 
-# 17. Side Effects
+# 18. Side Effects
 
 Important side effects should remain visible.
 
@@ -1587,7 +1776,7 @@ Pureline does not require exposing every internal operation. It requires avoidin
 
 ---
 
-# 18. Immutability
+# 19. Immutability
 
 Prefer immutable values by default.
 
@@ -1599,7 +1788,7 @@ Avoid shared mutable state where practical.
 
 ---
 
-# 19. Dependencies
+# 20. Dependencies
 
 Dependencies should be visible in constructors, function parameters, or explicit module wiring.
 
@@ -1609,7 +1798,7 @@ Dependency injection is encouraged where it improves architecture, but Pureline 
 
 ---
 
-# 20. Performance
+# 21. Performance
 
 Pureline prioritizes readability by default, but performance-sensitive paths should be written deliberately.
 
@@ -1627,7 +1816,7 @@ Performance optimizations must remain understandable.
 
 ---
 
-# 21. Language Profiles
+# 22. Language Profiles
 
 ```text
 Pureline Core
@@ -1663,6 +1852,13 @@ Pureline Core
 │   ├── nil guards
 │   └── type inference
 │
+├── Pureline Rust
+│   ├── Result / Option / ? and let-else guards
+│   ├── ownership, borrowing, RAII
+│   ├── exhaustive match and enums
+│   ├── rustfmt / clippy
+│   └── explicit async task lifecycles
+│
 ├── Pureline Emerald (.ems)
 │   ├── namespace / use with ::
 │   ├── typed declarations and semicolons
@@ -1679,7 +1875,7 @@ Pureline Core
 
 ---
 
-# 22. Tooling Model
+# 23. Tooling Model
 
 Pureline tooling should share the same rule specification across:
 
@@ -1712,11 +1908,11 @@ This allows the website, CLI, formatter, linter, and IDE integrations to stay co
 
 **Emerald and Emvus tooling requirement:** use separate grammars for `.ems` and `.ev`. The checker must distinguish real syntax and resolved AST constructs from textual lookalikes; macro-generated declarations, inferred tuple/list forms, optional method-declaration parentheses, and optional Emvus semicolons require language-aware handling. Existing and newly added profile IDs must produce consistent diagnostics across tools.
 
-**Versioning:** rules in the new profiles use stable `PL-EMS-*` and `PL-EV-*` IDs. The established `PL-CORE-*`, `PL-CF-*`, `PL-JAVA-*`, `PL-JS-*`, `PL-TS-*`, `PL-GO-*`, and `PL-CR-*` IDs are not renumbered.
+**Versioning:** Rust rules use stable `PL-RS-*` IDs; Emerald and Emvus rules retain `PL-EMS-*` and `PL-EV-*` IDs. The established `PL-CORE-*`, `PL-CF-*`, `PL-JAVA-*`, `PL-JS-*`, `PL-TS-*`, `PL-GO-*`, and `PL-CR-*` IDs are not renumbered. Version 1.4 added `PL-CORE-022` and `PL-STRUCT-003`; version 1.5 adds `PL-RS-001`–`PL-RS-020` without renumbering existing rules.
 
 ---
 
-# 23. Pureline Summary
+# 24. Pureline Summary
 
 Pureline code should feel:
 
@@ -1726,6 +1922,7 @@ Pureline code should feel:
 - modern
 - low-noise
 - modular
+- cohesive regardless of line count
 - predictable
 - easy to scan
 - easy to refactor
@@ -1739,4 +1936,4 @@ A second principle governs every language profile:
 
 > **Pureline standardizes principles, not syntax.**
 
-A language should remain idiomatic. Pureline removes unnecessary noise without stripping away the features that make Java, JavaScript, TypeScript, Go, Crystal, Emerald, or Emvus effective in the first place.
+A language should remain idiomatic. Pureline removes unnecessary noise without stripping away the features that make Java, JavaScript, TypeScript, Go, Crystal, Rust, Emerald, or Emvus effective in the first place.
