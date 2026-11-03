@@ -3,7 +3,9 @@ use Std::Process::Processes;
 use sublang::backend::SublangCompilation;
 use sublang::cli::SublangRuntimeCommand;
 use sublang::harness::pass::SublangLinkFixtures;
+use sublang::ir::SublangBuilder;
 use sublang::ir::SublangModule;
+use sublang::platform::SublangPlatformBinding;
 use sublang::runtime::SublangRuntimeCompiler;
 use sublang::runtime::SublangRuntimeTarget;
 use sublang::runtime::SublangRuntimeUnit;
@@ -12,6 +14,36 @@ use sublang::wire::SublangWire;
 public class SublangRuntimeSmoke {
     public static Void require(Bool condition, String name) {
         if (!condition) { println("FAIL " + name); Processes.exit(1); }
+    }
+}
+
+// A program with one platform import: print("hi") and return 3. kind 0 is valid, 1 names an unknown import, 2 gives
+// print a wrong result type.
+public class SublangPlatformSmoke {
+    public static SublangModule program(Int kind) {
+        SublangBuilder builder = SublangBuilder("platform-" + kind.toString());
+        Int span = builder.syntheticSpan("platform:smoke");
+        Int list = builder.listType(builder.byteType(), span);
+        Int text = builder.module().types().refTypeFor(list);
+        String name = "platform.io.print";
+        if (kind == 1) { name = "platform.io.nothing"; }
+        Int returned = builder.voidType();
+        if (kind == 2) { returned = builder.intType(); }
+        Int imported = builder.declareExternal(name, returned, span);
+        builder.addParam("data", text, "borrow_read", false);
+        Int entry = builder.beginFunction("main", builder.intType(), 0, span);
+        builder.module().setEntry(entry);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        Int constant = builder.ops().constString("hi", span);
+        Int message = builder.collections().textFrom(list, constant, scope, span);
+        List<Int> arguments = List(); arguments.add(message);
+        List<String> modes = List(); modes.add("borrow_read");
+        builder.ops().callDirect(imported, arguments, modes, span);
+        builder.ops().scopeEnd(scope, span);
+        builder.ops().returnValue(builder.ops().constInt(3, span), span);
+        builder.freeze();
+        return builder.module();
     }
 }
 
@@ -56,5 +88,10 @@ main() {
     arguments.add("on");
     arguments.add("on");
     SublangRuntimeSmoke.require(SublangRuntimeCommand.run(arguments) == 0, "runtime CLI accepts language-generated Wire bodies");
+    SublangCompilation platform = SublangPlatformBinding.compile(SublangPlatformSmoke.program(0), true, "on");
+    SublangRuntimeSmoke.require(platform.codegenReady(), "a platform import is bound and compiled");
+    SublangRuntimeSmoke.require(platform.llvm().indexOf("sublang.io.print") >= 0 && platform.llvm().indexOf("%status = trunc") >= 0, "the bound program prints and exits with its status");
+    SublangRuntimeSmoke.require(SublangPlatformBinding.compile(SublangPlatformSmoke.program(1), true, "on").error().startsWith("SUBLANG-I001"), "an unknown platform import is rejected");
+    SublangRuntimeSmoke.require(SublangPlatformBinding.compile(SublangPlatformSmoke.program(2), true, "on").error().startsWith("SUBLANG-I002"), "a platform import with a wrong signature is rejected");
     println("Runtime IR contracts and compilation passed");
 }
