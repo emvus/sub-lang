@@ -130,8 +130,8 @@ public class SublangCommand {
         if (!NativeFile.isFile(input)) {
             println("SUBLANG-CLI002: input must be a regular file"); return 2;
         }
-        if (NativeFile.size(input) > 4194304) {
-            println("SUBLANG-TX004: input exceeds 4 MiB"); return 1;
+        if (NativeFile.size(input) > 16777216) {
+            println("SUBLANG-TX004: input exceeds 16 MiB"); return 1;
         }
         SublangTextResult parsed = SublangTextParser.parse(NativeFile.readText(input));
         if (!parsed.valid()) { println(parsed.error()); return 1; }
