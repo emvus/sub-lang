@@ -1,5 +1,6 @@
 namespace sublang::wire;
 
+use sublang::limits::SublangLimits;
 use sublang::ir::SublangModule;
 use sublang::model::SublangType;
 use sublang::model::SublangField;
@@ -22,7 +23,7 @@ public class SublangWireTables {
             index = index + 1;
         }
         stream.expect("spans");
-        count = stream.count(module.spanCount(), 32768);
+        count = stream.count(module.spanCount(), SublangLimits.spans());
         index = 1;
         while (index <= count && stream.valid()) {
             SublangSourceSpan span = SublangWireSelection.span(stream, module, index);
@@ -84,7 +85,7 @@ public class SublangWireTables {
 
     private static Void fields(SublangWireStream stream, SublangModule module) {
         stream.expect("fields");
-        Int count = stream.count(module.types().fieldCount(), 512);
+        Int count = stream.count(module.types().fieldCount(), SublangLimits.typeFields());
         Int index = 1;
         while (index <= count && stream.valid()) {
             SublangField field = SublangWireSelection.field(stream, module, index);

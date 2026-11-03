@@ -1,5 +1,6 @@
 namespace sublang::wire;
 
+use sublang::limits::SublangLimits;
 use sublang::ir::SublangModule;
 use sublang::body::SublangFunction;
 use sublang::body::SublangBlock;
@@ -12,7 +13,7 @@ use sublang::wire::SublangWireSelection;
 public class SublangWireBody {
     public static Void functions(SublangWireStream stream, SublangModule module) {
         stream.expect("functions");
-        Int count = stream.count(module.functionCount(), 32);
+        Int count = stream.count(module.functionCount(), SublangLimits.functions());
         Int index = 1;
         while (index <= count && stream.valid()) {
             SublangFunction function = SublangWireSelection.function(stream, module, index);
@@ -48,7 +49,7 @@ public class SublangWireBody {
     }
 
     private static Void values(SublangWireStream stream, SublangFunction function) {
-        Int count = stream.count(function.valueCount(), 4096);
+        Int count = stream.count(function.valueCount(), SublangLimits.valuesPerFunction());
         Int index = 1;
         while (index <= count && stream.valid()) {
             Int type = 0;
@@ -73,7 +74,7 @@ public class SublangWireBody {
     }
 
     private static Void blocks(SublangWireStream stream, SublangFunction function) {
-        Int count = stream.count(function.blockCount(), 64);
+        Int count = stream.count(function.blockCount(), SublangLimits.blocksPerFunction());
         Int index = 1;
         while (index <= count && stream.valid()) {
             if (stream.isReading()) { function.addBlock(); }
@@ -89,7 +90,7 @@ public class SublangWireBody {
     }
 
     private static Void operations(SublangWireStream stream, SublangBlock block) {
-        Int count = stream.count(block.operationCount(), 4096);
+        Int count = stream.count(block.operationCount(), SublangLimits.operationsPerBlock());
         Int index = 0;
         while (index < count && stream.valid()) {
             SublangOperation operation = SublangWireSelection.operation(stream, block, index);
