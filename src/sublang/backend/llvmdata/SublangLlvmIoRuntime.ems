@@ -6,7 +6,7 @@ namespace sublang::backend::llvmdata;
 // is empty. The process arguments are stored by `main`.
 public class SublangLlvmIoRuntime {
     public static String definitions() {
-        String text = "declare ptr @fopen(ptr, ptr)\ndeclare i64 @fread(ptr, i64, i64, ptr)\ndeclare i64 @fwrite(ptr, i64, i64, ptr)\ndeclare i32 @fclose(ptr)\ndeclare i64 @write(i32, ptr, i64)\ndeclare i64 @strlen(ptr)\ndeclare void @exit(i32) noreturn\ndeclare ptr @__errno_location()\n";
+        String text = "declare ptr @fopen(ptr, ptr)\ndeclare i64 @fread(ptr, i64, i64, ptr)\ndeclare i64 @fwrite(ptr, i64, i64, ptr)\ndeclare i32 @fclose(ptr)\ndeclare i64 @write(i32, ptr, i64)\ndeclare i64 @strlen(ptr)\ndeclare void @exit(i32) noreturn\ndeclare ptr @__errno_location()\ndeclare ptr @getenv(ptr)\ndeclare i32 @clock_gettime(i32, ptr)\n";
         text = text + "@sublang.argc = internal global i32 0\n@sublang.argv = internal global ptr null\n";
         text = text + "@sublang.io.read.mode = private constant [3 x i8] c\"rb\\00\"\n@sublang.io.write.mode = private constant [3 x i8] c\"wb\\00\"\n";
         text = text + SublangLlvmIoRuntime.status();
@@ -17,6 +17,7 @@ public class SublangLlvmIoRuntime {
         text = text + SublangLlvmIoRuntime.error();
         text = text + SublangLlvmIoRuntime.exists();
         text = text + SublangLlvmIoRuntime.process();
+        text = text + SublangLlvmIoRuntime.clockAndEnvironment();
         return text + SublangLlvmIoRuntime.argument();
     }
 
@@ -63,5 +64,11 @@ public class SublangLlvmIoRuntime {
         String text = "@sublang.io.status = internal global i32 0\n";
         text = text + "define internal ptr @sublang.io.open(ptr %name, ptr %mode) {\nentry:\n  %file = call ptr @fopen(ptr %name, ptr %mode)\n  %missing = icmp eq ptr %file, null\n  br i1 %missing, label %failed, label %opened\nfailed:\n  %slot = call ptr @__errno_location()\n  %reason = load i32, ptr %slot\n  store i32 %reason, ptr @sublang.io.status\n  ret ptr %file\nopened:\n  store i32 0, ptr @sublang.io.status\n  ret ptr %file\n}\n";
         return text + "define internal i64 @sublang.io.reason() {\nentry:\n  %reason = load i32, ptr @sublang.io.status\n  %wide = sext i32 %reason to i64\n  ret i64 %wide\n}\n";
+    }
+
+    // Wall-clock milliseconds, and an environment variable appended to a text (nothing when it is not set).
+    private static String clockAndEnvironment() {
+        String text = "define internal i64 @sublang.io.clock() {\nentry:\n  %spec = alloca [2 x i64]\n  %ok = call i32 @clock_gettime(i32 0, ptr %spec)\n  %secondsSlot = getelementptr i64, ptr %spec, i64 0\n  %nanosSlot = getelementptr i64, ptr %spec, i64 1\n  %seconds = load i64, ptr %secondsSlot\n  %nanos = load i64, ptr %nanosSlot\n  %whole = mul i64 %seconds, 1000\n  %part = sdiv i64 %nanos, 1000000\n  %total = add i64 %whole, %part\n  ret i64 %total\n}\n";
+        return text + "define internal void @sublang.io.environment(ptr %destination, ptr %name) {\nentry:\n  %key = call ptr @sublang.io.path(ptr %name)\n  %value = call ptr @getenv(ptr %key)\n  call void @free(ptr %key)\n  %unset = icmp eq ptr %value, null\n  br i1 %unset, label %done, label %copy\ncopy:\n  %length = call i64 @strlen(ptr %value)\n  call void @sublang.text.append(ptr %destination, ptr %value, i64 %length)\n  br label %done\ndone:\n  ret void\n}\n";
     }
 }

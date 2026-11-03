@@ -183,6 +183,25 @@ public class SublangCollectionBuilder {
         return this.value(op, this.cursor.module().types().intType());
     }
 
+    // Milliseconds since the Unix epoch.
+    public Int textTime(Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.time", span);
+        op.setOperands(List(), List());
+        return this.value(op, this.cursor.module().types().intType());
+    }
+
+    // Owned byte list holding an environment variable (empty when it is not set).
+    public Int textEnvironment(Int listType, Int name, Int scope, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.env", span);
+        List<Int> args = List(); args.add(name);
+        List<String> modes = List(); modes.add("borrow_read");
+        op.setOperands(args, modes);
+        op.setRef(listType); op.setScope(scope); op.setResultOwnership("owned");
+        return this.value(op, this.cursor.module().types().refTypeFor(listType));
+    }
+
     // The reason the last file operation failed (the C errno), 0 when it worked.
     public Int textLastError(Int span) {
         if (!this.ready()) { return 0; }

@@ -50,6 +50,16 @@ public class SublangPlatformBinding {
         builder.beginFunction("platform.io.last_error", integer, 0, span);
         builder.beginBlock();
         builder.ops().returnValue(builder.collections().textLastError(span), span);
+        // milliseconds() -> Int
+        builder.beginFunction("platform.time.milliseconds", integer, 0, span);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.collections().textTime(span), span);
+        // variable(name) -> owned text
+        builder.beginFunction("platform.env.variable", text, 0, span);
+        Int variable = builder.addParam("name", text, "borrow_read", false);
+        builder.beginBlock();
+        Int environmentScope = builder.ops().scopeBegin(span);
+        builder.ops().returnOwned(builder.collections().textEnvironment(list, variable, environmentScope, span), span);
         // argument(index) -> owned text
         builder.beginFunction("platform.process.argument", text, 0, span);
         Int index = builder.addParam("index", integer, "value", false);

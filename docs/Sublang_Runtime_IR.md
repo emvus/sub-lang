@@ -51,6 +51,8 @@ owned by the caller's destination scope, as for any call that returns a referenc
 | `platform.io.print` | text -> Void | writes to standard output |
 | `platform.io.print_error` | text -> Void | writes to standard error |
 | `platform.io.last_error` | -> Int | why the last file operation failed (the C `errno`), 0 when it worked |
+| `platform.time.milliseconds` | -> Int | wall-clock milliseconds since the Unix epoch |
+| `platform.env.variable` | text -> owned text | an environment variable, empty when it is not set |
 | `platform.process.argument` | Int -> owned text | argument `index` (0 is the first after the program name), empty past the last |
 | `platform.process.argument_count` | -> Int | the number of arguments after the program name |
 | `platform.process.exit` | Int -> Void | ends the process with the status |

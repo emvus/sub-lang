@@ -770,7 +770,7 @@ a reader that does not know the token rejects the module. Sources: `SublangWire.
 
 | Token | Required when the module has | Opcodes that need it (13.4) |
 | --- | --- | --- |
-| `ext.bytes.v1` | a `Byte` type, or any byte-text opcode | `byte.from_int`, `byte.to_int`, `list.set`, `list.replace`, `text.from_str`, `text.append`, `text.concat`, `text.slice`, `text.from_file`, `text.argument`, `text.write_file`, `text.print`, `text.error`, `text.exists`, `text.argument_count`, `text.last_error`, `text.exit`, `text.equal` |
+| `ext.bytes.v1` | a `Byte` type, or any byte-text opcode | `byte.from_int`, `byte.to_int`, `list.set`, `list.replace`, `text.from_str`, `text.append`, `text.concat`, `text.slice`, `text.from_file`, `text.argument`, `text.write_file`, `text.print`, `text.error`, `text.exists`, `text.argument_count`, `text.last_error`, `text.time`, `text.env`, `text.exit`, `text.equal` |
 | `ext.numeric.v1` | any numeric-conversion opcode | `int.to_float`, `float.to_int`, `float.is_int`, `number.equal` |
 | `ext.eh.v1` | any exception opcode | `invoke`, `throw`, `resume` |
 | `ext.oo.v1` | a non-empty dispatch table, a `Class` type with a base (its `target` is not 0), or an object opcode | `class.upcast`, `class.downcast`, `call.virtual`. Also enables the `dispatch` section (13.3) |
@@ -852,6 +852,8 @@ of the `targets` list. "Scope > 0" means a destination scope is required.
 | `text.exists` | bytes | 1: `Ref<List>` (borrow_read) | `Bool` (empty, 0) | 0 | 0 | none |
 | `text.argument_count` | bytes | 0 | `Int` (empty, 0) | 0 | 0 | none |
 | `text.last_error` | bytes | 0 | `Int` (empty, 0) | 0 | 0 | none |
+| `text.time` | bytes | 0 | `Int` (empty, 0) | 0 | 0 | none |
+| `text.env` | bytes | 1: `Ref<List>` (borrow_read) | `Ref<List>` (owned, scope > 0) | the byte-list type | 0 | none |
 | `text.exit` | bytes | 1: `Int` (value) | none | 0 | 0 | ends the process |
 | `int.to_float` | numeric | 1: `Int` (value) | `Float` (empty, 0) | 0 | 0 | none |
 | `float.to_int` | numeric | 1: `Float` (value) | `Int` (empty, 0) | 0 | 0 | none |

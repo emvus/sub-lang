@@ -16,7 +16,7 @@ public class SublangPlatform {
     private static String table() {
         String text = "\n";
         text = text + "platform.io.read_file t>T\nplatform.io.write_file tt>b\nplatform.io.file_exists t>b\n";
-        text = text + "platform.io.print t>v\nplatform.io.print_error t>v\nplatform.io.last_error >i\n";
+        text = text + "platform.io.print t>v\nplatform.io.print_error t>v\nplatform.io.last_error >i\nplatform.time.milliseconds >i\nplatform.env.variable t>T\n";
         text = text + "platform.process.argument i>T\nplatform.process.argument_count >i\nplatform.process.exit i>v\n";
         return text;
     }
