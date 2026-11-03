@@ -12,6 +12,10 @@ Sublang is a language-independent compiler platform implemented in **Emerald (.e
 
 Repository: https://github.com/emvus/sub-lang
 
+## Contributing
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), versions follow [Semantic Versioning](https://semver.org/); see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Documentation
 
 Start with the **[IR developer guide](docs/Sublang_IR_Guide.md)** for formats, complete builders, SSA/control flow, ownership, collections, Bond and frontend integration.
