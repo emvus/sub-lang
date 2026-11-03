@@ -1,0 +1,113 @@
+namespace sublang::low::target;
+
+// The runtime symbols a Low `rt.call` may name, with their signatures `ret(p1,...,pn)`. The verifier
+// rejects every other symbol. The bodies come from the legacy host-libc provider text; this table is
+// the contract between lowering and that text.
+public class SublangLowProvider {
+    // One line per symbol: "<symbol> <signature>". Lines start and end with a newline so a symbol can
+    // be found by searching for "\n<symbol> ".
+    private static String table() {
+        String text = "\n";
+        text = text + "abort void()\n";
+        text = text + "sublang.add i64(i64,i64)\nsublang.sub i64(i64,i64)\nsublang.mul i64(i64,i64)\n";
+        text = text + "sublang.div.trap i64(i64,i64)\nsublang.div.wrap i64(i64,i64)\n";
+        text = text + "sublang.rem.trap i64(i64,i64)\nsublang.rem.zero i64(i64,i64)\n";
+        text = text + "sublang.flow.allocate ptr(ptr,i64)\nsublang.flow.adopt void(ptr,ptr)\nsublang.flow.detach void(ptr)\n";
+        text = text + "sublang.flow.drop void(ptr,ptr)\nsublang.flow.end void(ptr,ptr)\n";
+        text = text + "sublang.shard.begin void(ptr,ptr)\nsublang.shard.end void(ptr)\nsublang.shard.leave void(ptr)\n";
+        text = text + "sublang.shard.join void(ptr,ptr)\nsublang.shard.root ptr(ptr)\nsublang.shard.allocate ptr(ptr,ptr,i64)\n";
+        text = text + "sublang.bond.allocate ptr(i64,ptr)\nsublang.bond.retain void(ptr)\nsublang.bond.root.add void(ptr,ptr,ptr)\n";
+        text = text + "sublang.bond.root.take ptr(ptr)\nsublang.bond.scope.end void(ptr)\nsublang.bond.edge.set void(ptr,ptr)\n";
+        text = text + "sublang.list.at ptr(ptr,i64,i64)\nsublang.list.push.slot ptr(ptr,i64)\n";
+        text = text + "sublang.text.append void(ptr,ptr,i64)\nsublang.text.equal i1(ptr,ptr)\n";
+        text = text + "memcmp i32(ptr,ptr,i64)\n";
+        return text;
+    }
+
+    // `ret(p1,...,pn)`, or "" when `rt.call` may not name the symbol. The per-type families
+    // `sublang.flow.allocate.t<N>` and `sublang.list.clear.t<N>` match by prefix.
+    public static String signature(String symbol) {
+        if (symbol.isEmpty()) {
+            return "";
+        }
+
+        String table = SublangLowProvider.table();
+        String key = "\n" + symbol + " ";
+        Int at = table.indexOf(key);
+
+        if (at >= 0) {
+            Int start = at + key.length();
+            Int end = start;
+
+            while (table.charAt(end).toString() != "\n") {
+                end = end + 1;
+            }
+
+            return table.substring(start, end);
+        }
+
+        if (symbol.startsWith("sublang.flow.allocate.t")) {
+            return "ptr(ptr,i64)";
+        }
+
+        if (symbol.startsWith("sublang.list.clear.t")) {
+            return "void(ptr)";
+        }
+
+        return "";
+    }
+
+    public static Bool known(String symbol) {
+        return !SublangLowProvider.signature(symbol).isEmpty();
+    }
+
+    // The return type of a known symbol; "" for an unknown one.
+    public static String returnType(String symbol) {
+        String signature = SublangLowProvider.signature(symbol);
+
+        if (signature.isEmpty()) {
+            return "";
+        }
+
+        return signature.substring(0, signature.indexOf("("));
+    }
+
+    public static List<String> parameterTypes(String symbol) {
+        List<String> types = List();
+        String signature = SublangLowProvider.signature(symbol);
+
+        if (signature.isEmpty()) {
+            return types;
+        }
+
+        String inner = signature.substring(signature.indexOf("(") + 1, signature.length() - 1);
+        String current = "";
+        Int index = 0;
+
+        while (index < inner.length()) {
+            String character = inner.charAt(index).toString();
+
+            if (character == ",") {
+                types.add(current + "");
+                current = "";
+            }
+
+            if (character != ",") {
+                current = current + character;
+            }
+
+            index = index + 1;
+        }
+
+        if (!inner.isEmpty()) {
+            types.add(current + "");
+        }
+
+        return types;
+    }
+
+    // The personality routine the LLVM text names in every function that contains an `invoke`.
+    public static String exceptionPersonality() {
+        return "__gxx_personality_v0";
+    }
+}

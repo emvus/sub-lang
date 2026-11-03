@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$ROOT/scripts/stampVersion.sh" > /dev/null
 EMERALD_ROOT="${SUBLANG_EMERALD_ROOT:-$ROOT/../Emerald LLVM}"
 IMAGE="${SUBLANG_SANDBOX_IMAGE:-emerald-selfhost-sandbox}"
 mkdir -p "$ROOT/build"

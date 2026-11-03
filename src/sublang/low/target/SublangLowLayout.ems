@@ -1,0 +1,259 @@
+namespace sublang::low::target;
+
+use sublang::ir::SublangModule;
+use sublang::low::target::SublangLowTarget;
+
+// Concrete sizes, alignments and field offsets of Low types for one target and one High snapshot.
+// A Low type is a name: the scalars `void i1 i8 i32 i64 f64`, the pointer `ptr`, the runtime
+// aggregates `str list shard bondroot`, `%t<id>` for a High type id and `hdr%t<id>` for the pool
+// header in front of it. Aggregates follow the rule of a non-packed LLVM struct: each field starts at
+// the next multiple of its alignment and the size is rounded up to the largest alignment.
+public class SublangLowLayout {
+    private SublangLowTarget targetValue;
+    private SublangModule sourceModule;
+
+    public SublangLowLayout(SublangLowTarget target, SublangModule source) {
+        this.targetValue = target;
+        this.sourceModule = source;
+    }
+
+    // The Low type of a High type id.
+    public String lowOf(Int typeId) {
+        String kind = this.sourceModule.types().kindOf(typeId);
+
+        if (kind == "Int") { return "i64"; }
+        if (kind == "Bool") { return "i1"; }
+        if (kind == "Float") { return "f64"; }
+        if (kind == "Byte") { return "i8"; }
+        if (kind == "Void") { return "void"; }
+        if (kind == "Ref" || kind == "Bond") { return "ptr"; }
+        if (kind == "String") { return "str"; }
+        return "%t" + typeId.toString();
+    }
+
+    // True for every Low type name this layout can size.
+    public Bool known(String type) {
+        if (this.scalarSize(type) >= 0 || this.runtimeSize(type) >= 0) {
+            return true;
+        }
+
+        Int id = this.typeIdOf(type);
+        return id > 0 && this.sourceModule.types().hasType(id);
+    }
+
+    // Size in bytes; -1 for a type that is not known.
+    public Int sizeOf(String type) {
+        Int scalar = this.scalarSize(type);
+
+        if (scalar >= 0) {
+            return scalar;
+        }
+
+        Int runtime = this.runtimeSize(type);
+
+        if (runtime >= 0) {
+            return runtime;
+        }
+
+        if (!this.known(type)) {
+            return -1;
+        }
+
+        if (type.startsWith("hdr%t")) {
+            return this.alignUp(2 * this.targetValue.pointerBytes() + this.sizeOf("%t" + this.typeIdOf(type).toString()), 16);
+        }
+
+        return this.aggregateSize(this.typeIdOf(type));
+    }
+
+    // Alignment in bytes; 1 for a type that is not known.
+    public Int alignOf(String type) {
+        if (type == "i1" || type == "i8" || type == "void") { return 1; }
+        if (type == "i32") { return 4; }
+        if (type == "i64" || type == "f64") { return 8; }
+        if (type == "ptr" || type == "str") { return this.targetValue.pointerBytes(); }
+        if (type == "list" || type == "shard" || type == "bondroot") { return 8; }
+
+        if (!this.known(type)) {
+            return 1;
+        }
+
+        if (type.startsWith("hdr%t")) {
+            return 16;
+        }
+
+        return this.aggregateAlign(this.typeIdOf(type));
+    }
+
+    // Number of fields of `list`, `hdr%t<id>` or `%t<id>`; 0 for every other type.
+    public Int fieldCount(String aggregate) {
+        if (aggregate == "list" || aggregate.startsWith("hdr%t")) {
+            return 3;
+        }
+
+        Int id = this.typeIdOf(aggregate);
+
+        if (id <= 0 || !this.sourceModule.types().hasType(id)) {
+            return 0;
+        }
+
+        if (this.sourceModule.types().isKind(id, "List")) {
+            return 3;
+        }
+
+        return this.sourceModule.types().typeAt(id).fieldCount();
+    }
+
+    // The Low type of field `index`; "" when the aggregate has no such field.
+    public String fieldType(String aggregate, Int index) {
+        if (index < 0 || index >= this.fieldCount(aggregate)) {
+            return "";
+        }
+
+        if (aggregate == "list" || (aggregate.startsWith("%t") && this.isList(this.typeIdOf(aggregate)))) {
+            return this.listFieldType(index);
+        }
+
+        if (aggregate.startsWith("hdr%t")) {
+            return this.headerFieldType(aggregate, index);
+        }
+
+        Int id = this.typeIdOf(aggregate);
+        Int field = this.sourceModule.types().typeAt(id).fieldAt(index);
+        return this.lowOf(this.sourceModule.types().fieldAt(field).typeId());
+    }
+
+    // Byte offset of field `index`; -1 when the aggregate has no such field.
+    public Int fieldOffset(String aggregate, Int index) {
+        if (index < 0 || index >= this.fieldCount(aggregate)) {
+            return -1;
+        }
+
+        Int offset = 0;
+        Int position = 0;
+
+        while (position <= index) {
+            String type = this.fieldType(aggregate, position);
+            offset = this.alignUp(offset, this.alignOf(type));
+
+            if (position < index) {
+                offset = offset + this.sizeOf(type);
+            }
+
+            position = position + 1;
+        }
+
+        return offset;
+    }
+
+    private Int scalarSize(String type) {
+        if (type == "void") { return 0; }
+        if (type == "i1" || type == "i8") { return 1; }
+        if (type == "i32") { return 4; }
+        if (type == "i64" || type == "f64") { return 8; }
+        return -1;
+    }
+
+    // Pointers and the runtime aggregates, which depend on the pointer width or are fixed by the runtime.
+    private Int runtimeSize(String type) {
+        if (type == "ptr") { return this.targetValue.pointerBytes(); }
+        if (type == "str") { return 2 * this.targetValue.pointerBytes(); }
+        if (type == "list") { return 16; }
+        if (type == "shard") { return 40; }
+        if (type == "bondroot") { return 24; }
+        return -1;
+    }
+
+    private Int aggregateSize(Int id) {
+        if (this.isList(id)) {
+            return 16;
+        }
+
+        String name = "%t" + id.toString();
+        Int count = this.fieldCount(name);
+        Int offset = 0;
+        Int index = 0;
+
+        while (index < count) {
+            String type = this.fieldType(name, index);
+            offset = this.alignUp(offset, this.alignOf(type)) + this.sizeOf(type);
+            index = index + 1;
+        }
+
+        return this.alignUp(offset, this.aggregateAlign(id));
+    }
+
+    private Int aggregateAlign(Int id) {
+        if (this.isList(id)) {
+            return 8;
+        }
+
+        String name = "%t" + id.toString();
+        Int count = this.fieldCount(name);
+        Int widest = 1;
+        Int index = 0;
+
+        while (index < count) {
+            Int alignment = this.alignOf(this.fieldType(name, index));
+
+            if (alignment > widest) {
+                widest = alignment;
+            }
+
+            index = index + 1;
+        }
+
+        return widest;
+    }
+
+    private String listFieldType(Int index) {
+        if (index == 0) { return "ptr"; }
+        return "i32";
+    }
+
+    private String headerFieldType(String header, Int index) {
+        if (index < 2) { return "ptr"; }
+        return "%t" + this.typeIdOf(header).toString();
+    }
+
+    private Bool isList(Int id) {
+        return id > 0 && this.sourceModule.types().hasType(id) && this.sourceModule.types().isKind(id, "List");
+    }
+
+    // The High type id inside `%t<id>` or `hdr%t<id>`; 0 for any other name.
+    private Int typeIdOf(String type) {
+        String digits = "";
+
+        if (type.startsWith("hdr%t")) {
+            digits = type.substring(5, type.length());
+        }
+
+        if (type.startsWith("%t")) {
+            digits = type.substring(2, type.length());
+        }
+
+        if (digits.isEmpty() || !this.isNumber(digits)) {
+            return 0;
+        }
+
+        return digits.toInt();
+    }
+
+    private Bool isNumber(String text) {
+        Int index = 0;
+
+        while (index < text.length()) {
+            if (!text.charAt(index).isDigit()) {
+                return false;
+            }
+
+            index = index + 1;
+        }
+
+        return true;
+    }
+
+    private Int alignUp(Int value, Int alignment) {
+        return ((value + alignment - 1) / alignment) * alignment;
+    }
+}

@@ -15,18 +15,19 @@ use sublang::text::SublangTextParser;
 use sublang::text::SublangTextPrinter;
 use sublang::text::SublangTextResult;
 use sublang::cli::SublangRuntimeCommand;
+use sublang::cli::SublangVersion;
 
 // Compiled executable, independent of Emerald at invocation. LLVM emission is
 // explicit; the capped launcher owns LLVM optimization, linking and execution.
 public class SublangCommand {
     public static Int run(List<String> arguments) {
         if (arguments.length() == 1 && arguments.get(0) == "--version") {
-            println("Sublang 0.1-dev; wire=2 (reads 1/2); core.native64.v2"); return 0;
+            println(SublangVersion.product() + "; wire=2 (reads 1/2); core.native64.v2"); return 0;
         }
         if (arguments.length() == 1 && arguments.get(0) == "capabilities") {
             // Deterministic key=value discovery; every entry mirrors a checked contract.
             println("capabilities-format=2");
-            println("compiler=Sublang 0.1-dev");
+            println("compiler=" + SublangVersion.product());
             println("wire.read=1,2");
             println("wire.write=2");
             println("ir.schema=1");
