@@ -80,6 +80,7 @@ Notation: `L` = `Ref<List<Byte>>` (a byte list). `E` = list element type. `C` = 
 | `text.error` | `L` (borrow_read) | none | writes the bytes to standard error |
 | `text.exists` | `L` path (borrow_read) | `Bool` | no ownership, scope 0; true when the file can be opened for reading |
 | `text.argument_count` | none | `Int` | no ownership, scope 0; the number of arguments after the program name |
+| `text.last_error` | none | `Int` | no ownership, scope 0; the reason the last file operation failed (`errno`), 0 when it worked |
 | `text.exit` | `Int` status (value) | none | ends the process |
 
 Sources: `src/sublang/ir/data/SublangCollectionBuilder.ems` (builders), `SublangTextChecks.ems`

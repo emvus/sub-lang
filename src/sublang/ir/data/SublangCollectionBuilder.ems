@@ -183,6 +183,14 @@ public class SublangCollectionBuilder {
         return this.value(op, this.cursor.module().types().intType());
     }
 
+    // The reason the last file operation failed (the C errno), 0 when it worked.
+    public Int textLastError(Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.last_error", span);
+        op.setOperands(List(), List());
+        return this.value(op, this.cursor.module().types().intType());
+    }
+
     // Ends the process with the given status.
     public Void textExit(Int code, Int span) {
         if (!this.ready()) { return; }

@@ -232,7 +232,7 @@ public class SublangEffectTransfer {
         }
         if (code == "text.write_file" || code == "text.exit") { this.out.raise(SublangFunctionEffects.memoryWrite(), 1); }
         if (code == "text.exit") { this.out.raise(SublangFunctionEffects.control(), 1); }
-        if (code == "text.from_file" || code == "text.exists" || code == "text.argument" || code == "text.argument_count") {
+        if (code == "text.from_file" || code == "text.exists" || code == "text.argument" || code == "text.argument_count" || code == "text.last_error") {
             this.out.raise(SublangFunctionEffects.memoryRead(), 1);
         }
         if (code == "text.from_file" || code == "text.argument") {

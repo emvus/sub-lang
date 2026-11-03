@@ -214,7 +214,7 @@ public class SublangLocalLifetime {
 
     private String collection(SublangLifetimeState state, SublangOperation operation) {
         String opcode = operation.opcode();
-        if (opcode == "text.argument" || opcode == "text.argument_count" || opcode == "text.exit") { return ""; }
+        if (opcode == "text.argument" || opcode == "text.argument_count" || opcode == "text.exit" || opcode == "text.last_error") { return ""; }
         Int owner = operation.operandAt(0);
         if (!this.alive(state, owner)) { return "List access is outside its definite lifetime"; }
         if (opcode == "list.borrow") {

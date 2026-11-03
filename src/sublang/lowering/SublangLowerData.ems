@@ -185,6 +185,10 @@ public class SublangLowerData {
             context.bind(op.resultValue(), context.runtime("sublang.io.exists", SublangLowerContext.one(context.value(op.operandAt(0))), "i1"));
             return;
         }
+        if (code == "text.last_error") {
+            context.bind(op.resultValue(), context.runtime("sublang.io.reason", SublangLowerContext.none(), "i64"));
+            return;
+        }
         if (code == "text.argument_count") {
             context.bind(op.resultValue(), context.runtime("sublang.io.argc", SublangLowerContext.none(), "i64"));
             return;

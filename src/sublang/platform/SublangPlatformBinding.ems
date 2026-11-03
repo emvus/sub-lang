@@ -46,6 +46,10 @@ public class SublangPlatformBinding {
         builder.beginBlock();
         builder.collections().textError(complaint, span);
         builder.ops().returnValue(0, span);
+        // last_error() -> Int
+        builder.beginFunction("platform.io.last_error", integer, 0, span);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.collections().textLastError(span), span);
         // argument(index) -> owned text
         builder.beginFunction("platform.process.argument", text, 0, span);
         Int index = builder.addParam("index", integer, "value", false);

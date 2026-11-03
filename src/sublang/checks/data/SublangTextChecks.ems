@@ -71,12 +71,12 @@ public class SublangTextChecks {
         String code = op.opcode();
         Int operands = 1;
         if (code == "text.write_file") { operands = 2; }
-        if (code == "text.argument_count") { operands = 0; }
+        if (code == "text.argument_count" || code == "text.last_error") { operands = 0; }
         if (op.operandCount() != operands) { return code + " has the wrong operand count"; }
         if (code == "text.argument" || code == "text.exit") {
             if (function.valueTypeOrZero(op.operandAt(0)) != module.types().intType() || op.modeAt(0) != "value") { return code + " requires an Int value operand"; }
         }
-        if (code != "text.argument" && code != "text.exit" && code != "text.argument_count") {
+        if (code != "text.argument" && code != "text.exit" && code != "text.argument_count" && code != "text.last_error") {
             Int position = 0;
             while (position < operands) {
                 if (!SublangTextChecks.byteList(module, SublangTextChecks.listOf(module, function, op, position)) || op.modeAt(position) != "borrow_read") { return code + " requires byte lists borrowed for reading"; }
@@ -88,7 +88,7 @@ public class SublangTextChecks {
             if (op.resultType() != module.types().refTypeOrZero(op.ref()) || op.resultOwnership() != "owned" || op.scope() <= 0) { return code + " requires an owned result and destination scope"; }
         }
         if ((code == "text.write_file" || code == "text.exists") && (!op.hasResult() || op.resultType() != module.types().boolType() || op.resultOwnership() != "" || op.scope() != 0)) { return code + " requires a plain Bool result"; }
-        if (code == "text.argument_count" && (!op.hasResult() || op.resultType() != module.types().intType() || op.resultOwnership() != "" || op.scope() != 0)) { return "text.argument_count requires a plain Int result"; }
+        if ((code == "text.argument_count" || code == "text.last_error") && (!op.hasResult() || op.resultType() != module.types().intType() || op.resultOwnership() != "" || op.scope() != 0)) { return code + " requires a plain Int result"; }
         if ((code == "text.print" || code == "text.error" || code == "text.exit") && (op.hasResult() || op.scope() != 0)) { return code + " has no result"; }
         return "";
     }

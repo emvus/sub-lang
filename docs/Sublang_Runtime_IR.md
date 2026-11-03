@@ -50,6 +50,7 @@ owned by the caller's destination scope, as for any call that returns a referenc
 | `platform.io.file_exists` | text -> Bool | true when the file can be opened for reading |
 | `platform.io.print` | text -> Void | writes to standard output |
 | `platform.io.print_error` | text -> Void | writes to standard error |
+| `platform.io.last_error` | -> Int | why the last file operation failed (the C `errno`), 0 when it worked |
 | `platform.process.argument` | Int -> owned text | argument `index` (0 is the first after the program name), empty past the last |
 | `platform.process.argument_count` | -> Int | the number of arguments after the program name |
 | `platform.process.exit` | Int -> Void | ends the process with the status |
@@ -99,7 +100,7 @@ Unavailable destinations fail explicitly; they never silently compile for Linux.
    files, arguments and standard streams on Linux; the effect analysis classifies the platform operations
    (printing, writing and exiting are observable, reading files and arguments reads outside state, text results
    are fresh allocations) so their calls are neither dropped nor reordered; alias facts for results are
-   the origin of the call site only, errors are values (empty text, false), and Windows/macOS bindings are missing.
+   the origin of the call site only, errors are values (empty text, false) with the reason of the last file operation in `platform.io.last_error`, and Windows/macOS bindings are missing.
 2. Controlled raw-memory/ABI lowering for runtime primitives. Separate allocator
    primitives from managed functions so Flow never recursively allocates through itself.
 3. Real Linux file I/O, process arguments and byte-buffer results, implemented through
