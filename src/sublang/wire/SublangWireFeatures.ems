@@ -47,6 +47,25 @@ public class SublangWireFeatures {
         return false;
     }
 
+    // True when an operation reads or writes files, arguments or standard output. Such a module is a command line
+    // program: its entry result is the process exit status and is not printed.
+    public static Bool usesInputOutput(SublangModule module) {
+        Int function = 1;
+        while (function <= module.functionCount()) {
+            Int block = 1;
+            while (block <= module.functionAt(function).blockCount()) {
+                Int index = 0;
+                while (index < module.functionAt(function).blockAt(block).operationCount()) {
+                    if (SublangVocabulary.isInputOutputOpcode(module.functionAt(function).blockAt(block).operationAt(index).opcode())) { return true; }
+                    index = index + 1;
+                }
+                block = block + 1;
+            }
+            function = function + 1;
+        }
+        return false;
+    }
+
     public static Bool usesNumeric(SublangModule module) {
         Int function = 1;
         while (function <= module.functionCount()) {

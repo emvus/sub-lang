@@ -770,7 +770,7 @@ a reader that does not know the token rejects the module. Sources: `SublangWire.
 
 | Token | Required when the module has | Opcodes that need it (13.4) |
 | --- | --- | --- |
-| `ext.bytes.v1` | a `Byte` type, or any byte-text opcode | `byte.from_int`, `byte.to_int`, `list.set`, `list.replace`, `text.from_str`, `text.append`, `text.concat`, `text.slice`, `text.equal` |
+| `ext.bytes.v1` | a `Byte` type, or any byte-text opcode | `byte.from_int`, `byte.to_int`, `list.set`, `list.replace`, `text.from_str`, `text.append`, `text.concat`, `text.slice`, `text.from_file`, `text.argument`, `text.write_file`, `text.print`, `text.equal` |
 | `ext.numeric.v1` | any numeric-conversion opcode | `int.to_float`, `float.to_int`, `float.is_int`, `number.equal` |
 | `ext.eh.v1` | any exception opcode | `invoke`, `throw`, `resume` |
 | `ext.oo.v1` | a non-empty dispatch table, a `Class` type with a base (its `target` is not 0), or an object opcode | `class.upcast`, `class.downcast`, `call.virtual`. Also enables the `dispatch` section (13.3) |
@@ -844,6 +844,10 @@ of the `targets` list. "Scope > 0" means a destination scope is required.
 | `text.concat` | bytes | 2: `Ref<List>` (borrow_read), `Ref<List>` (borrow_read) | `Ref<List>` (owned, scope > 0) | the byte-list type | 0 | both operands are byte lists |
 | `text.slice` | bytes | 3: `Ref<List>` (borrow_read), `Int` start (value), `Int` length (value) | `Ref<List>` (owned, scope > 0) | the byte-list type | 0 | out-of-range arguments abort at run time |
 | `text.equal` | bytes | 2: `Ref<List>` (borrow_read), `Ref<List>` (borrow_read) | `Bool` (empty, 0) | 0 | 0 | none |
+| `text.from_file` | bytes | 1: `Ref<List>` (borrow_read) | `Ref<List>` (owned, scope > 0) | the byte-list type | 0 | none (empty list when unreadable) |
+| `text.argument` | bytes | 1: `Int` index (value) | `Ref<List>` (owned, scope > 0) | the byte-list type | 0 | none (empty list past the last argument) |
+| `text.write_file` | bytes | 2: `Ref<List>` (borrow_read), `Ref<List>` (borrow_read) | `Bool` (empty, 0) | 0 | 0 | none |
+| `text.print` | bytes | 1: `Ref<List>` (borrow_read) | none | 0 | 0 | none |
 | `int.to_float` | numeric | 1: `Int` (value) | `Float` (empty, 0) | 0 | 0 | none |
 | `float.to_int` | numeric | 1: `Float` (value) | `Int` (empty, 0) | 0 | 0 | none |
 | `float.is_int` | numeric | 1: `Float` (value) | `Bool` (empty, 0) | 0 | 0 | none |

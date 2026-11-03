@@ -19,6 +19,7 @@ use sublang::backend::llvm::SublangLlvmControl;
 use sublang::backend::llvmdata::SublangLlvmStrings;
 use sublang::backend::llvmdata::SublangLlvmLists;
 use sublang::backend::llvmdata::SublangLlvmListRuntime;
+use sublang::backend::llvmdata::SublangLlvmIoRuntime;
 use sublang::backend::llvmflow::SublangLlvmBondRuntime;
 use sublang::backend::llvmflow::SublangLlvmBonds;
 use sublang::backend::llvmflow::SublangLlvmBondEmitter;
@@ -41,6 +42,7 @@ public class SublangLlvmEmitter {
         text = text + SublangLlvmListRuntime.definitions() + SublangLlvmLists.definitions(module);
         text = text + SublangLlvmBondRuntime.definitions() + SublangLlvmBonds.definitions(module);
         text = text + SublangLlvmBondTrial.definitions() + SublangLlvmBondCache.definitions();
+        text = text + SublangLlvmIoRuntime.definitions();
         text = text + SublangLlvmPoolRuntime.definitions(module, plan.enabled());
         if (SublangWireFeatures.usesExceptions(module)) { text = text + SublangLowLlvm.exceptionDeclarations(); }
         return text;
@@ -53,7 +55,7 @@ public class SublangLlvmEmitter {
             text = text + SublangLowLlvm.function(low.functionAt(id));
             id = id + 1;
         }
-        if (module.entryFunction() != 0) { text = text + SublangLlvmEmitter.entry(module.entryFunction()); }
+        if (module.entryFunction() != 0) { text = text + SublangLlvmEmitter.entry(module.entryFunction(), SublangWireFeatures.usesInputOutput(module)); }
         return text;
     }
 
@@ -66,7 +68,7 @@ public class SublangLlvmEmitter {
             id = id + 1;
         }
         if (module.entryFunction() != 0) {
-            text = text + SublangLlvmEmitter.entry(module.entryFunction());
+            text = text + SublangLlvmEmitter.entry(module.entryFunction(), SublangWireFeatures.usesInputOutput(module));
         }
         return text;
     }
@@ -146,7 +148,11 @@ public class SublangLlvmEmitter {
         return SublangLlvmControl.emit(context, operation);
     }
 
-    private static String entry(Int functionId) {
-        return "define i32 @main() {\nentry:\n  %answer = call i64 @fn" + functionId.toString() + "()\n  call void @sublang.pool.flush()\n  %printed = call i32 (ptr, ...) @printf(ptr @sublang.format, i64 %answer)\n  ret i32 0\n}\n";
+    // The process arguments are kept for text.argument. A program that uses platform access ends with its
+    // entry result as the exit status; any other program prints it.
+    private static String entry(Int functionId, Bool exitStatus) {
+        String text = "define i32 @main(i32 %argc, ptr %argv) {\nentry:\n  store i32 %argc, ptr @sublang.argc\n  store ptr %argv, ptr @sublang.argv\n  %answer = call i64 @fn" + functionId.toString() + "()\n  call void @sublang.pool.flush()\n";
+        if (exitStatus) { return text + "  %status = trunc i64 %answer to i32\n  ret i32 %status\n}\n"; }
+        return text + "  %printed = call i32 (ptr, ...) @printf(ptr @sublang.format, i64 %answer)\n  ret i32 0\n}\n";
     }
 }

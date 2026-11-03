@@ -113,6 +113,48 @@ public class SublangCollectionBuilder {
         return this.value(op, this.cursor.module().types().refTypeFor(listType));
     }
 
+    // Owned byte list holding the bytes of a file (empty when it cannot be read); path is a byte list.
+    public Int textFromFile(Int listType, Int path, Int scope, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.from_file", span);
+        List<Int> args = List(); args.add(path);
+        List<String> modes = List(); modes.add("borrow_read");
+        op.setOperands(args, modes);
+        op.setRef(listType); op.setScope(scope); op.setResultOwnership("owned");
+        return this.value(op, this.cursor.module().types().refTypeFor(listType));
+    }
+
+    // Owned byte list holding command line argument `index` (empty past the last one).
+    public Int textArgument(Int listType, Int index, Int scope, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.argument", span);
+        List<Int> args = List(); args.add(index);
+        List<String> modes = List(); modes.add("value");
+        op.setOperands(args, modes);
+        op.setRef(listType); op.setScope(scope); op.setResultOwnership("owned");
+        return this.value(op, this.cursor.module().types().refTypeFor(listType));
+    }
+
+    // Writes data to the file at path; the Bool tells whether it worked.
+    public Int textWriteFile(Int path, Int data, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.write_file", span);
+        List<Int> args = List(); args.add(path); args.add(data);
+        List<String> modes = List(); modes.add("borrow_read"); modes.add("borrow_read");
+        op.setOperands(args, modes);
+        return this.value(op, this.cursor.module().types().boolType());
+    }
+
+    // Writes data to standard output.
+    public Void textPrint(Int data, Int span) {
+        if (!this.ready()) { return; }
+        SublangOperation op = this.operation("text.print", span);
+        List<Int> args = List(); args.add(data);
+        List<String> modes = List(); modes.add("borrow_read");
+        op.setOperands(args, modes);
+        this.cursor.currentBlock().addOperation(op);
+    }
+
     public Int textEqual(Int left, Int right, Int span) {
         if (!this.ready()) { return 0; }
         SublangOperation op = this.operation("text.equal", span);

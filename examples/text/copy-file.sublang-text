@@ -1,0 +1,75 @@
+sublang-text 1 schema=1 stage=High revision=1
+feature "ext.bytes.v1"
+module "/tmp/hello.ev" entry=2
+source id=1 name="/tmp/hello.ev"
+span id=1 source=1 line=0 column=0 origin=""
+type id=5 kind="List" name="List<Int>" width=0 signed=false target=3 nullable=false span=1
+type id=6 kind="Ref" name="Ref<List<Int>>" width=0 signed=false target=5 nullable=false span=1
+type id=7 kind="List" name="List<Bool>" width=0 signed=false target=2 nullable=false span=1
+type id=8 kind="Ref" name="Ref<List<Bool>>" width=0 signed=false target=7 nullable=false span=1
+type id=9 kind="Byte" name="Byte" width=8 signed=false target=0 nullable=false span=1
+type id=10 kind="List" name="List<Byte>" width=0 signed=false target=9 nullable=false span=1
+type id=11 kind="Ref" name="Ref<List<Byte>>" width=0 signed=false target=10 nullable=false span=1
+type id=12 kind="String" name="String" width=0 signed=false target=0 nullable=false span=1
+profile id=1 name="sublang.startup" version=1 integer-rules="i64-signed" float-rules="f64-ieee-rne" failure-model="abort" unwinding-model="none"
+failure id=1 name="emvus.integer_failure" behavior="abort" binding="unbound" signature="noreturn void()" continues=false unwinding="none" span=0
+failure id=2 name="emvus.panic" behavior="abort" binding="unbound" signature="noreturn void()" continues=false unwinding="none" span=0
+effect id=1 name="conservative" span=0
+  fact area="allocation" value="unknown" provenance="assumed-conservative" detail="" label="" proof-analysis="" proof-revision=0 proof-deps=[] locations=[]
+  fact area="escape" value="unknown" provenance="assumed-conservative" detail="" label="" proof-analysis="" proof-revision=0 proof-deps=[] locations=[]
+  fact area="failure" value="unknown" provenance="assumed-conservative" detail="" label="" proof-analysis="" proof-revision=0 proof-deps=[] locations=[]
+  fact area="exceptions" value="unknown" provenance="assumed-conservative" detail="" label="" proof-analysis="" proof-revision=0 proof-deps=[] locations=[]
+  fact area="memory-read" value="unknown" provenance="assumed-conservative" detail="" label="" proof-analysis="" proof-revision=0 proof-deps=[] locations=[]
+  fact area="memory-write" value="unknown" provenance="assumed-conservative" detail="" label="" proof-analysis="" proof-revision=0 proof-deps=[] locations=[]
+  fact area="synchronization" value="unknown" provenance="assumed-conservative" detail="" label="" proof-analysis="" proof-revision=0 proof-deps=[] locations=[]
+  fact area="observable" value="unknown" provenance="assumed-conservative" detail="" label="" proof-analysis="" proof-revision=0 proof-deps=[] locations=[]
+  fact area="control" value="unknown" provenance="assumed-conservative" detail="" label="" proof-analysis="" proof-revision=0 proof-deps=[] locations=[]
+func id=1 name="emvus.text.assign" returnType=1 methodOf=0 span=1 profile=1 effect=1 linkage="internal" convention="sublang" definition="body"
+  value id=1 type=11
+  value id=2 type=11
+  value id=3 type=3
+  value id=4 type=3
+  value id=5 type=3
+  value id=6 type=2
+  value id=7 type=9
+  value id=8 type=3
+  value id=9 type=3
+  param id=1 name="" type=11 passing="borrow_write" noescape=false
+  param id=2 name="" type=11 passing="borrow_read" noescape=false
+  block id=1 params=[]
+    op id=1 opcode="list.clear" span=1 result=0 type=0 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[1] modes=["borrow_write"] targets=[] trueargs=0
+    op id=2 opcode="const.int" span=1 result=3 type=3 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[] modes=[] targets=[] trueargs=0
+    op id=3 opcode="branch" span=1 result=0 type=0 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[3] modes=["value"] targets=[2] trueargs=0
+  block id=2 params=[4]
+    op id=4 opcode="list.length" span=1 result=5 type=3 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[2] modes=["borrow_read"] targets=[] trueargs=0
+    op id=5 opcode="compare" span=1 result=6 type=2 ownership="" ref=0 scope=0 overflow="" predicate="lt" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[4,5] modes=["value","value"] targets=[] trueargs=0
+    op id=6 opcode="cond_branch" span=1 result=0 type=0 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[6] modes=["value"] targets=[3,4] trueargs=0
+  block id=3 params=[]
+    op id=7 opcode="list.get" span=1 result=7 type=9 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[2,4] modes=["borrow_read","value"] targets=[] trueargs=0
+    op id=8 opcode="list.push" span=1 result=0 type=0 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[1,7] modes=["borrow_write","value"] targets=[] trueargs=0
+    op id=9 opcode="const.int" span=1 result=8 type=3 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=1 bool=false bits=0 text="" operands=[] modes=[] targets=[] trueargs=0
+    op id=10 opcode="int.add" span=1 result=9 type=3 ownership="" ref=1 scope=0 overflow="trap" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[4,8] modes=["value","value"] targets=[] trueargs=0
+    op id=11 opcode="branch" span=1 result=0 type=0 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[9] modes=["value"] targets=[2] trueargs=0
+  block id=4 params=[]
+    op id=12 opcode="return" span=1 result=0 type=0 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[] modes=[] targets=[] trueargs=0
+func id=2 name="main" returnType=3 methodOf=0 span=1 profile=1 effect=1 linkage="internal" convention="sublang" definition="body"
+  value id=1 type=3
+  value id=2 type=11
+  value id=3 type=11
+  value id=4 type=11
+  value id=5 type=2
+  value id=6 type=3
+  value id=7 type=3
+  block id=1 params=[]
+    op id=100 opcode="scope.begin" span=1 result=0 type=0 ownership="" ref=1 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[] modes=[] targets=[] trueargs=0
+    op id=101 opcode="const.int" span=1 result=1 type=3 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[] modes=[] targets=[] trueargs=0
+    op id=102 opcode="text.argument" span=1 result=2 type=11 ownership="owned" ref=10 scope=1 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[1] modes=["value"] targets=[] trueargs=0
+    op id=103 opcode="text.from_file" span=1 result=3 type=11 ownership="owned" ref=10 scope=1 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[2] modes=["borrow_read"] targets=[] trueargs=0
+    op id=104 opcode="text.print" span=1 result=0 type=0 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[3] modes=["borrow_read"] targets=[] trueargs=0
+    op id=105 opcode="const.int" span=1 result=6 type=3 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=1 bool=false bits=0 text="" operands=[] modes=[] targets=[] trueargs=0
+    op id=106 opcode="text.argument" span=1 result=4 type=11 ownership="owned" ref=10 scope=1 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[6] modes=["value"] targets=[] trueargs=0
+    op id=107 opcode="text.write_file" span=1 result=5 type=2 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[4,3] modes=["borrow_read","borrow_read"] targets=[] trueargs=0
+    op id=108 opcode="const.int" span=1 result=7 type=3 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=7 bool=false bits=0 text="" operands=[] modes=[] targets=[] trueargs=0
+    op id=109 opcode="scope.end" span=1 result=0 type=0 ownership="" ref=1 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[] modes=[] targets=[] trueargs=0
+    op id=110 opcode="return" span=1 result=0 type=0 ownership="" ref=0 scope=0 overflow="" predicate="" fpmode="" effect=0 int=0 bool=false bits=0 text="" operands=[7] modes=["value"] targets=[] trueargs=0
+end

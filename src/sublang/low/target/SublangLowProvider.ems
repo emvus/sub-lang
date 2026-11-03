@@ -20,6 +20,7 @@ public class SublangLowProvider {
         text = text + "sublang.bond.root.take ptr(ptr)\nsublang.bond.scope.end void(ptr)\nsublang.bond.edge.set void(ptr,ptr)\n";
         text = text + "sublang.list.at ptr(ptr,i64,i64)\nsublang.list.push.slot ptr(ptr,i64)\n";
         text = text + "sublang.text.append void(ptr,ptr,i64)\nsublang.text.equal i1(ptr,ptr)\n";
+        text = text + "sublang.io.read void(ptr,ptr)\nsublang.io.argument void(ptr,i64)\nsublang.io.write i1(ptr,ptr)\nsublang.io.print void(ptr)\n";
         text = text + "memcmp i32(ptr,ptr,i64)\n";
         return text;
     }
