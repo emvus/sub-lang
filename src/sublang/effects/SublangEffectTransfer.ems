@@ -1,5 +1,6 @@
 namespace sublang::effects;
 
+use sublang::vocabulary::SublangVocabulary;
 use sublang::body::SublangFunction;
 use sublang::body::SublangOperation;
 use sublang::ir::SublangModule;
@@ -168,6 +169,7 @@ public class SublangEffectTransfer {
             this.out.raise(SublangFunctionEffects.failure(), 1);
             return false;
         }
+        if (SublangVocabulary.isInputOutputOpcode(code)) { return this.platform(op, site); }
         if (code == "record.make" || code == "record.with") { return this.uniteOperands(op); }
         if (code == "record.get") { return this.uniteFirst(op); }
         if (code == "class.new" || code == "list.new" || code == "bond.new") {
@@ -213,6 +215,31 @@ public class SublangEffectTransfer {
         if (op.opcode().startsWith("bond.")) { this.out.raise(SublangFunctionEffects.failure(), 1); }
         if (op.operandCount() < 2) { return false; }
         return this.flow.link(op.operandAt(0), op.operandAt(1));
+    }
+
+    // Platform operations touch state outside the program. Writing, printing and exiting are observable; reading a
+    // file or the arguments reads that state; a text result is a fresh allocation. Texts passed in are only read.
+    private Bool platform(SublangOperation op, Int site) {
+        String code = op.opcode();
+        this.out.raise(SublangFunctionEffects.failure(), 1);
+        Int index = 0;
+        while (index < op.operandCount()) {
+            if (this.carriesRegion(this.function.valueTypeAt(op.operandAt(index)))) { this.seedRead(op.operandAt(index)); }
+            index = index + 1;
+        }
+        if (code == "text.print" || code == "text.error" || code == "text.write_file" || code == "text.exit") {
+            this.out.raise(SublangFunctionEffects.observable(), 1);
+        }
+        if (code == "text.write_file" || code == "text.exit") { this.out.raise(SublangFunctionEffects.memoryWrite(), 1); }
+        if (code == "text.exit") { this.out.raise(SublangFunctionEffects.control(), 1); }
+        if (code == "text.from_file" || code == "text.exists" || code == "text.argument" || code == "text.argument_count") {
+            this.out.raise(SublangFunctionEffects.memoryRead(), 1);
+        }
+        if (code == "text.from_file" || code == "text.argument") {
+            this.out.raise(SublangFunctionEffects.allocation(), 1);
+            if (site >= 0) { return this.flow.addOrigin(op.resultValue(), site); }
+        }
+        return false;
     }
 
     private Bool unclassified(SublangOperation op, Int site) {

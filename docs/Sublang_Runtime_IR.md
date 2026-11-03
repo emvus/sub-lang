@@ -96,8 +96,10 @@ Unavailable destinations fail explicitly; they never silently compile for Linux.
 
 1. Typed platform imports with effect/alias/ownership contracts, error behavior,
    blocking and synchronization. Arbitrary external names must not become proofs. *Started:* the table above for
-   files, arguments and standard streams on Linux; effect and alias facts of the imports are still the
-   conservative defaults, errors are values (empty text, false), and Windows/macOS bindings are missing.
+   files, arguments and standard streams on Linux; the effect analysis classifies the platform operations
+   (printing, writing and exiting are observable, reading files and arguments reads outside state, text results
+   are fresh allocations) so their calls are neither dropped nor reordered; alias facts for results are
+   the origin of the call site only, errors are values (empty text, false), and Windows/macOS bindings are missing.
 2. Controlled raw-memory/ABI lowering for runtime primitives. Separate allocator
    primitives from managed functions so Flow never recursively allocates through itself.
 3. Real Linux file I/O, process arguments and byte-buffer results, implemented through
