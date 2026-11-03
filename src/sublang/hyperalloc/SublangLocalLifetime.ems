@@ -214,15 +214,14 @@ public class SublangLocalLifetime {
 
     private String collection(SublangLifetimeState state, SublangOperation operation) {
         String opcode = operation.opcode();
-        if (opcode == "text.argument") { return ""; }
+        if (opcode == "text.argument" || opcode == "text.argument_count" || opcode == "text.exit") { return ""; }
         Int owner = operation.operandAt(0);
         if (!this.alive(state, owner)) { return "List access is outside its definite lifetime"; }
         if (opcode == "list.borrow") {
             this.clearValue(state, operation.resultValue()); state.setLive(operation.resultValue(), true);
             this.initializeFields(state, operation.resultValue()); return "";
         }
-        if (opcode == "text.argument") { return ""; }
-        if (opcode == "text.equal" || opcode == "text.from_file" || opcode == "text.write_file" || opcode == "text.print") { return this.textSources(state, operation); }
+        if (opcode == "text.equal" || opcode == "text.from_file" || opcode == "text.write_file" || opcode == "text.print" || opcode == "text.error" || opcode == "text.exists") { return this.textSources(state, operation); }
         Bool mutates = opcode == "list.push" || opcode == "list.clear" || opcode == "list.set" || opcode == "list.replace" || opcode == "text.append";
         if (!mutates) { return ""; }
         if (this.borrowed.get(owner) == 1) { return "read-only List borrow cannot be mutated"; }
@@ -239,7 +238,7 @@ public class SublangLocalLifetime {
     // Byte-list operands of a text operation must be live; static strings carry no lifetime.
     private String textSources(SublangLifetimeState state, SublangOperation operation) {
         String code = operation.opcode();
-        if (code != "text.concat" && code != "text.slice" && code != "text.equal" && code != "text.from_file" && code != "text.write_file" && code != "text.print") { return ""; }
+        if (code != "text.concat" && code != "text.slice" && code != "text.equal" && code != "text.from_file" && code != "text.write_file" && code != "text.print" && code != "text.error" && code != "text.exists") { return ""; }
         Int index = 0;
         Int sources = 1;
         if (code == "text.concat" || code == "text.equal" || code == "text.write_file") { sources = 2; }

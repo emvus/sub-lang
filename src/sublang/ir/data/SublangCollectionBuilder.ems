@@ -155,6 +155,44 @@ public class SublangCollectionBuilder {
         this.cursor.currentBlock().addOperation(op);
     }
 
+    // Writes data to standard error.
+    public Void textError(Int data, Int span) {
+        if (!this.ready()) { return; }
+        SublangOperation op = this.operation("text.error", span);
+        List<Int> args = List(); args.add(data);
+        List<String> modes = List(); modes.add("borrow_read");
+        op.setOperands(args, modes);
+        this.cursor.currentBlock().addOperation(op);
+    }
+
+    // True when the file at path can be opened for reading.
+    public Int textExists(Int path, Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.exists", span);
+        List<Int> args = List(); args.add(path);
+        List<String> modes = List(); modes.add("borrow_read");
+        op.setOperands(args, modes);
+        return this.value(op, this.cursor.module().types().boolType());
+    }
+
+    // Number of command line arguments after the program name.
+    public Int textArgumentCount(Int span) {
+        if (!this.ready()) { return 0; }
+        SublangOperation op = this.operation("text.argument_count", span);
+        op.setOperands(List(), List());
+        return this.value(op, this.cursor.module().types().intType());
+    }
+
+    // Ends the process with the given status.
+    public Void textExit(Int code, Int span) {
+        if (!this.ready()) { return; }
+        SublangOperation op = this.operation("text.exit", span);
+        List<Int> args = List(); args.add(code);
+        List<String> modes = List(); modes.add("value");
+        op.setOperands(args, modes);
+        this.cursor.currentBlock().addOperation(op);
+    }
+
     public Int textEqual(Int left, Int right, Int span) {
         if (!this.ready()) { return 0; }
         SublangOperation op = this.operation("text.equal", span);

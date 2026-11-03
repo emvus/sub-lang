@@ -119,7 +119,8 @@ public class SublangVocabulary {
     // write a file, print to standard output. Paths and texts are byte lists borrowed for reading; a failed
     // read yields an empty list and an argument beyond the last one is empty too.
     public static Bool isInputOutputOpcode(String opcode) {
-        return opcode == "text.from_file" || opcode == "text.write_file" || opcode == "text.print" || opcode == "text.argument";
+        return opcode == "text.from_file" || opcode == "text.write_file" || opcode == "text.print" || opcode == "text.argument"
+            || opcode == "text.error" || opcode == "text.exists" || opcode == "text.argument_count" || opcode == "text.exit";
     }
 
     public static Bool isKnownPassing(String mode) {
@@ -181,7 +182,7 @@ public class SublangVocabulary {
         if (opcode == "const.string" || opcode == "string.length" || opcode == "string.byte" || opcode == "string.equal") { return true; }
         if (opcode == "field.borrow") { return true; }
         if (opcode == "byte.from_int" || opcode == "byte.to_int" || opcode == "text.from_str" || opcode == "text.concat" || opcode == "text.slice" || opcode == "text.equal") { return true; }
-        if (opcode == "text.from_file" || opcode == "text.write_file" || opcode == "text.argument") { return true; }
+        if (opcode == "text.from_file" || opcode == "text.write_file" || opcode == "text.argument" || opcode == "text.exists" || opcode == "text.argument_count") { return true; }
         if (SublangVocabulary.isNumericOpcode(opcode) || opcode == "class.upcast" || opcode == "class.downcast") { return true; }
         if (SublangVocabulary.isIntOpcode(opcode) || SublangVocabulary.isFloatOpcode(opcode)) {
             return true;

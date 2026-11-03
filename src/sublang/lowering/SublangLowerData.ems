@@ -181,6 +181,22 @@ public class SublangLowerData {
             context.bind(op.resultValue(), context.runtime("sublang.io.write", SublangLowerContext.two(context.value(op.operandAt(0)), context.value(op.operandAt(1))), "i1"));
             return;
         }
+        if (code == "text.exists") {
+            context.bind(op.resultValue(), context.runtime("sublang.io.exists", SublangLowerContext.one(context.value(op.operandAt(0))), "i1"));
+            return;
+        }
+        if (code == "text.argument_count") {
+            context.bind(op.resultValue(), context.runtime("sublang.io.argc", SublangLowerContext.none(), "i64"));
+            return;
+        }
+        if (code == "text.exit") {
+            context.runtimeVoid("sublang.process.exit", SublangLowerContext.one(context.value(op.operandAt(0))));
+            return;
+        }
+        if (code == "text.error") {
+            context.runtimeVoid("sublang.io.error", SublangLowerContext.one(context.value(op.operandAt(0))));
+            return;
+        }
         if (code == "text.print") {
             context.runtimeVoid("sublang.io.print", SublangLowerContext.one(context.value(op.operandAt(0))));
             return;

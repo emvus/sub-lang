@@ -1,0 +1,108 @@
+namespace sublang::platform;
+
+use sublang::body::SublangFunction;
+use sublang::ir::SublangModule;
+
+// Typed platform imports. A program reaches the platform by declaring an external contract named
+// `platform.<area>.<name>` with exactly the signature of the table below; no other external name is
+// accepted. SublangPlatformBinding binds each import to a runtime library written in Sublang, which uses the
+// byte-text platform operations (text.from_file, text.print, ...) and is linked into the program before
+// analysis, like any runtime library. The contracts carry their own ownership: a text parameter is
+// borrowed for reading and a text result is owned by the caller's scope.
+//
+// Signature letters: `t` text (Ref<List<Byte>>) borrowed for reading, `i` Int, `b` Bool, `T` owned text,
+// `v` nothing. A signature reads `parameters>result`.
+public class SublangPlatform {
+    private static String table() {
+        String text = "\n";
+        text = text + "platform.io.read_file t>T\nplatform.io.write_file tt>b\nplatform.io.file_exists t>b\n";
+        text = text + "platform.io.print t>v\nplatform.io.print_error t>v\n";
+        text = text + "platform.process.argument i>T\nplatform.process.argument_count >i\nplatform.process.exit i>v\n";
+        return text;
+    }
+
+    // The signature of an import, or "" when the name is not one. Listed in `sublang capabilities`.
+    public static String signature(String name) {
+        String key = "\n" + name + " ";
+        Int at = SublangPlatform.table().indexOf(key);
+        if (at < 0) { return ""; }
+        Int start = at + key.length();
+        Int end = start;
+        String table = SublangPlatform.table();
+        while (end < table.length() && table.substring(end, end + 1) != "\n") { end = end + 1; }
+        return table.substring(start, end);
+    }
+
+    public static Bool isImport(String name) {
+        return name.startsWith("platform.") && SublangPlatform.signature(name) != "";
+    }
+
+    public static List<String> names() {
+        List<String> names = List();
+        String table = SublangPlatform.table();
+        Int start = 1;
+        Int index = 1;
+        while (index < table.length()) {
+            if (table.substring(index, index + 1) == "\n") {
+                String line = table.substring(start, index);
+                names.add(line.substring(0, line.indexOf(" ")));
+                start = index + 1;
+            }
+            index = index + 1;
+        }
+        return names;
+    }
+
+    // True when the module declares at least one platform contract.
+    public static Bool hasImports(SublangModule module) {
+        Int id = 1;
+        while (id <= module.functionCount()) {
+            SublangFunction function = module.functionAt(id);
+            if (function.definition() == "contract" && function.name().startsWith("platform.")) { return true; }
+            id = id + 1;
+        }
+        return false;
+    }
+
+    // "" when the contract has the signature of the table, otherwise what is wrong with it.
+    public static String check(SublangModule module, SublangFunction function) {
+        String signature = SublangPlatform.signature(function.name());
+        if (signature == "") { return "SUBLANG-I001: " + function.name() + " is not a platform import"; }
+        Int split = signature.indexOf(">");
+        String parameters = signature.substring(0, split);
+        String result = signature.substring(split + 1, signature.length());
+        if (function.paramCount() != parameters.length()) { return "SUBLANG-I002: " + function.name() + " takes " + parameters.length().toString() + " parameter(s)"; }
+        Int index = 0;
+        while (index < parameters.length()) {
+            String wrong = SublangPlatform.parameter(module, function, index, parameters.substring(index, index + 1));
+            if (wrong != "") { return "SUBLANG-I002: " + function.name() + " " + wrong; }
+            index = index + 1;
+        }
+        String returned = SublangPlatform.result(module, function, result);
+        if (returned != "") { return "SUBLANG-I002: " + function.name() + " " + returned; }
+        return "";
+    }
+
+    private static Bool isText(SublangModule module, Int type) {
+        if (!module.types().isKind(type, "Ref")) { return false; }
+        Int list = module.types().typeAt(type).target();
+        return module.types().isKind(list, "List") && module.types().isKind(module.types().typeAt(list).target(), "Byte");
+    }
+
+    private static String parameter(SublangModule module, SublangFunction function, Int index, String letter) {
+        Int type = function.paramAt(index).typeId();
+        String passing = function.paramAt(index).passing();
+        if (letter == "t" && (!SublangPlatform.isText(module, type) || passing != "borrow_read")) { return "parameter " + index.toString() + " must be a text borrowed for reading"; }
+        if (letter == "i" && (type != module.types().intType() || passing != "value")) { return "parameter " + index.toString() + " must be an Int value"; }
+        return "";
+    }
+
+    private static String result(SublangModule module, SublangFunction function, String letter) {
+        Int type = function.returnType();
+        if (letter == "T" && !SublangPlatform.isText(module, type)) { return "must return an owned text"; }
+        if (letter == "b" && type != module.types().boolType()) { return "must return a Bool"; }
+        if (letter == "i" && type != module.types().intType()) { return "must return an Int"; }
+        if (letter == "v" && type != module.types().voidType()) { return "must return nothing"; }
+        return "";
+    }
+}

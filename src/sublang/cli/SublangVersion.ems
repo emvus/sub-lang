@@ -4,7 +4,7 @@ namespace sublang::cli;
 // by scripts/stampVersion.sh, which the build scripts run first; a build outside git keeps "unstamped".
 public class SublangVersion {
     private static String commit() {
-        return "d22bfd9b";
+        return "f77704f5";
     }
 
     public static String number() {
