@@ -1,0 +1,16 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [master]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell scripts parse
+        run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
+      - name: Pureline, at most 8 .ems files per folder (known violation in src/sublang/harness/flow)
+        continue-on-error: true
+        run: |
+          git ls-files '*.ems' | xargs -n1 dirname | sort | uniq -c | awk '$1 > 8 { print "too many .ems files in " $2 ": " $1; bad = 1 } END { exit bad }'
