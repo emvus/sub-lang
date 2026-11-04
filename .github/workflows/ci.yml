@@ -3,14 +3,92 @@ on:
   pull_request:
   push:
     branches: [master]
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+env:
+  # The Emerald kit is not public. Set the repository variable EMERALD_KIT_URL (a .tar.gz of the kit) and, if the
+  # download needs it, the secret EMERALD_KIT_TOKEN. Without them the build job is skipped with a warning.
+  KIT_URL: ${{ vars.EMERALD_KIT_URL }}
 jobs:
-  checks:
+  lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Shell scripts parse
         run: for f in $(git ls-files '*.sh'); do bash -n "$f"; done
+      - name: Shell scripts pass shellcheck at error level
+        run: shellcheck --severity=error $(git ls-files '*.sh')
       - name: Pureline, at most 8 .ems files per folder (known violation in src/sublang/harness/flow)
         continue-on-error: true
         run: |
           git ls-files '*.ems' | xargs -n1 dirname | sort | uniq -c | awk '$1 > 8 { print "too many .ems files in " $2 ": " $1; bad = 1 } END { exit bad }'
+      - name: Pull request title is a Conventional Commit
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s\n' "$TITLE" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9-]+\))?!?: .+' || { echo "not a Conventional Commit: $TITLE"; exit 1; }
+      - name: Commits are Conventional Commits
+        if: github.event_name == 'pull_request'
+        run: |
+          bad=0
+          for c in $(git rev-list --no-merges origin/${{ github.base_ref }}..HEAD); do
+            s=$(git log -1 --format=%s "$c")
+            printf '%s\n' "$s" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9-]+\))?!?: .+' || { echo "bad subject: $s"; bad=1; }
+          done
+          exit $bad
+  build:
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Kit configured?
+        id: gate
+        run: |
+          if [ -n "$KIT_URL" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "::warning::EMERALD_KIT_URL is not set, the build is SKIPPED"; echo "run=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+      - name: Install clang
+        if: steps.gate.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Fetch the Emerald kit
+        if: steps.gate.outputs.run == 'true'
+        env:
+          TOKEN: ${{ secrets.EMERALD_KIT_TOKEN }}
+        run: |
+          mkdir kit
+          if [ -n "$TOKEN" ]; then auth=(-H "Authorization: Bearer $TOKEN"); else auth=(); fi
+          curl -fsSL "${auth[@]}" "$KIT_URL" | tar -xz -C kit --strip-components=1
+      - name: Build the sublang tool
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          mkdir -p out
+          EMERALD_FLOW_BOOTSTRAP=1 kit/bin/emerald-compiler build src/SublangMain.ems -o out/sublang
+      - name: Text IR example round trip
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          out/sublang text-build examples/text/platform-imports.sublang-text "$RUNNER_TEMP/p.wire"
+          EMERALD_FLOW_BOOTSTRAP=1 out/sublang emit-llvm "$RUNNER_TEMP/p.wire" "$RUNNER_TEMP/p.ll" auto on
+          clang -O2 -w "$RUNNER_TEMP/p.ll" -o "$RUNNER_TEMP/p"
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          name: sublang-${{ github.sha }}
+          path: out/sublang
+          retention-days: 7
+  required:
+    # One stable name for branch protection: green only when every job above succeeded or was skipped on purpose.
+    if: always()
+    needs: [lint, build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo '${{ toJSON(needs) }}'
+          ! echo '${{ join(needs.*.result, ' ') }}' | grep -qE 'failure|cancelled'
