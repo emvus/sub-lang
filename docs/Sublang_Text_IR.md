@@ -101,8 +101,8 @@ The scope counter of a function is not part of Wire and is not printed.
 
 | Limit | Value | Reported as |
 | --- | --- | --- |
-| input | 4 MiB (4,194,304 bytes) | `TX004` |
-| lines | 200,000 | `TX004` |
+| input | 16 MiB (16,777,216 bytes), the size of a Wire file | `TX004` |
+| lines | 1,000,000 | `TX004` |
 | one line | 64 KiB (65,536 bytes) | `TX004` |
 
 The limits are checked before any line is parsed. `text-dump` checks the same limits on its output,

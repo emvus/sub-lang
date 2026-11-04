@@ -5,6 +5,7 @@ use sublang::body::SublangOperation;
 use sublang::diagnostics::SublangReport;
 use sublang::ir::SublangModule;
 use sublang::ir::data::SublangCollectionLayout;
+use sublang::vocabulary::SublangVocabulary;
 
 // Contracts of the byte-text extension: Byte conversions, list element replacement and dynamic
 // strings stored as byte lists. Dynamic strings are owned lists; they are never views, so a text
@@ -27,6 +28,7 @@ public class SublangTextChecks {
             return "";
         }
         if (code == "list.set" || code == "list.replace") { return SublangTextChecks.element(module, function, op); }
+        if (SublangVocabulary.isInputOutputOpcode(code)) { return SublangTextChecks.platform(module, function, op); }
         return SublangTextChecks.text(module, function, op);
     }
 
@@ -60,6 +62,35 @@ public class SublangTextChecks {
 
     private static Bool byteList(SublangModule module, Int list) {
         return list != 0 && module.types().isKind(module.types().typeAt(list).target(), "Byte");
+    }
+
+    // text.from_file(path) and text.argument(index) create an owned byte list; text.write_file(path, data) and
+    // text.exists(path) return a Bool; text.argument_count() an Int; text.print(data), text.error(data) and
+    // text.exit(code) return nothing. Texts are borrowed for reading, the index and the code are values.
+    private static String platform(SublangModule module, SublangFunction function, SublangOperation op) {
+        String code = op.opcode();
+        Int operands = 1;
+        if (code == "text.write_file") { operands = 2; }
+        if (code == "text.argument_count" || code == "text.last_error" || code == "text.time") { operands = 0; }
+        if (op.operandCount() != operands) { return code + " has the wrong operand count"; }
+        if (code == "text.argument" || code == "text.exit") {
+            if (function.valueTypeOrZero(op.operandAt(0)) != module.types().intType() || op.modeAt(0) != "value") { return code + " requires an Int value operand"; }
+        }
+        if (code != "text.argument" && code != "text.exit" && code != "text.argument_count" && code != "text.last_error" && code != "text.time") {
+            Int position = 0;
+            while (position < operands) {
+                if (!SublangTextChecks.byteList(module, SublangTextChecks.listOf(module, function, op, position)) || op.modeAt(position) != "borrow_read") { return code + " requires byte lists borrowed for reading"; }
+                position = position + 1;
+            }
+        }
+        if (code == "text.from_file" || code == "text.argument" || code == "text.env") {
+            if (!SublangTextChecks.byteList(module, op.ref()) || !op.hasResult()) { return code + " requires a byte list layout and a result"; }
+            if (op.resultType() != module.types().refTypeOrZero(op.ref()) || op.resultOwnership() != "owned" || op.scope() <= 0) { return code + " requires an owned result and destination scope"; }
+        }
+        if ((code == "text.write_file" || code == "text.exists") && (!op.hasResult() || op.resultType() != module.types().boolType() || op.resultOwnership() != "" || op.scope() != 0)) { return code + " requires a plain Bool result"; }
+        if ((code == "text.argument_count" || code == "text.last_error" || code == "text.time") && (!op.hasResult() || op.resultType() != module.types().intType() || op.resultOwnership() != "" || op.scope() != 0)) { return code + " requires a plain Int result"; }
+        if ((code == "text.print" || code == "text.error" || code == "text.exit") && (op.hasResult() || op.scope() != 0)) { return code + " has no result"; }
+        return "";
     }
 
     private static String text(SublangModule module, SublangFunction function, SublangOperation op) {

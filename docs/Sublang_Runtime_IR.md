@@ -36,6 +36,35 @@ and `SublangRuntimeCompiler.compile(unit, frozenProgram, destination, optimind, 
 owned-object provider/consumer fixtures. Other frontends write Wire instead of using
 Emerald's internal classes as a public ABI.
 
+## Platform imports
+
+A program reaches the platform through external contracts named `platform.<area>.<name>`. Only the names of
+the table below are accepted, and each must have exactly the listed signature (`SUBLANG-I001`, `SUBLANG-I002`);
+no other external name is trusted. Text parameters are `Ref<List<Byte>>` borrowed for reading, a text result is
+owned by the caller's destination scope, as for any call that returns a reference.
+
+| Import | Signature | Meaning |
+| --- | --- | --- |
+| `platform.io.read_file` | text -> owned text | the bytes of the file, empty when it cannot be read |
+| `platform.io.write_file` | text, text -> Bool | writes the file; false unless everything was written |
+| `platform.io.file_exists` | text -> Bool | true when the file can be opened for reading |
+| `platform.io.print` | text -> Void | writes to standard output |
+| `platform.io.print_error` | text -> Void | writes to standard error |
+| `platform.io.last_error` | -> Int | why the last file operation failed (the C `errno`), 0 when it worked |
+| `platform.time.milliseconds` | -> Int | wall-clock milliseconds since the Unix epoch |
+| `platform.env.variable` | text -> owned text | an environment variable, empty when it is not set |
+| `platform.process.argument` | Int -> owned text | argument `index` (0 is the first after the program name), empty past the last |
+| `platform.process.argument_count` | -> Int | the number of arguments after the program name |
+| `platform.process.exit` | Int -> Void | ends the process with the status |
+
+`SublangPlatformBinding` links a runtime library, written in Sublang with the byte-text platform operations
+(`text.from_file`, `text.print`, ... in `SublangLlvmIoRuntime`), into the program before analysis, in
+`emit-llvm`, `dump-low` and for Emerald frontends through `SublangPlatformBinding.compile`. The library
+bodies take part in the same effect, ownership and lifetime analysis as the program. The operations run over
+the host libc on Linux; the imports are the stable interface, the operations underneath may change.
+A program that uses any platform operation is a command line program: the entry result is the exit status.
+`sublang capabilities` lists the imports. `examples/text/platform-imports.sublang-text` calls five of them.
+
 ## Memory and portability
 
 Runtime bodies retain ordinary SSA, effects, semantic profiles, source locations and
@@ -69,11 +98,15 @@ Unavailable destinations fail explicitly; they never silently compile for Linux.
 ## Next implementation steps
 
 1. Typed platform imports with effect/alias/ownership contracts, error behavior,
-   blocking and synchronization. Arbitrary external names must not become proofs.
+   blocking and synchronization. Arbitrary external names must not become proofs. *Started:* the table above for
+   files, arguments and standard streams on Linux; the effect analysis classifies the platform operations
+   (printing, writing and exiting are observable, reading files and arguments reads outside state, text results
+   are fresh allocations) so their calls are neither dropped nor reordered; alias facts for results are
+   the origin of the call site only, errors are values (empty text, false) with the reason of the last file operation in `platform.io.last_error`, and Windows/macOS bindings are missing.
 2. Controlled raw-memory/ABI lowering for runtime primitives. Separate allocator
    primitives from managed functions so Flow never recursively allocates through itself.
 3. Real Linux file I/O, process arguments and byte-buffer results, implemented through
-   IR. Then Windows/macOS implementations of the same language-facing contracts.
+   IR (today over host libc through the byte-text operations). Then Windows/macOS implementations of the same language-facing contracts.
 4. Target ABI, object linking, startup, deployment minimums and SDK discovery. Windows
    libraries and macOS system libraries/SDK can remain dependencies without C source.
 5. Versioned serialized manifests, imports/exports and compatibility negotiation.

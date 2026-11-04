@@ -100,9 +100,9 @@ public class SublangTextSmoke {
     }
 
     public static String limits() {
-        String tooLarge = SublangTextSmoke.prefixFailure(SublangTextParser.parse("x".repeat(4194305)).error(), "SUBLANG-TX004:");
+        String tooLarge = SublangTextSmoke.prefixFailure(SublangTextParser.parse("x".repeat(16777217)).error(), "SUBLANG-TX004:");
         if (tooLarge != "") { return tooLarge; }
-        String tooManyLines = SublangTextSmoke.prefixFailure(SublangTextParser.parse("\n".repeat(200001)).error(), "SUBLANG-TX004: line 200001 column 1:");
+        String tooManyLines = SublangTextSmoke.prefixFailure(SublangTextParser.parse("\n".repeat(1000001)).error(), "SUBLANG-TX004: line 1000001 column 1:");
         if (tooManyLines != "") { return tooManyLines; }
         return SublangTextSmoke.prefixFailure(SublangTextParser.parse("#" + "x".repeat(65536)).error(), "SUBLANG-TX004: line 1 column 1:");
     }

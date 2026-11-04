@@ -73,6 +73,17 @@ Notation: `L` = `Ref<List<Byte>>` (a byte list). `E` = list element type. `C` = 
 | `text.concat` | `L` (borrow_read), `L` (borrow_read) | `L` | owned, scope > 0 |
 | `text.slice` | `L` (borrow_read), `Int` start (value), `Int` length (value) | `L` | owned, scope > 0 |
 | `text.equal` | `L` (borrow_read), `L` (borrow_read) | `Bool` | no ownership, scope 0 |
+| `text.from_file` | `L` path (borrow_read) | `L` | owned, scope > 0; the bytes of the file, empty when it cannot be read |
+| `text.argument` | `Int` index (value) | `L` | owned, scope > 0; command line argument `index` (0 is the first after the program name), empty past the last |
+| `text.write_file` | `L` path (borrow_read), `L` data (borrow_read) | `Bool` | no ownership, scope 0; false when the file cannot be written completely |
+| `text.print` | `L` (borrow_read) | none | writes the bytes to standard output |
+| `text.error` | `L` (borrow_read) | none | writes the bytes to standard error |
+| `text.exists` | `L` path (borrow_read) | `Bool` | no ownership, scope 0; true when the file can be opened for reading |
+| `text.argument_count` | none | `Int` | no ownership, scope 0; the number of arguments after the program name |
+| `text.last_error` | none | `Int` | no ownership, scope 0; the reason the last file operation failed (`errno`), 0 when it worked |
+| `text.time` | none | `Int` | no ownership, scope 0; wall-clock milliseconds since the Unix epoch |
+| `text.env` | `L` name (borrow_read) | `L` | owned, scope > 0; the environment variable, empty when it is not set |
+| `text.exit` | `Int` status (value) | none | ends the process |
 
 Sources: `src/sublang/ir/data/SublangCollectionBuilder.ems` (builders), `SublangTextChecks.ems`
 (contracts).
@@ -104,6 +115,11 @@ Sources: `src/sublang/ir/data/SublangCollectionBuilder.ems` (builders), `Sublang
 - `text.from_str` / `text.concat` / `text.slice` allocate in the destination scope and copy.
   `text.slice` aborts unless `start <=u length` and `count <=u length - start`.
 - `text.equal`: equal lengths, then `memcmp` (`sublang.text.equal`).
+- `text.from_file`, `text.write_file`, `text.print`, `text.argument`, `text.error`, `text.exists`, `text.argument_count`
+  and `text.exit` are the platform operations underneath the platform imports (`Sublang_Runtime_IR.md`); frontends declare
+  the imports instead of using them directly. They run over the host libc
+  (`fopen`, `fread`, `fwrite`, `write`, the saved `argc`/`argv`; `SublangLlvmIoRuntime`). A module that uses any of them
+  is a command line program: the entry result becomes the process exit status and is not printed.
 - Lowering routing: `SublangLowering.ems` sends `list.*`, `text.*`, `byte.*` to `SublangLowerData`.
 
 ### Evidence

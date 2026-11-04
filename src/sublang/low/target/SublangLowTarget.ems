@@ -1,0 +1,44 @@
+namespace sublang::low::target;
+
+// The machine a Low module is made for. Only `native64-host-libc` is supported: 64 bit pointers, the
+// host C library, abort-only unwinding and the C calling convention. The triple is descriptive; the
+// emitted LLVM text does not name a triple or data layout.
+public class SublangLowTarget {
+    private String nameValue;
+    private String tripleValue;
+    private Int widthValue;
+    private String libcValue;
+    private String unwindingValue;
+    private String conventionValue;
+
+    public SublangLowTarget(String name, String triple, Int pointerWidth, String libc, String unwinding, String callingConvention) {
+        this.nameValue = name + "";
+        this.tripleValue = triple + "";
+        this.widthValue = pointerWidth;
+        this.libcValue = libc + "";
+        this.unwindingValue = unwinding + "";
+        this.conventionValue = callingConvention + "";
+    }
+
+    // The only target the compiler constructs.
+    public static SublangLowTarget host() {
+        return SublangLowTarget("native64-host-libc", "x86_64-unknown-linux-gnu", 64, "host-libc", "abort-only", "c");
+    }
+
+    public String name() { return this.nameValue + ""; }
+    public String triple() { return this.tripleValue + ""; }
+    public Int pointerWidth() { return this.widthValue; }
+    public Int pointerBytes() { return this.widthValue / 8; }
+    public String libc() { return this.libcValue + ""; }
+    public String unwinding() { return this.unwindingValue + ""; }
+    public String callingConvention() { return this.conventionValue + ""; }
+
+    // SUBLANG-L010 is reported for every other target.
+    public Bool supported() {
+        return this.nameValue == "native64-host-libc" && this.widthValue == 64;
+    }
+
+    public String describe() {
+        return "target=" + this.nameValue + " triple=" + this.tripleValue + " pointer=" + this.widthValue.toString() + " libc=" + this.libcValue + " unwinding=" + this.unwindingValue + " convention=" + this.conventionValue;
+    }
+}

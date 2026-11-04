@@ -438,3 +438,15 @@ native LLVM slice`) is the only comment in that text.
 6. The `call.virtual` dispatch chain aborts for an unknown tag. When a group has no entries, the join block of the chain has no predecessor, so the verifier reports it as unreachable (L003), and the module falls back to the legacy emitter. `UNVERIFIED:` this path was derived by reading `SublangLowerControl.chain`; it was not executed.
 7. Legacy fallback remains possible for the core subset; inspect the plan's lowering route rather than assuming every accepted input used Low IR.
 8. The Low verifier and binding harness (`harness/pass/SublangLowChecks.ems`) passed in the October 11 hardening run. Native Bond/inline examples also used verified Low IR. Other source-only observations in this document are not additional runtime evidence.
+
+## 14. Size limits
+
+The wire format and the backend budget share one set of limits, `src/sublang/limits/SublangLimits.ems`
+(4096 functions, 4096 blocks per function, 262144 values per function and operations per block, 1048576
+operation ids and spans, 8192 types and fields, 33554432 wire table rows). The first slice allowed 32
+functions per module; a compiler written in Emvus (Ring1) has several hundred.
+
+Known defect: on programs of that size `sublang emit-llvm`, built by the Emerald compiler, can stop with
+`Emerald Flow allocation failed (<garbage> bytes)`. It also stops under `EMERALD_FLOW_UAF_HUNT=1` and not
+with `EMERALD_FLOW_BOOTSTRAP=1` or `EMERALD_FLOW_MALLOC=1`, which points to memory released while it is still
+used. `emvusc` sets `EMERALD_FLOW_BOOTSTRAP=1`; the cause is not found.

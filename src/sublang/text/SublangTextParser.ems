@@ -19,13 +19,13 @@ use sublang::wire::SublangWireFeatures;
 public class SublangTextParser {
     // Input limits of the text format, checked before any line is parsed. Empty when the text is within them.
     public static String limitFailure(String text) {
-        if (text.length() > 4194304) { return "SUBLANG-TX004: input exceeds 4 MiB"; }
+        if (text.length() > 16777216) { return "SUBLANG-TX004: input exceeds 16 MiB"; }
         Int start = 0;
         Int lineNumber = 0;
         while (start < text.length()) {
             Int end = SublangTextParser.lineEnd(text, start);
             lineNumber = lineNumber + 1;
-            if (lineNumber > 200000) { return "SUBLANG-TX004: line " + lineNumber.toString() + " column 1: more than 200000 lines"; }
+            if (lineNumber > 1000000) { return "SUBLANG-TX004: line " + lineNumber.toString() + " column 1: more than 1000000 lines"; }
             if (end - start > 65536) { return "SUBLANG-TX004: line " + lineNumber.toString() + " column 1: line exceeds 64 KiB"; }
             start = end + 1;
         }

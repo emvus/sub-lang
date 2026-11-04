@@ -1,0 +1,22 @@
+namespace sublang::limits;
+
+// The size limits of the wire format and of the backend, in one place. They bound the work the
+// verifier, the analyses and the emitter do on untrusted input; each is checked on read, with
+// SUBLANG-W001 (wire) or SUBLANG-B003 (backend). The first slice allowed 32 functions per module; a
+// compiler written in Emvus has hundreds, so the limits are sized for programs of that scale.
+public class SublangLimits {
+    public SublangLimits() {
+    }
+
+    public static Int functions() { return 4096; }
+    public static Int blocksPerFunction() { return 4096; }
+    public static Int valuesPerFunction() { return 262144; }
+    public static Int operationsPerBlock() { return 262144; }
+    // Operation ids of the whole module; also the size of the verifier's seen-table.
+    public static Int operations() { return 1048576; }
+    public static Int spans() { return 1048576; }
+    public static Int types() { return 8192; }
+    public static Int typeFields() { return 8192; }
+    // Rows of all wire tables together.
+    public static Int tableEntries() { return 33554432; }
+}

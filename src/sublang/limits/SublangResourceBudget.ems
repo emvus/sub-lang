@@ -1,5 +1,6 @@
 namespace sublang::limits;
 
+use sublang::limits::SublangLimits;
 use sublang::body::SublangFunction;
 use sublang::body::SublangOperation;
 use sublang::ir::SublangModule;
@@ -14,14 +15,14 @@ public class SublangResourceBudget {
         this.seenOperations = List();
         this.operationCount = 0;
         Int index = 0;
-        while (index <= 32768) {
+        while (index <= SublangLimits.operations()) {
             this.seenOperations.add(false);
             index = index + 1;
         }
     }
 
     public String check(SublangModule module) {
-        if (module.functionCount() > 32 || module.types().typeCount() > 512 || module.types().fieldCount() > 512) {
+        if (module.functionCount() > SublangLimits.functions() || module.types().typeCount() > SublangLimits.types() || module.types().fieldCount() > SublangLimits.typeFields()) {
             return "SUBLANG-B003: module exceeds the initial backend budget";
         }
         Int functionId = 1;
@@ -34,19 +35,19 @@ public class SublangResourceBudget {
     }
 
     private String checkFunction(SublangFunction function) {
-        if (function.blockCount() > 64 || function.valueCount() > 4096) {
+        if (function.blockCount() > SublangLimits.blocksPerFunction() || function.valueCount() > SublangLimits.valuesPerFunction()) {
             return "SUBLANG-B003: function exceeds the initial backend budget";
         }
         Int blockId = 1;
         while (blockId <= function.blockCount()) {
-            if (function.blockAt(blockId).operationCount() > 4096) {
+            if (function.blockAt(blockId).operationCount() > SublangLimits.operationsPerBlock()) {
                 return "SUBLANG-B003: block exceeds the initial backend budget";
             }
             Int index = 0;
             while (index < function.blockAt(blockId).operationCount()) {
                 SublangOperation operation = function.blockAt(blockId).operationAt(index);
-                if (operation.scope() < 0 || operation.scope() > 32768) { return "SUBLANG-B003: scope id exceeds backend budget"; }
-                if (operation.opcode().startsWith("scope.") && (operation.ref() < 1 || operation.ref() > 32768)) { return "SUBLANG-B003: scope id exceeds backend budget"; }
+                if (operation.scope() < 0 || operation.scope() > SublangLimits.operations()) { return "SUBLANG-B003: scope id exceeds backend budget"; }
+                if (operation.opcode().startsWith("scope.") && (operation.ref() < 1 || operation.ref() > SublangLimits.operations())) { return "SUBLANG-B003: scope id exceeds backend budget"; }
                 String error = this.operation(operation.id());
                 if (error != "") { return error; }
                 index = index + 1;
@@ -58,7 +59,7 @@ public class SublangResourceBudget {
 
     private String operation(Int id) {
         this.operationCount = this.operationCount + 1;
-        if (this.operationCount > 32768 || id < 1 || id > 32768) {
+        if (this.operationCount > SublangLimits.operations() || id < 1 || id > SublangLimits.operations()) {
             return "SUBLANG-B003: operation id/count exceeds the initial backend budget";
         }
         if (this.seenOperations.get(id)) {

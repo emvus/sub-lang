@@ -1,5 +1,6 @@
 namespace sublang::checks::operation;
 
+use sublang::platform::SublangPlatform;
 use sublang::body::SublangBlock;
 use sublang::body::SublangFunction;
 use sublang::body::SublangOperation;
@@ -58,7 +59,7 @@ public class SublangControlChecks {
             return;
         }
         SublangFunction callee = this.module.functionAt(calleeId);
-        if (callee.definition() == "contract") {
+        if (callee.definition() == "contract" && !SublangPlatform.isImport(callee.name())) {
             this.findings.reportBlocked("SUBLANG-U006", "call to external function " + callee.name() + " needs a trusted provider contract; not supported in v0.1", op.span(), "call:" + callee.name());
         }
         Bool countMatches = this.checkArgumentCount(op, callee);

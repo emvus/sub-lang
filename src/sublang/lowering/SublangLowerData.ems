@@ -177,6 +177,38 @@ public class SublangLowerData {
             context.bind(op.resultValue(), context.runtime("sublang.text.equal", SublangLowerContext.two(context.value(op.operandAt(0)), context.value(op.operandAt(1))), "i1"));
             return;
         }
+        if (code == "text.write_file") {
+            context.bind(op.resultValue(), context.runtime("sublang.io.write", SublangLowerContext.two(context.value(op.operandAt(0)), context.value(op.operandAt(1))), "i1"));
+            return;
+        }
+        if (code == "text.exists") {
+            context.bind(op.resultValue(), context.runtime("sublang.io.exists", SublangLowerContext.one(context.value(op.operandAt(0))), "i1"));
+            return;
+        }
+        if (code == "text.time") {
+            context.bind(op.resultValue(), context.runtime("sublang.io.clock", SublangLowerContext.none(), "i64"));
+            return;
+        }
+        if (code == "text.last_error") {
+            context.bind(op.resultValue(), context.runtime("sublang.io.reason", SublangLowerContext.none(), "i64"));
+            return;
+        }
+        if (code == "text.argument_count") {
+            context.bind(op.resultValue(), context.runtime("sublang.io.argc", SublangLowerContext.none(), "i64"));
+            return;
+        }
+        if (code == "text.exit") {
+            context.runtimeVoid("sublang.process.exit", SublangLowerContext.one(context.value(op.operandAt(0))));
+            return;
+        }
+        if (code == "text.error") {
+            context.runtimeVoid("sublang.io.error", SublangLowerContext.one(context.value(op.operandAt(0))));
+            return;
+        }
+        if (code == "text.print") {
+            context.runtimeVoid("sublang.io.print", SublangLowerContext.one(context.value(op.operandAt(0))));
+            return;
+        }
         if (code == "text.append") {
             Int source = context.value(op.operandAt(1));
             List<Int> arguments = SublangLowerContext.three(context.value(op.operandAt(0)), context.stringPart("str.ptr", "ptr", source), context.stringPart("str.len", "i64", source));
@@ -196,6 +228,9 @@ public class SublangLowerData {
             context.runtimeVoid("sublang.text.append", SublangLowerContext.three(created, SublangLowerData.dataOf(context, right), SublangLowerData.lengthOf(context, right)));
         }
         if (code == "text.slice") { SublangLowerData.slice(context, op, created); }
+        if (code == "text.from_file") { context.runtimeVoid("sublang.io.read", SublangLowerContext.two(created, context.value(op.operandAt(0)))); }
+        if (code == "text.env") { context.runtimeVoid("sublang.io.environment", SublangLowerContext.two(created, context.value(op.operandAt(0)))); }
+        if (code == "text.argument") { context.runtimeVoid("sublang.io.argument", SublangLowerContext.two(created, context.value(op.operandAt(0)))); }
         context.bind(op.resultValue(), created);
     }
 

@@ -111,7 +111,16 @@ public class SublangVocabulary {
     // Operations of the byte-text extension (Wire feature ext.bytes.v1).
     public static Bool isTextOpcode(String opcode) {
         return opcode == "byte.from_int" || opcode == "byte.to_int" || opcode == "list.set" || opcode == "list.replace"
-            || opcode == "text.from_str" || opcode == "text.append" || opcode == "text.concat" || opcode == "text.slice" || opcode == "text.equal";
+            || opcode == "text.from_str" || opcode == "text.append" || opcode == "text.concat" || opcode == "text.slice" || opcode == "text.equal"
+            || SublangVocabulary.isInputOutputOpcode(opcode);
+    }
+
+    // Platform access of the byte-text extension: read a file or an argument into a new owned byte list,
+    // write a file, print to standard output. Paths and texts are byte lists borrowed for reading; a failed
+    // read yields an empty list and an argument beyond the last one is empty too.
+    public static Bool isInputOutputOpcode(String opcode) {
+        return opcode == "text.from_file" || opcode == "text.write_file" || opcode == "text.print" || opcode == "text.argument"
+            || opcode == "text.error" || opcode == "text.exists" || opcode == "text.argument_count" || opcode == "text.exit" || opcode == "text.last_error" || opcode == "text.time" || opcode == "text.env";
     }
 
     public static Bool isKnownPassing(String mode) {
@@ -173,6 +182,8 @@ public class SublangVocabulary {
         if (opcode == "const.string" || opcode == "string.length" || opcode == "string.byte" || opcode == "string.equal") { return true; }
         if (opcode == "field.borrow") { return true; }
         if (opcode == "byte.from_int" || opcode == "byte.to_int" || opcode == "text.from_str" || opcode == "text.concat" || opcode == "text.slice" || opcode == "text.equal") { return true; }
+        if (opcode == "text.from_file" || opcode == "text.write_file" || opcode == "text.argument" || opcode == "text.exists" || opcode == "text.argument_count" || opcode == "text.last_error" || opcode == "text.time") { return true; }
+        if (opcode == "text.env") { return true; }
         if (SublangVocabulary.isNumericOpcode(opcode) || opcode == "class.upcast" || opcode == "class.downcast") { return true; }
         if (SublangVocabulary.isIntOpcode(opcode) || SublangVocabulary.isFloatOpcode(opcode)) {
             return true;
@@ -193,7 +204,7 @@ public class SublangVocabulary {
         if (opcode == "bond.own") { return "field"; }
         if (opcode == "bond.new") { return "type"; }
         if (opcode == "bond.get" || opcode == "bond.link" || opcode == "bond.clear" || opcode == "bond.write") { return "field"; }
-        if (opcode == "list.new" || opcode == "text.from_str" || opcode == "text.concat" || opcode == "text.slice") { return "type"; }
+        if (opcode == "list.new" || opcode == "text.from_str" || opcode == "text.concat" || opcode == "text.slice" || opcode == "text.from_file" || opcode == "text.argument" || opcode == "text.env") { return "type"; }
         if (opcode == "field.borrow") { return "field"; }
         if (opcode == "record.make" || opcode == "class.new") {
             return "type";

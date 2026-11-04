@@ -1,5 +1,6 @@
 namespace sublang::checks;
 
+use sublang::platform::SublangPlatform;
 use sublang::body::SublangFunction;
 use sublang::body::SublangParam;
 use sublang::diagnostics::SublangReport;
@@ -135,6 +136,10 @@ public class SublangFunctionChecks {
         }
         if (fnEntry.linkage() != "external") {
             this.findings.report("SUBLANG-S001", "external contract " + fnEntry.name() + " must have external linkage", fnEntry.span());
+        }
+        if (fnEntry.name().startsWith("platform.")) {
+            String wrong = SublangPlatform.check(this.module, fnEntry);
+            if (wrong != "") { this.findings.report(wrong.substring(0, 12), wrong.substring(14, wrong.length()), fnEntry.span()); }
         }
     }
 }

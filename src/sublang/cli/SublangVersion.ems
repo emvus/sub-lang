@@ -1,0 +1,18 @@
+namespace sublang::cli;
+
+// The product version: 0.1.0-indev.<first 8 characters of the git commit>. The commit part is written
+// by scripts/stampVersion.sh, which the build scripts run first; a build outside git keeps "unstamped".
+public class SublangVersion {
+    private static String commit() {
+        return "f77704f5";
+    }
+
+    public static String number() {
+        return "0.1.0-indev." + SublangVersion.commit();
+    }
+
+    // `Sublang <version>`, as printed by `--version` and `capabilities`.
+    public static String product() {
+        return "Sublang " + SublangVersion.number();
+    }
+}

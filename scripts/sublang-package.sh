@@ -10,6 +10,7 @@ fi
 if (($#)); then echo 'Usage: sublang-package.sh [--with-llvm]' >&2; exit 2; fi
 export LC_ALL=C
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$ROOT/scripts/stampVersion.sh" > /dev/null
 IMAGE="${SUBLANG_SANDBOX_IMAGE:-emerald-selfhost-sandbox}"
 BINARY="$ROOT/build/sublang"
 WIRE_DIR="$ROOT/examples/wire"

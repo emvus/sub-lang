@@ -31,7 +31,7 @@ bash scripts/sublang-package.sh            # creates dist/sublang-<version>/ and
 bash scripts/sublang-package-smoke.sh dist/sublang-<version>
 ```
 
-`<version>` is taken from the output of `sublang --version` (currently `0.1-dev`).
+`<version>` is taken from the output of `sublang --version` (`0.1.0-indev.<commit>` for development builds; the bundle name `sublang-0.1-dev-llvm...` of `sublang-bundle.sh` is fixed and independent of it).
 The packaging script refuses to overwrite an existing `dist/sublang-<version>/` or
 archive; remove it first.
 

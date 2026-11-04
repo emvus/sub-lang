@@ -1,0 +1,101 @@
+namespace sublang::platform;
+
+use sublang::backend::SublangCompilation;
+use sublang::backend::SublangCompiler;
+use sublang::body::SublangFunction;
+use sublang::ir::SublangBuilder;
+use sublang::ir::SublangModule;
+use sublang::platform::SublangPlatform;
+use sublang::snapshot::SublangModuleLinker;
+
+// Binds the platform imports of a program (see SublangPlatform) to the runtime library below and compiles the
+// result. A program without imports is compiled as it is.
+public class SublangPlatformBinding {
+    // The runtime library: one function per import, each a call of the matching platform operation.
+    public static SublangModule library() {
+        SublangBuilder builder = SublangBuilder("sublang.platform");
+        Int span = builder.syntheticSpan("platform:library");
+        Int list = builder.listType(builder.byteType(), span);
+        Int text = builder.module().types().refTypeFor(list);
+        Int integer = builder.intType();
+        // read_file(path) -> owned text
+        builder.beginFunction("platform.io.read_file", text, 0, span);
+        Int path = builder.addParam("path", text, "borrow_read", false);
+        builder.beginBlock();
+        Int scope = builder.ops().scopeBegin(span);
+        builder.ops().returnOwned(builder.collections().textFromFile(list, path, scope, span), span);
+        // write_file(path, data) -> Bool
+        builder.beginFunction("platform.io.write_file", builder.boolType(), 0, span);
+        Int target = builder.addParam("path", text, "borrow_read", false);
+        Int data = builder.addParam("data", text, "borrow_read", false);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.collections().textWriteFile(target, data, span), span);
+        // file_exists(path) -> Bool
+        builder.beginFunction("platform.io.file_exists", builder.boolType(), 0, span);
+        Int probe = builder.addParam("path", text, "borrow_read", false);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.collections().textExists(probe, span), span);
+        // print(data), print_error(data)
+        builder.beginFunction("platform.io.print", builder.voidType(), 0, span);
+        Int shown = builder.addParam("data", text, "borrow_read", false);
+        builder.beginBlock();
+        builder.collections().textPrint(shown, span);
+        builder.ops().returnValue(0, span);
+        builder.beginFunction("platform.io.print_error", builder.voidType(), 0, span);
+        Int complaint = builder.addParam("data", text, "borrow_read", false);
+        builder.beginBlock();
+        builder.collections().textError(complaint, span);
+        builder.ops().returnValue(0, span);
+        // last_error() -> Int
+        builder.beginFunction("platform.io.last_error", integer, 0, span);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.collections().textLastError(span), span);
+        // milliseconds() -> Int
+        builder.beginFunction("platform.time.milliseconds", integer, 0, span);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.collections().textTime(span), span);
+        // variable(name) -> owned text
+        builder.beginFunction("platform.env.variable", text, 0, span);
+        Int variable = builder.addParam("name", text, "borrow_read", false);
+        builder.beginBlock();
+        Int environmentScope = builder.ops().scopeBegin(span);
+        builder.ops().returnOwned(builder.collections().textEnvironment(list, variable, environmentScope, span), span);
+        // argument(index) -> owned text
+        builder.beginFunction("platform.process.argument", text, 0, span);
+        Int index = builder.addParam("index", integer, "value", false);
+        builder.beginBlock();
+        Int argumentScope = builder.ops().scopeBegin(span);
+        builder.ops().returnOwned(builder.collections().textArgument(list, index, argumentScope, span), span);
+        // argument_count() -> Int
+        builder.beginFunction("platform.process.argument_count", integer, 0, span);
+        builder.beginBlock();
+        builder.ops().returnValue(builder.collections().textArgumentCount(span), span);
+        // exit(code)
+        builder.beginFunction("platform.process.exit", builder.voidType(), 0, span);
+        Int code = builder.addParam("code", integer, "value", false);
+        builder.beginBlock();
+        builder.collections().textExit(code, span);
+        builder.ops().returnValue(0, span);
+        builder.freeze();
+        return builder.module();
+    }
+
+    // Links the library into the program and compiles the result. Imports that remain are an error.
+    public static SublangCompilation compile(SublangModule program, Bool optimind, String flow) {
+        if (!SublangPlatform.hasImports(program)) { return SublangCompiler.compile(program, optimind, flow); }
+        Int id = 1;
+        while (id <= program.functionCount()) {
+            SublangFunction function = program.functionAt(id);
+            if (function.definition() == "contract" && function.name().startsWith("platform.")) {
+                String wrong = SublangPlatform.check(program, function);
+                if (wrong != "") { return SublangCompilation("", wrong, ""); }
+            }
+            id = id + 1;
+        }
+        SublangModuleLinker linked = SublangModuleLinker(SublangPlatformBinding.library(), program);
+        if (!linked.ok()) { return SublangCompilation("", linked.errorAt(0), ""); }
+        linked.module().freeze();
+        if (SublangPlatform.hasImports(linked.module())) { return SublangCompilation("", "SUBLANG-I003: a platform import stayed unresolved after linking", ""); }
+        return SublangCompiler.compile(linked.module(), optimind, flow);
+    }
+}
